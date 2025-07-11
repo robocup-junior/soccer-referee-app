@@ -1,0 +1,13 @@
+site_name: RCJ Soccer Communication Module APP
+theme:
+  name: material
+  palette:
+    primary: teal
+markdown_extensions:
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+nav:
+  - Introduction: index.md
+  - Privacy Policy: privacy_policy.md
+
