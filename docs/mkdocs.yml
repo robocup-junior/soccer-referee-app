@@ -9,5 +9,5 @@ markdown_extensions:
 
 nav:
   - Introduction: index.md
-  - Privacy Policy: privacy_policy.md
+  - Privacy Policy: privacy-policy.md
 
