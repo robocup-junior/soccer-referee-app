@@ -206,12 +206,12 @@ class MqttService {
       print('MQTT_LOGS::Client exception - $e');
       _lastErrorMessage = 'Network error: Unable to connect';
       connectionStateNotifier.value = MqttConnectionStateEx.error;
-      return false;
+      //return false;
     } on SocketException catch (e) {
       print('MQTT_LOGS::Socket exception - $e');
       _lastErrorMessage = 'Connection failed: ${e.message}';
       connectionStateNotifier.value = MqttConnectionStateEx.error;
-      return false;
+      //return false;
     }
 
     if (_client!.connectionStatus!.state == MqttConnectionState.connected) {
@@ -221,12 +221,18 @@ class MqttService {
     } else {
       print('MQTT_LOGS::ERROR Mosquitto client connection failed - disconnecting, status is ${_client!.connectionStatus}');
       final status = _client!.connectionStatus!;
-      if (status.returnCode == MqttConnectReturnCode.notAuthorized) {
-        _lastErrorMessage = 'Auth failed: Invalid credentials';
+      if (status.returnCode == MqttConnectReturnCode.unacceptedProtocolVersion) {
+        _lastErrorMessage = 'Connection failed: Invalid protocol version';
+      } else if (status.returnCode == MqttConnectReturnCode.identifierRejected) {
+        _lastErrorMessage = 'Connection failed: Invalid client identifier';
+      } else if (status.returnCode == MqttConnectReturnCode.brokerUnavailable) {
+        _lastErrorMessage = 'Connection failed: Broker unavailable';
       } else if (status.returnCode == MqttConnectReturnCode.badUsernameOrPassword) {
         _lastErrorMessage = 'Auth failed: Bad username/password';
-      } else if (status.returnCode == MqttConnectReturnCode.serverUnavailable) {
-        _lastErrorMessage = 'Server unavailable';
+      } else if (status.returnCode == MqttConnectReturnCode.notAuthorized) {
+        _lastErrorMessage = 'Auth failed: Invalid credentials';
+      } else if (status.returnCode == MqttConnectReturnCode.noneSpecified) {
+        _lastErrorMessage = 'Connection failed: No return code specified';
       } else {
         _lastErrorMessage = 'Connection failed: ${status.returnCode}';
       }
