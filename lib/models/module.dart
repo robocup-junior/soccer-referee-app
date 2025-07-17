@@ -365,6 +365,8 @@ class Module with ChangeNotifier {
         bleSendPlayAll();
         await Future.delayed(const Duration(milliseconds: 100));
       }
+      // Send it one more time with acknowledgment to ensure all modules are in play state
+      bleSendPlay();
     }
   }
 
@@ -380,6 +382,8 @@ class Module with ChangeNotifier {
       bleSendPlayAll();
       await Future.delayed(const Duration(milliseconds: 100));
     }
+    // Send it one more time with acknowledgment to ensure all modules are in play state
+    bleSendPlay();
   }
 
   void stopAll(bool removePenalty, {bool force = false}) async {
