@@ -30,6 +30,7 @@ class MqttService {
   final String _clientIdentifier = 'client_${const Uuid().v4()}'; // Generate unique client ID
   //final ValueNotifier<bool> isConnectedNotifier = ValueNotifier(false);
   final ValueNotifier<MqttConnectionStateEx> connectionStateNotifier = ValueNotifier(MqttConnectionStateEx.disconnected);
+  String _lastErrorMessage = '';
   late SharedPreferences prefs;
 
   final StreamController<String> _messageStreamController = StreamController<
@@ -75,6 +76,7 @@ class MqttService {
   bool get isEnabled => _isEnabled;
   bool get secureConnection => _secureConnection;
   bool get autoConnect => _autoConnect;
+  String get lastErrorMessage => _lastErrorMessage;
 
   // Setters for server, port, username, and password
   set server(String? value) {
@@ -202,12 +204,12 @@ class MqttService {
       await _client!.connect(_username, _password); // Pass username/password again here for some brokers
     } on NoConnectionException catch (e) {
       print('MQTT_LOGS::Client exception - $e');
-      //_client!.disconnect();
+      _lastErrorMessage = 'Network error: Unable to connect';
       connectionStateNotifier.value = MqttConnectionStateEx.error;
       return false;
     } on SocketException catch (e) {
       print('MQTT_LOGS::Socket exception - $e');
-      //_client!.disconnect();
+      _lastErrorMessage = 'Connection failed: ${e.message}';
       connectionStateNotifier.value = MqttConnectionStateEx.error;
       return false;
     }
@@ -218,7 +220,16 @@ class MqttService {
       return true;
     } else {
       print('MQTT_LOGS::ERROR Mosquitto client connection failed - disconnecting, status is ${_client!.connectionStatus}');
-      //_client!.disconnect();
+      final status = _client!.connectionStatus!;
+      if (status.returnCode == MqttConnectReturnCode.notAuthorized) {
+        _lastErrorMessage = 'Auth failed: Invalid credentials';
+      } else if (status.returnCode == MqttConnectReturnCode.badUsernameOrPassword) {
+        _lastErrorMessage = 'Auth failed: Bad username/password';
+      } else if (status.returnCode == MqttConnectReturnCode.serverUnavailable) {
+        _lastErrorMessage = 'Server unavailable';
+      } else {
+        _lastErrorMessage = 'Connection failed: ${status.returnCode}';
+      }
       connectionStateNotifier.value = MqttConnectionStateEx.error;
       return false;
     }
@@ -337,6 +348,7 @@ class MqttService {
 
   void _onConnected() {
     print('MQTT_LOGS::Client connection was successful');
+    _lastErrorMessage = '';
     connectionStateNotifier.value = MqttConnectionStateEx.connected;
     // If you need to re-subscribe on auto-reconnect, do it here
     // if (_topic != null) {

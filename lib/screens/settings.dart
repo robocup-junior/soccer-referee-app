@@ -185,7 +185,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       : connectionState == MqttConnectionStateEx.connecting
                                           ? 'Connecting'
                                           : connectionState == MqttConnectionStateEx.error
-                                              ? 'Connection error'
+                                              ? (widget.game.mqttService.lastErrorMessage.isNotEmpty 
+                                                  ? widget.game.mqttService.lastErrorMessage
+                                                  : 'Connection error')
                                               : 'Disconnected',
                                 ),
                                 // SettingSwitch(
