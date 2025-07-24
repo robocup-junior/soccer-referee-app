@@ -83,7 +83,7 @@ Accessible via the settings menu:
 
 ## 📥 Download
 
-Available on [Google Play] *(Work in progress)*
+Available on [Google Play](https://play.google.com/store/apps/details?id=com.robocup.rcj_soccer)
 
 ---
 
@@ -96,20 +96,6 @@ This app pairs with official RoboCup Junior-compatible modules.
 - Purchase ready-made modules:  
   🛒 https://robofuze.com/
 
-Features:
-- OLED screen with robot ID, score, state, countdowns
-- QR pairing support
-- Command logic synced with app via BLE
-
----
-
-## 🛠️ Tech Stack
-
-- Kotlin / Android SDK
-- BLE (Bluetooth Low Energy)
-- MQTT protocol
-- JSON config management
-- Offline-first design
 
 ---
 
