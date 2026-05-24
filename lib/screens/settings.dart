@@ -87,13 +87,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: const Text('Settings'),
             backgroundColor: AppColors.primary,
           ),
-          body: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              children: [
-                Expanded(
-                  child: ListView(
-                    children: [
+          body: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: ListView(
+                      children: [
                       ValueListenableBuilder<String>(
                           valueListenable: widget.game.matchDataService.stateNotifier,
                           builder: (context, matchStatus, child) {
@@ -349,19 +351,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                         ],
                       ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-                // const Row(
-                //   mainAxisAlignment: MainAxisAlignment.center,
-                //   children: [
-                //     Text(
-                //         'Created for RoboFuze.com by Martin Faltus 2025 \nVersion 0.9.2',
-                //         textAlign: TextAlign.center,
-                //         style: TextStyle(fontSize: 12)),
-                //   ],
-                // ),
-              ],
+                  // const Row(
+                  //   mainAxisAlignment: MainAxisAlignment.center,
+                  //   children: [
+                  //     Text(
+                  //         'Created for RoboFuze.com by Martin Faltus 2025 \nVersion 0.9.2',
+                  //         textAlign: TextAlign.center,
+                  //         style: TextStyle(fontSize: 12)),
+                  //   ],
+                  // ),
+                ],
+              ),
             ),
           ),
         ),

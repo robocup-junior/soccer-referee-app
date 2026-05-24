@@ -164,12 +164,13 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
             style: const TextStyle(color: Colors.white)),
       ),
 
-
-        body: Padding(
-        padding: const EdgeInsets.all(10.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      body: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.all(10.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
             //SizedBox(height: 10),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -279,10 +280,11 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                 },
               ),
             ),
-          ],
+            ],
+          ),
         ),
-        )
-      );
+      ),
+    );
     }
 
 
@@ -354,6 +356,3 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
   //   );
   // }
  }
-
-
-

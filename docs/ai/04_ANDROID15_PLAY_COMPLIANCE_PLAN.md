@@ -158,16 +158,16 @@ After all fixes are applied, test the following on both Android 14 and Android 1
 
 | Screen | Android 14 (gesture nav) | Android 14 (3-button nav) | Android 15 (gesture nav) | Android 15 (3-button nav) |
 |---|---|---|---|---|
-| Home — AppBar not cut off by status bar | ✓ | ✓ | ? | ? |
-| Home — "STOP ALL ROBOTS" button not behind nav bar | ✓ | ✓ | ? | ? |
-| Home — Timer button not behind nav bar | ✓ | ✓ | ? | ? |
-| Settings — ListView scrolls to bottom without cutoff | ✓ | ✓ | ? | ? |
-| Module settings — Scan button visible | ✓ | ✓ | ? | ? |
-| QR scanner — Bottom info bar visible | ✓ | ✓ | ? | ? |
-| QR scanner — Camera fills screen correctly | ✓ | ✓ | ? | ? |
-| Dialogs (exit, switch teams) — Buttons visible | ✓ | ✓ | ? | ? |
-| Team bottom sheet — Content not hidden | ✓ | ✓ | ? | ? |
-| Robot button double-tap still works (not accidentally triggered by inset change) | ✓ | ✓ | ? | ? |
+| Home — AppBar not cut off by status bar | ✓ | ✓ | ✓ | ✓ |
+| Home — "STOP ALL ROBOTS" button not behind nav bar | ✓ | ✓ | ✓ | ✓ |
+| Home — Timer button not behind nav bar | ✓ | ✓ | ✓ | ✓ |
+| Settings — ListView scrolls to bottom without cutoff | ✓ | ✓ | ✓ | ✓ |
+| Module settings — Scan button visible | ✓ | ✓ | ✓ | ✓ |
+| QR scanner — Bottom info bar visible | ✓ | ✓ | ✓ | ✓ |
+| QR scanner — Camera fills screen correctly | ✓ | ✓ | ✓ | ✓ |
+| Dialogs (exit, switch teams) — Buttons visible | ✓ | ✓ | ✓ | ✓ |
+| Team bottom sheet — Content not hidden | ✓ | ✓ | ✓ | ✓ |
+| Robot button double-tap still works (not accidentally triggered by inset change) | ✓ | ✓ | ✓ | ✓ |
 
 ---
 
@@ -177,7 +177,7 @@ After all fixes are applied, test the following on both Android 14 and Android 1
 - [ ] Google Play Console shows 0 warnings for 16 kB page size
 - [ ] Google Play Console shows 0 warnings for edge-to-edge
 - [ ] `zipalign -c -v -p 16 app-release.apk` exits 0 (all .so files aligned)
-- [ ] All manual test matrix rows pass on Android 15 device or emulator with 16 kB page size enabled
+- [x] All manual test matrix rows pass on Android 15 device or emulator with 16 kB page size enabled — **confirmed 2026-05-24, PLAY-06**
 - [ ] No regression in robot START/STOP latency (test: start all robots, verify simultaneous movement)
 - [ ] Flutter analyze returns 0 errors after changes
 

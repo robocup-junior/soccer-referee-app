@@ -65,117 +65,120 @@ class Home extends StatelessWidget {
             ),
           ],
         ),
-        body: Padding(
-          padding: const EdgeInsets.all(8.0),
-          child: Column(
-            children: <Widget>[
-              Expanded(
-                flex: 6,
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Expanded(
-                      flex: 1,
-                      child: buildTeamContainer(game.teams[0], game),
-                    ),
-                    Expanded(
-                      flex: 1,
-                      child: Column(
-                        children: [
-                          Text(
-                              '${(game.remainingTime ~/ 60).toString().padLeft(2, '0')}:${(game.remainingTime % 60).toString().padLeft(2, '0')}',
-                              style: const TextStyle(fontSize: 40.0)),
-                          Text(game.gameStageString),
-                          Container(
-                            width: double.infinity,
-                            child: GestureDetector(
-                              onDoubleTap: () {
-                                game.toggleTimer();
-                              },
-                              child: ElevatedButton(
-                                onPressed: () {},
-                                style: ElevatedButton.styleFrom(
-                                  //minimumSize: const Size(120, 50),
-                                  backgroundColor: (game.isGameRunning
-                                      ? (game.isTimerRunning
-                                          ? AppColors.red
-                                          : AppColors.green)
-                                      : AppColors.green),
+        body: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.all(8.0),
+            child: Column(
+              children: <Widget>[
+                Expanded(
+                  flex: 6,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Expanded(
+                        flex: 1,
+                        child: buildTeamContainer(game.teams[0], game),
+                      ),
+                      Expanded(
+                        flex: 1,
+                        child: Column(
+                          children: [
+                            Text(
+                                '${(game.remainingTime ~/ 60).toString().padLeft(2, '0')}:${(game.remainingTime % 60).toString().padLeft(2, '0')}',
+                                style: const TextStyle(fontSize: 40.0)),
+                            Text(game.gameStageString),
+                            Container(
+                              width: double.infinity,
+                              child: GestureDetector(
+                                onDoubleTap: () {
+                                  game.toggleTimer();
+                                },
+                                child: ElevatedButton(
+                                  onPressed: () {},
+                                  style: ElevatedButton.styleFrom(
+                                    //minimumSize: const Size(120, 50),
+                                    backgroundColor: (game.isGameRunning
+                                        ? (game.isTimerRunning
+                                            ? AppColors.red
+                                            : AppColors.green)
+                                        : AppColors.green),
+                                  ),
+                                  child: Text(game.timerButtonText,
+                                      style: TextStyle(color: Colors.white)),
                                 ),
-                                child: Text(game.timerButtonText,
-                                    style: TextStyle(color: Colors.white)),
                               ),
-                            ),
-                          )
-                        ],
+                            )
+                          ],
+                        ),
                       ),
-                    ),
-                    Expanded(
-                      flex: 1,
-                      //child: buildTeamContainer(game.teams[1], game),
-                      child: buildTeamContainer(game.teams[1], game),
-                    ),
-                  ],
+                      Expanded(
+                        flex: 1,
+                        //child: buildTeamContainer(game.teams[1], game),
+                        child: buildTeamContainer(game.teams[1], game),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              Expanded(
-                flex: 20,
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        children: (game.teams[0].modules)
-                            .where((module) => module.isEnabled)
-                            .map((module) => buildModuleButton(module, game))
-                            .toList(),
+                Expanded(
+                  flex: 20,
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          children: (game.teams[0].modules)
+                              .where((module) => module.isEnabled)
+                              .map((module) => buildModuleButton(module, game))
+                              .toList(),
+                        ),
                       ),
-                    ),
-                    Expanded(
-                      child: Column(
-                        children: (game.teams[1].modules)
-                            .where((module) => module.isEnabled)
-                            .map((module) => buildModuleButton(module, game))
-                            .toList(),
+                      Expanded(
+                        child: Column(
+                          children: (game.teams[1].modules)
+                              .where((module) => module.isEnabled)
+                              .map((module) => buildModuleButton(module, game))
+                              .toList(),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
-              ),
-              Expanded(
-                flex: 4,
-                child: Container(
-                  margin: const EdgeInsets.all(4.0),
-                  width: double.infinity,
-                  //height: 70.0,
-                  child: GestureDetector(
-                    onDoubleTap: () {
-                      game.toggleAllModules();
-                    },
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor:
-                            (game.currentStage == MatchStage.fullTime
-                                ? AppColors.blue
+                Expanded(
+                  flex: 4,
+                  child: Container(
+                    margin: const EdgeInsets.all(4.0),
+                    width: double.infinity,
+                    //height: 70.0,
+                    child: GestureDetector(
+                      onDoubleTap: () {
+                        game.toggleAllModules();
+                      },
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor:
+                              (game.currentStage == MatchStage.fullTime
+                                  ? AppColors.blue
+                                  : (game.isSomeonePlaying
+                                      ? AppColors.red
+                                      : AppColors.green)),
+                          // shape: RoundedRectangleBorder(
+                          //   borderRadius: BorderRadius.circular(30.0),
+                          // )
+                        ),
+                        child: Text(
+                            game.currentStage == MatchStage.fullTime
+                                ? 'DISCONNECT ALL ROBOTS'
                                 : (game.isSomeonePlaying
-                                    ? AppColors.red
-                                    : AppColors.green)),
-                        // shape: RoundedRectangleBorder(
-                        //   borderRadius: BorderRadius.circular(30.0),
-                        // )
+                                    ? 'STOP ALL ROBOTS'
+                                    : 'START ALL ROBOTS'),
+                            style: TextStyle(color: Colors.white)),
+                        onPressed: () {},
                       ),
-                      child: Text(
-                          game.currentStage == MatchStage.fullTime
-                              ? 'DISCONNECT ALL ROBOTS'
-                              : (game.isSomeonePlaying
-                                  ? 'STOP ALL ROBOTS'
-                                  : 'START ALL ROBOTS'),
-                          style: TextStyle(color: Colors.white)),
-                      onPressed: () {},
                     ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

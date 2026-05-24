@@ -91,17 +91,20 @@ class _BarcodeScannerSimpleState extends State<BarcodeScannerSimple> {
             //scanWindow: Rect.fromCenter(center: Offset.zero, width: 500, height: 500),
 
           ),
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: Container(
+          SafeArea(
+            top: false,
+            child: Align(
               alignment: Alignment.bottomCenter,
-              height: 100,
-              color: Colors.black.withOpacity(0.85),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  Expanded(child: Center(child: _buildBarcode(_barcode))),
-                ],
+              child: Container(
+                alignment: Alignment.bottomCenter,
+                height: 100,
+                color: Colors.black.withOpacity(0.85),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    Expanded(child: Center(child: _buildBarcode(_barcode))),
+                  ],
+                ),
               ),
             ),
           ),
@@ -110,4 +113,3 @@ class _BarcodeScannerSimpleState extends State<BarcodeScannerSimple> {
     );
   }
 }
-
