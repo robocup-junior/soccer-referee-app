@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -32,7 +34,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
   bool setMacFromModule = true;
 
   bool bleIsScanning = false;
-
+  StreamSubscription<List<ScanResult>>? _scanSubscription;
 
   @override
   void initState() {
@@ -74,32 +76,40 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     setState(() {
       bleIsScanning = true;
     });
-    await FlutterBluePlus.startScan(
-      //withNames: ['RCJ-soccer_module'],
-      //withServices: [Guid('6E400002-B5A3-F393-E0A9-E50E24DCCA9E')],
-      withKeywords: ['RCJ', 'soccer', 'module'],
-      timeout: const Duration(seconds: 3),
-    );
-    FlutterBluePlus.scanResults.listen((results) {
-      for (ScanResult result in results) {
-        if (!devices.contains(result.device)) {
-          if (mounted) {
-            setState(() {
-              devices.add(result.device);
-            });
+    await _scanSubscription?.cancel();
+    _scanSubscription = null;
+
+    try {
+      await FlutterBluePlus.startScan(
+        //withNames: ['RCJ-soccer_module'],
+        //withServices: [Guid('6E400002-B5A3-F393-E0A9-E50E24DCCA9E')],
+        withKeywords: ['RCJ', 'soccer', 'module'],
+        timeout: const Duration(seconds: 3),
+      );
+      // Subscribe AFTER startScan to avoid replaying stale cached results
+      _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
+        for (ScanResult result in results) {
+          if (!devices.contains(result.device)) {
+            if (mounted) {
+              setState(() {
+                devices.add(result.device);
+              });
+            }
           }
         }
-      }
-    });
-
-    // Wait for scanning to stop
-    await FlutterBluePlus.isScanning.where((val) => val == false).first;
-
-    // Your code to execute when scanning has finished
-    if (mounted) {
-      setState(() {
-        bleIsScanning = false;
       });
+
+      // Wait for scanning to stop
+      await FlutterBluePlus.isScanning.where((val) => val == false).first;
+    } finally {
+      await _scanSubscription?.cancel();
+      _scanSubscription = null;
+
+      if (mounted) {
+        setState(() {
+          bleIsScanning = false;
+        });
+      }
     }
 
   }
@@ -125,6 +135,8 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
   @override
   void dispose() {
     //SystemChannels.textInput.invokeMethod('TextInput.hide');
+    _scanSubscription?.cancel();
+    _scanSubscription = null;
     _controller.dispose();
     FlutterBluePlus.stopScan();
     super.dispose();

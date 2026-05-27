@@ -309,6 +309,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 _selectedNumberOfPlayers = value!;
                                 widget.game.numberOfPLayers = value.values;
                               });
+                              if (value!.values >= 4) {
+                                showDialog(
+                                  context: context,
+                                  builder: (ctx) => AlertDialog(
+                                    title: const Text('Bluetooth Warning'),
+                                    content: Text(
+                                      'You selected ${value.values * 2} players. '
+                                      'This requires ${value.values * 2} simultaneous Bluetooth connections. '
+                                      'Some phones cannot support this many connections at once — '
+                                      'on those devices, some robots may fail to connect.',
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () => Navigator.of(ctx).pop(),
+                                        child: const Text('OK'),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              }
                             },
                           ),
                           SettingDropdownButton(
