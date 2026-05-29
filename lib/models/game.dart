@@ -4,6 +4,7 @@ import 'dart:async';
 import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/services/mqtt.dart';
 import 'package:rcj_scoreboard/services/match_data.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 enum MatchStage {
   firstHalf,
@@ -13,24 +14,29 @@ enum MatchStage {
 }
 
 class Game with ChangeNotifier {
+  static const String _periodTimeKey = 'game_period_time';
+  static const String _halfTimeDurationKey = 'game_halftime_duration';
+  static const String _numberOfPlayersKey = 'game_num_players';
+  static const String _penaltyTimeKey = 'game_penalty_time';
+
   String timerButtonText = 'START';
   final int _maxPlayer = 5;
   List<Team> teams = [];
-  int numberOfPLayers = 2;
+  int _numberOfPLayers = 2;
   int _remainingTime = 0;
-  int penaltyTime = 60;
-  int periodTime = 600;
-  int halfTimeDuration = 300;
+  int _penaltyTime = 60;
+  int _periodTime = 600;
+  int _halfTimeDuration = 300;
   bool _isGameRunning = false;
   bool inGame = false;
   bool isTimeRunning = false;
   int _numberOfPlaying = 0;
   MatchStage currentStage = MatchStage.firstHalf;
   Timer? _timer;
+  SharedPreferences? _prefs;
   //MQTT
   MqttService mqttService = MqttService();
   MatchDataService matchDataService = MatchDataService();
-
 
   // Callback to request showing the dialog
   void Function()? onRequestSwitchTeamOrderDialog;
@@ -45,7 +51,8 @@ class Game with ChangeNotifier {
     Module moduleA3 = Module(this, teamID, 'A3');
     Module moduleA4 = Module(this, teamID, 'A4');
     Module moduleA5 = Module(this, teamID, 'A5');
-    teams.add(Team('Team A', [moduleA1, moduleA2, moduleA3, moduleA4 ,moduleA5], teamID));
+    teams.add(Team(
+        'Team A', [moduleA1, moduleA2, moduleA3, moduleA4, moduleA5], teamID));
 
     // B team (1)
     teamID = 'B';
@@ -54,10 +61,25 @@ class Game with ChangeNotifier {
     Module moduleB3 = Module(this, teamID, 'B3');
     Module moduleB4 = Module(this, teamID, 'B4');
     Module moduleB5 = Module(this, teamID, 'B5');
-    teams.add(Team('Team B', [moduleB1, moduleB2, moduleB3, moduleB4 ,moduleB5], teamID));
-
+    teams.add(Team(
+        'Team B', [moduleB1, moduleB2, moduleB3, moduleB4, moduleB5], teamID));
 
     gameInit();
+    unawaited(_loadPrefs());
+  }
+
+  Future<void> _loadPrefs() async {
+    _prefs = await SharedPreferences.getInstance();
+    _periodTime = _prefs!.getInt(_periodTimeKey) ?? 600;
+    _halfTimeDuration = _prefs!.getInt(_halfTimeDurationKey) ?? 300;
+    _numberOfPLayers =
+        (_prefs!.getInt(_numberOfPlayersKey) ?? 2).clamp(1, _maxPlayer).toInt();
+    _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? 60;
+
+    if (!inGame) {
+      gameInit();
+    }
+    notifyListeners();
   }
 
   void gameInit() {
@@ -70,12 +92,13 @@ class Game with ChangeNotifier {
 
     stopTimer();
 
-
     // enable or disable players based on player number;
     for (var team in teams) {
       team.score = 0;
       for (var i = 0; i < _maxPlayer; i++) {
-        i < numberOfPLayers ? team.modules[i].enable() : team.modules[i].disable();
+        i < numberOfPLayers
+            ? team.modules[i].enable()
+            : team.modules[i].disable();
         team.modules[i].init();
       }
     }
@@ -90,8 +113,6 @@ class Game with ChangeNotifier {
   }
 
   void gameRefresh() {
-
-
     // refresh all mqtt values
     mqttService.publishGameState(currentStage);
     mqttService.publishTime(_remainingTime);
@@ -100,13 +121,13 @@ class Game with ChangeNotifier {
     mqttService.publishScore(teams);
   }
 
-
   // Timer
 
   void startTimer() {
     _timer?.cancel();
     inGame = true;
-    if (currentStage == MatchStage.firstHalf || currentStage == MatchStage.secondHalf) {
+    if (currentStage == MatchStage.firstHalf ||
+        currentStage == MatchStage.secondHalf) {
       _isGameRunning = true;
     }
     isTimeRunning = true;
@@ -115,7 +136,7 @@ class Game with ChangeNotifier {
       if (_remainingTime > 0) {
         _remainingTime--;
         notifyAllModulesTimer();
-        
+
         mqttService.publishTime(_remainingTime);
       }
 
@@ -162,7 +183,8 @@ class Game with ChangeNotifier {
   }
 
   void toggleTimer() {
-    if (currentStage == MatchStage.firstHalf || currentStage == MatchStage.secondHalf) {
+    if (currentStage == MatchStage.firstHalf ||
+        currentStage == MatchStage.secondHalf) {
       if (_isGameRunning) {
         stopTimer();
         timerButtonText = 'START';
@@ -181,7 +203,7 @@ class Game with ChangeNotifier {
       _remainingTime = periodTime;
       stopAll(true, force: true);
       timerButtonText = 'START';
-      
+
       mqttService.publishGameState(currentStage);
       mqttService.publishTime(_remainingTime);
 
@@ -194,7 +216,6 @@ class Game with ChangeNotifier {
       notifyModulesScore();
     }
   }
-
 
   void toggleTeamOrder() {
     teams = teams.reversed.toList();
@@ -213,7 +234,9 @@ class Game with ChangeNotifier {
     } else if (_numberOfPlaying > 0) {
       stopAll(true);
     } else {
-      if (!_isGameRunning && (currentStage == MatchStage.firstHalf || currentStage == MatchStage.secondHalf)) {
+      if (!_isGameRunning &&
+          (currentStage == MatchStage.firstHalf ||
+              currentStage == MatchStage.secondHalf)) {
         startTimer();
         timerButtonText = 'STOP';
       }
@@ -223,12 +246,12 @@ class Game with ChangeNotifier {
 
   void notifyAllModulesTimer() {
     for (var team in teams) {
-      for (var module in team.modules.where((module) => module.isEnabled && module.state == ModuleState.damage)) {
+      for (var module in team.modules.where(
+          (module) => module.isEnabled && module.state == ModuleState.damage)) {
         module.notifyTimer();
       }
     }
   }
-
 
   void stopTimer() {
     _isGameRunning = false;
@@ -236,8 +259,6 @@ class Game with ChangeNotifier {
     _timer?.cancel();
     notifyListeners();
   }
-
-
 
   void playAll(bool removeDamage) async {
     for (var team in teams) {
@@ -247,7 +268,6 @@ class Game with ChangeNotifier {
         } else {
           module.playOrDamageAll();
         }
-
       }
     }
     notifyListeners();
@@ -264,7 +284,8 @@ class Game with ChangeNotifier {
 
   void disconnectAll() {
     for (var team in teams) {
-      for (var module in team.modules.where((module) => module.isEnabled && module.isConnected)) {
+      for (var module in team.modules
+          .where((module) => module.isEnabled && module.isConnected)) {
         module.bleDisconnect();
       }
     }
@@ -296,23 +317,25 @@ class Game with ChangeNotifier {
 
   void halfTimeSyncTimeAll() {
     for (var team in teams) {
-      for (var module in team.modules.where((module) => module.isEnabled && module.isConnected)) {
+      for (var module in team.modules
+          .where((module) => module.isEnabled && module.isConnected)) {
         module.halfTimeSyncTime();
       }
     }
   }
 
-int getScore(String team, {bool oppositeTeam = false}) {
-  final foundTeam = teams.firstWhere(
-    (t) => oppositeTeam ? t.id != team : t.id == team,
-    orElse: () => throw Exception('Team not found'),
-  );
-  return foundTeam.score;
-}
+  int getScore(String team, {bool oppositeTeam = false}) {
+    final foundTeam = teams.firstWhere(
+      (t) => oppositeTeam ? t.id != team : t.id == team,
+      orElse: () => throw Exception('Team not found'),
+    );
+    return foundTeam.score;
+  }
 
   void notifyModulesScore() {
     for (var team in teams) {
-      for (var module in team.modules.where((module) => module.isEnabled && module.isConnected)) {
+      for (var module in team.modules
+          .where((module) => module.isEnabled && module.isConnected)) {
         module.bleSendScore();
         print('score sent');
       }
@@ -322,12 +345,12 @@ int getScore(String team, {bool oppositeTeam = false}) {
     mqttService.publishScore(teams);
   }
 
-
   void changeNumberOfPlaying(int add) {
     _numberOfPlaying += add;
 
     if (_numberOfPlaying < 0) _numberOfPlaying = 0;
-    if (_numberOfPlaying > numberOfPLayers*2) _numberOfPlaying = numberOfPLayers*2;
+    if (_numberOfPlaying > numberOfPLayers * 2)
+      _numberOfPlaying = numberOfPLayers * 2;
 
     if (_numberOfPlaying < 2) notifyListeners();
   }
@@ -364,6 +387,30 @@ int getScore(String team, {bool oppositeTeam = false}) {
     // teams[1].name = 'Team B';
   }
 
+  int get periodTime => _periodTime;
+  set periodTime(int value) {
+    _periodTime = value;
+    _prefs?.setInt(_periodTimeKey, value);
+  }
+
+  int get halfTimeDuration => _halfTimeDuration;
+  set halfTimeDuration(int value) {
+    _halfTimeDuration = value;
+    _prefs?.setInt(_halfTimeDurationKey, value);
+  }
+
+  int get numberOfPLayers => _numberOfPLayers;
+  set numberOfPLayers(int value) {
+    _numberOfPLayers = value;
+    _prefs?.setInt(_numberOfPlayersKey, value);
+  }
+
+  int get penaltyTime => _penaltyTime;
+  set penaltyTime(int value) {
+    _penaltyTime = value;
+    _prefs?.setInt(_penaltyTimeKey, value);
+  }
+
   int get remainingTime => _remainingTime;
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;
   bool get isTimerRunning => isTimeRunning;
@@ -382,7 +429,7 @@ int getScore(String team, {bool oppositeTeam = false}) {
   }
 
   void loadMatchData() async {
-   var match = await matchDataService.loadMatch();
+    var match = await matchDataService.loadMatch();
     notifyListeners();
 
     if (match != null) {
@@ -391,7 +438,6 @@ int getScore(String team, {bool oppositeTeam = false}) {
       mqttService.topic_field = match.field;
       mqttService.publishTeamNames(teams);
       mqttService.publishTeam(teams);
-
     }
   }
 
@@ -402,7 +448,4 @@ int getScore(String team, {bool oppositeTeam = false}) {
     // mqttService.publishTeam(teams);
     // mqttService.publishScore(teams);
   }
-
 }
-
-
