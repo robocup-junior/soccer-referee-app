@@ -408,14 +408,35 @@ flutter analyze
 **Implementation**:
 1. Add `import 'package:shared_preferences/shared_preferences.dart';` to `game.dart`
 2. Add a `SharedPreferences? _prefs;` field to `Game`
-3. Add `Future<void> _loadPrefs()` method that reads the 4 values from SharedPreferences and sets the fields, then calls `gameInit()` if not already in game
-4. Call `_loadPrefs()` at the end of the `Game()` constructor
-5. Add `_savePrefs()` calls in setters for `periodTime`, `halfTimeDuration`, `numberOfPLayers`, `penaltyTime` (these are currently just public fields — they need to become setters)
+3. Convert the four public fields into private backing fields with getters and
+   setters. The setter writes the new value through to SharedPreferences:
+   ```dart
+   int _periodTime = 600;
+   int get periodTime => _periodTime;
+   set periodTime(int v) { _periodTime = v; _prefs?.setInt('game_period_time', v); }
+   ```
+   Do the same shape for `halfTimeDuration`, `numberOfPLayers`, `penaltyTime`.
+   NOTE: `lib/screens/settings.dart` already assigns these fields directly (e.g.
+   `widget.game.periodTime = value.values;`) — turning them into setters must keep
+   those assignments working unchanged.
+4. Add `Future<void> _loadPrefs()` method that:
+   - does `_prefs = await SharedPreferences.getInstance();`
+   - reads the 4 keys with default fallbacks (see keys below)
+   - **assigns the read values to the private backing fields directly (NOT through
+     the setters)** — otherwise you immediately write the just-read value back to
+     disk.
+   - **clamps `game_num_players` to the range 1–5 on load** — an out-of-range
+     stored value would break the module enable loop in `gameInit()`.
+   - if not currently in a running game (`inGame == false`), calls `gameInit()` so
+     the loaded values take effect (e.g. `_remainingTime` picks up `periodTime`)
+   - calls `notifyListeners();`
+5. Call `_loadPrefs()` **unawaited** at the end of the `Game()` constructor (the
+   constructor stays synchronous; defaults hold until prefs load, then refresh).
 
 SharedPreferences keys to use:
 - `game_period_time` (int, default: 600)
 - `game_halftime_duration` (int, default: 300)
-- `game_num_players` (int, default: 2)
+- `game_num_players` (int, default: 2, clamp loaded value to 1–5)
 - `game_penalty_time` (int, default: 60)
 
 **Acceptance criteria**:
@@ -427,9 +448,24 @@ flutter analyze
 grep -n "SharedPreferences\|_prefs\|game_period" lib/models/game.dart
 ```
 
-**Manual test**: Set game duration to 2 mins, kill app, restart, verify 2 mins is still selected.
+**Manual test**: Set game duration to 2 mins, kill app, restart, verify 2 mins is still selected. Repeat sanity check for number of players, halftime, and penalty time.
 
 **Risks**: Medium. `Game` constructor is synchronous; SharedPreferences is async. The fields must have sensible defaults until prefs load. Use `late` with defaults or a `FutureBuilder` approach. Simplest: keep defaults in field initializers, call `_loadPrefs()` async from constructor (unawaited), then call `gameInit()` again once loaded.
+
+**Required handoff report**: After finishing, write a report to
+`docs/ai/handoff/AUDIT-FIX-03_REPORT.md` (create the `handoff/` folder if needed)
+containing:
+- **Summary**: one paragraph on what changed.
+- **Files changed**: list each file + a one-line description.
+- **Deviations**: anything you did differently from this spec and why (write
+  "none" if you followed it exactly).
+- **Verification results**: paste the actual output of `flutter analyze` and the
+  `grep` command above.
+- **Manual test status**: state whether you ran the kill/restart test on a device
+  or emulator; if you could not, say so explicitly.
+- **Open questions / risks**: anything the reviewer should double-check.
+Keep it concise and factual. Do not include secrets (MQTT credentials, signing
+keys). This file is how the reviewing agent verifies your work.
 
 ---
 
