@@ -107,22 +107,13 @@ class Game with ChangeNotifier {
     }
     notifyListeners();
 
-    // mqtt publish default values
-    mqttService.publishGameState(currentStage);
-    mqttService.publishTime(_remainingTime);
-    mqttService.publishTeamNames(teams);
-    mqttService.publishTeam(teams);
-    mqttService.publishScore(teams);
-    _publishScoreToBridge();
+    // publish default values to every sink (mqtt + bridge)
+    _broadcastFullState();
   }
 
   void gameRefresh() {
-    // refresh all mqtt values
-    mqttService.publishGameState(currentStage);
-    mqttService.publishTime(_remainingTime);
-    mqttService.publishTeamNames(teams);
-    mqttService.publishTeam(teams);
-    mqttService.publishScore(teams);
+    // refresh all values on every sink (mqtt + bridge)
+    _broadcastFullState();
   }
 
   // Timer
@@ -174,8 +165,7 @@ class Game with ChangeNotifier {
             debugPrint('unknown match stage');
         }
 
-        mqttService.publishGameState(currentStage);
-        mqttService.publishTime(_remainingTime);
+        _broadcastStageAndTime();
       }
 
       if (currentStage == MatchStage.halfTime && _remainingTime % 30 == 0) {
@@ -208,8 +198,7 @@ class Game with ChangeNotifier {
       stopAll(true, force: true);
       timerButtonText = 'START';
 
-      mqttService.publishGameState(currentStage);
-      mqttService.publishTime(_remainingTime);
+      _broadcastStageAndTime();
 
       notifyListeners();
     } else {
@@ -226,12 +215,10 @@ class Game with ChangeNotifier {
 
     notifyListeners();
 
-    mqttService.publishTeamNames(teams);
-    mqttService.publishTeam(teams);
-    mqttService.publishScore(teams);
-    // Push the swapped score+color to the scoreboard immediately, otherwise the
-    // bridge only reflects the new sides on the next goal.
-    _publishScoreToBridge();
+    // Push swapped names/team/score+color to every sink immediately, otherwise
+    // the bridge only reflects the new sides on the next goal.
+    _broadcastTeamInfo();
+    _broadcastScore();
   }
 
   /// Toggles all modules based on the current game stage.
@@ -347,10 +334,7 @@ class Game with ChangeNotifier {
         debugPrint('score sent');
       }
     }
-    // mqtt publish team scores
-    // mqtt publish default values
-    mqttService.publishScore(teams);
-    _publishScoreToBridge();
+    _broadcastScore();
   }
 
   String _teamColorHex(Team team) => team.id == 'A' ? '77FF00' : 'FF00FF';
@@ -364,6 +348,31 @@ class Game with ChangeNotifier {
         BridgeTopics.team1Color, _teamColorHex(teams[0]));
     bleBridgeService.publishTopic(
         BridgeTopics.team2Color, _teamColorHex(teams[1]));
+  }
+
+  // ---- Publish fan-out helpers ----
+  // Group every sink (MQTT + BLE bridge) per event so a sink can't be forgotten
+  // at one call site (which is exactly how the team-swap-to-bridge bug slipped in).
+
+  void _broadcastTeamInfo() {
+    mqttService.publishTeamNames(teams);
+    mqttService.publishTeam(teams);
+  }
+
+  void _broadcastScore() {
+    mqttService.publishScore(teams);
+    _publishScoreToBridge();
+  }
+
+  void _broadcastStageAndTime() {
+    mqttService.publishGameState(currentStage);
+    mqttService.publishTime(_remainingTime);
+  }
+
+  void _broadcastFullState() {
+    _broadcastStageAndTime();
+    _broadcastTeamInfo();
+    _broadcastScore();
   }
 
   void changeNumberOfPlaying(int add) {
@@ -458,8 +467,7 @@ class Game with ChangeNotifier {
       teams[0].name = match.team1;
       teams[1].name = match.team2;
       mqttService.topic_field = match.field;
-      mqttService.publishTeamNames(teams);
-      mqttService.publishTeam(teams);
+      _broadcastTeamInfo();
     }
   }
 
