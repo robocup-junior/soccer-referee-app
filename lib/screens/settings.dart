@@ -465,12 +465,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('Version: 0.9.7',
+                              child: Text('AI co-authors: Claude (Anthropic) '
+                                  '& Codex (OpenAI)',
                                   style: TextStyle(fontSize: 14)),
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('Year: 2025',
+                              child: Text('Version: 0.9.8',
+                                  style: TextStyle(fontSize: 14)),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.symmetric(vertical: 4.0),
+                              child: Text('Year: 2026',
                                   style: TextStyle(fontSize: 14)),
                             ),
                             Padding(
