@@ -473,15 +473,61 @@ keys). This file is how the reviewing agent verifies your work.
 
 Complete tasks in order. Read `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md` before starting.
 
+### Required handoff report (applies to EVERY BRIDGE task)
+
+After finishing each BRIDGE-NN task, append a section to a single cumulative
+report file `docs/ai/handoff/BRIDGE_REPORT.md` (create the `handoff/` folder and
+the file if they do not exist). Each task's section must contain:
+- **Task ID + heading** (e.g. `## BRIDGE-02`)
+- **Summary**: one paragraph on what changed.
+- **Files changed/created**: list each file + a one-line description.
+- **Deviations**: anything done differently from the spec and why ("none" if exact).
+- **Verification results**: paste the ACTUAL output of that task's verification
+  commands (`flutter analyze`, `flutter test`, `grep`, etc.).
+- **Manual test status**: state whether any required manual/on-device test was
+  run; if it could not be run in the environment, say so explicitly.
+- **Open questions / risks**: anything the reviewer should double-check.
+
+Keep it concise and factual. Never paste secrets (MQTT credentials, signing keys,
+the default HiveMQ server/username from mqtt.dart). This file is how the reviewing
+agent (Claude Code) verifies each step before it is committed. Do NOT mark a task
+done without its report section.
+
 ---
 
-### BRIDGE-01 — Create BridgeMessage model
+The BRIDGE work is organized into **3 milestones**. Each milestone ends in a
+**TEST GATE** — a concrete on-device check on the Pixel 10. **Do not start the
+next milestone until the current milestone's test gate passes.** Hand Codex one
+milestone at a time; review its handoff-report section(s), run the gate, then
+proceed.
 
-**Goal**: Define the `BridgeMessage` data class and protocol constants.
+Task order is deliberately NOT the old numeric order: the connection pipe (UI +
+service) is built and proven FIRST, then data is pushed through it.
+
+```
+Milestone A (connect):   BRIDGE-01 → 02a → 02b → 05 → 06   → GATE A
+Milestone B (send data): BRIDGE-03 → 04                    → GATE B
+Milestone C (polish):    BRIDGE-07 → 08 → 09               → GATE C
+```
+
+---
+
+## MILESTONE A — Build the pipe and prove a connection
+
+Goal: be able to enter a bridge MAC (typed or QR), tap Connect, and see
+"Connected" in Settings. **No data sending yet.**
+
+---
+
+### BRIDGE-01 — Create bridge_message.dart (topic/value framing)
+
+**Goal**: Define the BLE bridge protocol as **MQTT-over-BLE**: each message is a
+`topic\x00value` UTF-8 byte frame (NOT a binary typed protocol). See the
+CONFIRMED ARCHITECTURE box at the top of `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md`.
 
 **Context files to read first**:
-- `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md` → Protocol proposal section
-- `lib/models/game.dart` (MatchStage enum for reference)
+- `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md` → CONFIRMED ARCHITECTURE box (top)
+- `lib/services/mqtt.dart` → `publishCMMessage` / `publishScore` (topic names to mirror)
 
 **Target files to create**:
 - `lib/models/bridge_message.dart`
@@ -491,83 +537,83 @@ Complete tasks in order. Read `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md` before sta
 **Implementation**:
 Create `lib/models/bridge_message.dart` with:
 ```dart
-// PROPOSED protocol — confirm UUIDs with bridge hardware before finalizing
+// Bridge protocol: "MQTT-over-BLE". Each message is a (topic, value) pair,
+// framed as UTF-8 bytes:  <topic> 0x00 <value>
+// The bridge forwards every frame verbatim to RS485/RPi/MQTT, and additionally
+// parses a few known topics (scores, colors) to drive its own LED display.
 
-enum BridgeMessageType {
-  scoreUpdate,    // 0x10
-  gameState,      // 0x11
-  matchInfo,      // 0x12
-  event,          // 0x14
-}
+import 'dart:convert';
 
-enum BridgeEventType {
-  goalScored,       // 0x01
-  penaltyStarted,   // 0x02
-  penaltyEnded,     // 0x03
-  halfTimeStart,    // 0x04
-  gameOver,         // 0x05
-}
-
-const int kBridgeProtocolVersion = 0x01;
-
-// Same NUS UUIDs as robot modules — bridge is distinguished by MAC address, not service UUID
+// Same Nordic UART Service UUIDs as robot modules. The bridge is distinguished
+// from robot modules ONLY by its MAC address, not by service UUID.
 const String kBridgeServiceUUID = '6E400001-B5A3-F393-E0A9-E50E24DCCA9E';
-const String kBridgeTxCharUUID  = '6E400002-B5A3-F393-E0A9-E50E24DCCA9E';
-const String kBridgeRxCharUUID  = '6E400003-B5A3-F393-E0A9-E50E24DCCA9E';
+const String kBridgeTxCharUUID  = '6E400002-B5A3-F393-E0A9-E50E24DCCA9E'; // phone writes
+const String kBridgeRxCharUUID  = '6E400003-B5A3-F393-E0A9-E50E24DCCA9E'; // future use
+
+// Separator between topic and value inside a frame.
+const int kBridgeFieldSeparator = 0x00;
+
+// Known topic names (mirror lib/services/mqtt.dart). Iteration 1 uses only the
+// score + color topics; the rest are reserved for iteration 2.
+class BridgeTopics {
+  static const String team1Score = 'team1_score';
+  static const String team2Score = 'team2_score';
+  static const String team1Color = 'team1_color'; // RGB hex, e.g. "77FF00"
+  static const String team2Color = 'team2_color';
+  // Reserved (iteration 2): team1_name, team2_name, team1_id, team2_id,
+  // game_stage, time, field, and timer sync topics.
+}
 
 class BridgeMessage {
-  final BridgeMessageType type;
-  final List<int> payload;
-  final int seqNum;  // 0-255, set by BleBridgeService
-  final bool deduplicatable;  // true = latest replaces older (score/state); false = preserve all (events)
+  final String topic;
+  final String value;
 
-  BridgeMessage({
-    required this.type,
-    required this.payload,
-    this.seqNum = 0,
-    required this.deduplicatable,
-  });
+  const BridgeMessage(this.topic, this.value);
 
+  /// Encodes the message as `<topic> 0x00 <value>` in UTF-8 bytes.
   List<int> toBytes() {
-    return [kBridgeProtocolVersion, type.index, seqNum] + payload;
+    return [
+      ...utf8.encode(topic),
+      kBridgeFieldSeparator,
+      ...utf8.encode(value),
+    ];
   }
 
-  static BridgeMessage scoreUpdate(int scoreA, int scoreB) => BridgeMessage(
-    type: BridgeMessageType.scoreUpdate,
-    payload: [scoreA, scoreB],
-    deduplicatable: true,
-  );
+  @override
+  bool operator ==(Object other) =>
+      other is BridgeMessage && other.topic == topic && other.value == value;
 
-  static BridgeMessage gameState(int stageIndex, int remainingSeconds) => BridgeMessage(
-    type: BridgeMessageType.gameState,
-    payload: [stageIndex, (remainingSeconds >> 8) & 0xFF, remainingSeconds & 0xFF],
-    deduplicatable: true,
-  );
+  @override
+  int get hashCode => Object.hash(topic, value);
+
+  @override
+  String toString() => 'BridgeMessage($topic=$value)';
 }
 ```
 
 **Acceptance criteria**:
-- `flutter analyze` returns 0 errors/warnings on the new file
-- `grep -l "BridgeMessage" lib/models/bridge_message.dart` finds the file
+- `flutter analyze lib/models/bridge_message.dart` returns 0 errors/warnings
+- `toBytes()` for `BridgeMessage('team1_score', '3')` yields the UTF-8 bytes of
+  `team1_score`, then `0x00`, then `0x33`
 
 **Verification commands**:
 ```bash
 flutter analyze lib/models/bridge_message.dart
 ```
 
-**Risks**: Very low. New file, no dependencies yet.
+**Risks**: Very low. New file, no dependencies.
 
 ---
 
-### BRIDGE-02 — Create BleBridgeService skeleton
+### BRIDGE-02a — BleBridgeService skeleton (state + settings, NO BLE yet)
 
-**Goal**: Create the `BleBridgeService` class with connection management and settings persistence, but without the message queue yet.
+**Goal**: Create `BleBridgeService` with its state notifiers and SharedPreferences
+persistence ONLY. No BLE connection logic yet — that is BRIDGE-02b. This isolates
+the simple, testable persistence/state code from the trickier BLE code.
 
 **Context files to read first**:
-- `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md`
-- `lib/services/mqtt.dart` (follow its patterns for SharedPreferences + ValueNotifier)
-- `lib/models/module.dart` (follow BLE connection patterns)
-- `lib/models/bridge_message.dart` (from BRIDGE-01)
+- `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md` → CONFIRMED ARCHITECTURE box
+- `lib/services/mqtt.dart` (copy its SharedPreferences + ValueNotifier patterns exactly)
 
 **Target files to create**:
 - `lib/services/ble_bridge_service.dart`
@@ -576,222 +622,176 @@ flutter analyze lib/models/bridge_message.dart
 
 **Implementation**:
 Create `lib/services/ble_bridge_service.dart` with:
-- `BleBridgeService` extending `ChangeNotifier`
-- `BridgeConnectionState` enum: `{disabled, disconnected, connecting, connected, error}`
-- `ValueNotifier<BridgeConnectionState> connectionStateNotifier`
-- `ValueNotifier<int> queueDepthNotifier`
-- SharedPreferences fields + `loadPreferences()`: keys `bridge_enabled`, `bridge_mac_address`, `bridge_auto_connect`
-- `connect()` / `disconnect()` async methods following same pattern as module.dart's `bleConnect()`
-- Service discovery using `kBridgeServiceUUID` / `kBridgeTxCharUUID` / `kBridgeRxCharUUID` from `bridge_message.dart` (same NUS UUIDs as robot modules — bridge identified by MAC, not UUID)
-- Connection state subscription (same pattern as `_registerBleSubscriber` in module.dart)
-- Stub `publishScore(int a, int b)` / `publishGameState(int stage, int secs)` that do nothing yet (queue will be added in BRIDGE-03)
-- `dispose()` that disconnects and closes streams
+- `enum BridgeConnectionState { disabled, disconnected, connecting, connected, error }`
+- `class BleBridgeService extends ChangeNotifier`
+- `final ValueNotifier<BridgeConnectionState> connectionStateNotifier =
+   ValueNotifier(BridgeConnectionState.disconnected);`
+- `final ValueNotifier<int> queueDepthNotifier = ValueNotifier(0);` (used later)
+- Persisted settings with getters/setters that write to SharedPreferences
+  (follow mqtt.dart exactly), keys:
+  - `bridge_enabled` (bool) → `isEnabled`
+  - `bridge_mac_address` (String) → `bridgeMacAddress`
+  - `bridge_auto_connect` (bool) → `autoConnect`
+- `Future<void> loadPreferences()` (called from constructor, same as MqttService)
+- `bool get isConnected => connectionStateNotifier.value == BridgeConnectionState.connected;`
+- Stub methods that BRIDGE-02b/03 will fill in (declare them now so the file
+  compiles and the type is stable):
+  - `Future<void> connect() async {}`
+  - `Future<void> disconnect() async {}`
+  - `void publishTopic(String topic, String value) {}`
+- `dispose()` that disposes the notifiers
 
 **Acceptance criteria**:
-- `flutter analyze` returns 0 errors
-- `BleBridgeService` can be instantiated without crashing: `BleBridgeService b = BleBridgeService();`
+- `flutter analyze lib/services/ble_bridge_service.dart` returns 0 errors
+- `BleBridgeService()` instantiates without crashing
+- Settings persist: setting `bridgeMacAddress` then reading it back returns the value
 
 **Verification commands**:
 ```bash
 flutter analyze lib/services/ble_bridge_service.dart
+grep -n "bridge_enabled\|bridge_mac_address\|bridge_auto_connect\|BridgeConnectionState" lib/services/ble_bridge_service.dart
 ```
 
-**Risks**: Low. New file with no integration yet.
+**Risks**: Very low. No BLE, pure state + prefs.
 
 ---
 
-### BRIDGE-03 — Add message queue and ACK logic to BleBridgeService
+### BRIDGE-02b — Add BLE connect/disconnect/discover/MTU to BleBridgeService
 
-**Goal**: Implement the async FIFO queue, sequence numbers, and retry logic using write-with-response for delivery confirmation (no separate ACK channel needed).
+**Goal**: Implement the actual BLE connection logic in `BleBridgeService`:
+connect to the configured MAC, request a larger MTU, discover the NUS service,
+locate the TX characteristic, and track connection state. Still NO message queue
+(that is BRIDGE-03).
 
 **Context files to read first**:
-- `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md` → "BleBridgeService — design" and "Why write-with-response is sufficient"
-- `lib/services/ble_bridge_service.dart` (from BRIDGE-02)
-- `lib/models/bridge_message.dart` (from BRIDGE-01)
+- `lib/models/module.dart` (copy `bleConnect`, `_registerBleSubscriber`,
+  `bleCheckServicesAndGetCharacteristics` patterns)
+- `lib/services/ble_bridge_service.dart` (from BRIDGE-02a)
+- `lib/models/bridge_message.dart` (UUID constants from BRIDGE-01)
 
 **Target files to modify**:
 - `lib/services/ble_bridge_service.dart`
 
-**Files NOT to touch**: All existing files except ble_bridge_service.dart.
+**Files NOT to touch**: All existing files except `ble_bridge_service.dart`.
+In particular do NOT modify `lib/models/module.dart` — copy patterns, don't share code.
 
 **Implementation**:
-Add to `BleBridgeService`:
-1. `final Queue<BridgeMessage> _queue = Queue<BridgeMessage>();`
-2. `int _nextSeqNum = 0;`
-3. `bool _sendInProgress = false;`
+Add fields:
+- `BluetoothDevice? _device;`
+- `BluetoothCharacteristic? _txChar;`
+- `StreamSubscription<BluetoothConnectionState>? _connSub;`
 
-Implement `_enqueue(BridgeMessage msg)`:
-- For `deduplicatable=true` messages: remove any existing same-type message in queue, then add new one
-- For `deduplicatable=false` events: always append
-- Update `queueDepthNotifier.value`
-- If not already in progress, call `_processQueue()`
+Implement `connect()`:
+- guard: if `bridgeMacAddress` is empty, return (optionally set `error`)
+- `connectionStateNotifier.value = BridgeConnectionState.connecting;`
+- `_device = BluetoothDevice.fromId(bridgeMacAddress);`
+- register `_connSub` on `_device!.connectionState` (same shape as module.dart's
+  `_registerBleSubscriber`):
+  - on `connected`: discover services, find `kBridgeServiceUUID`, get the
+    `kBridgeTxCharUUID` characteristic into `_txChar`, set state `connected`,
+    then call `_processQueue()` (the method exists as a stub until BRIDGE-03)
+  - on `disconnected`: `_txChar = null;` set state `disconnected`
+- request a larger MTU so longer values (iteration 2) are not fragmented:
+  connect with `autoConnect: true` and then `await _device!.requestMtu(247);`
+  after the connection is established (or pass mtu on connect if the flutter_blue_plus
+  version supports it). Use `autoConnect: true` for reliable reconnect in harsh
+  field conditions, mirroring robot modules.
+- wrap in try/catch; on error set state `error` (do NOT rethrow)
 
-Implement `_processQueue()`:
-```dart
-Future<void> _processQueue() async {
-  if (_sendInProgress || _queue.isEmpty || !isConnected) return;
-  _sendInProgress = true;
-  while (_queue.isNotEmpty) {
-    final msg = _queue.first;
-    final success = await _sendWithRetry(msg);
-    // success or not — remove from queue and continue
-    _queue.removeFirst();
-    queueDepthNotifier.value = _queue.length;
-  }
-  _sendInProgress = false;
-}
-```
+Implement `disconnect()`:
+- `await _connSub?.cancel();` `_connSub = null;`
+- `await _device?.disconnect();`
+- `_txChar = null;` set state `disconnected`
 
-Implement `_sendWithRetry(BridgeMessage msg, {int maxRetries = 3})`:
-```dart
-Future<bool> _sendWithRetry(BridgeMessage msg, {int maxRetries = 3}) async {
-  final bytes = msg.copyWith(seqNum: _nextSeqNum).toBytes();
-  _nextSeqNum = (_nextSeqNum + 1) % 256;
-  for (int attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      // write-with-response: ATT Write Response confirms delivery to bridge BLE stack
-      await _txChar!.write(bytes, withoutResponse: false, timeout: 5);
-      return true;
-    } catch (e) {
-      if (attempt == maxRetries - 1) {
-        debugPrint('BleBridge: send failed after $maxRetries attempts: $e');
-      }
-    }
-  }
-  return false;
-}
-```
-
-Implement the public publish methods to call `_enqueue`:
-```dart
-void publishScore(int a, int b) => _enqueue(BridgeMessage.scoreUpdate(a, b));
-void publishGameState(int stageIndex, int remainingSeconds) =>
-    _enqueue(BridgeMessage.gameState(stageIndex, remainingSeconds));
-```
+Update `dispose()` to cancel `_connSub` and disconnect.
 
 **Acceptance criteria**:
-- `flutter analyze` returns 0 errors
-- No `Completer` or application-level ACK parsing in the file
-- `_sendWithRetry` uses `withoutResponse: false` (write-with-response)
+- `flutter analyze lib/services/ble_bridge_service.dart` returns 0 errors
+- connect/disconnect compile and use `kBridgeServiceUUID` / `kBridgeTxCharUUID`
+- an MTU request (~247) is issued on connect
 
 **Verification commands**:
 ```bash
 flutter analyze lib/services/ble_bridge_service.dart
-grep -n "withoutResponse\|Completer" lib/services/ble_bridge_service.dart
+grep -n "requestMtu\|kBridgeServiceUUID\|kBridgeTxCharUUID\|connectionState" lib/services/ble_bridge_service.dart
 ```
 
-**Risks**: Low. Write-with-response is straightforward — exception = failure, no exception = delivered.
+**Risks**: Medium — this is the trickiest BLE code. Keep it close to the proven
+module.dart patterns. Errors must set the `error` state, never throw to callers.
 
 ---
 
-### BRIDGE-04 — Integrate BleBridgeService into Game
+### BRIDGE-05 — Register BleBridgeService in the Provider tree
 
-**Goal**: Instantiate `BleBridgeService` in `Game` and add bridge publish calls as side effects.
-
-**Context files to read first**:
-- `lib/models/game.dart`
-- `lib/services/ble_bridge_service.dart` (from BRIDGE-02/03)
-- `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md` → "Integration with Game class"
-
-**Target files to modify**:
-- `lib/models/game.dart`
-
-**Files NOT to touch**:
-- `lib/models/module.dart` — no bridge references here
-- `lib/services/ble_bridge_service.dart` — read only
-
-**Implementation**:
-1. Add `import 'package:rcj_scoreboard/services/ble_bridge_service.dart';`
-2. Add field: `BleBridgeService bleBridgeService = BleBridgeService();`
-3. In `notifyModulesScore()`: after existing MQTT publish line, add:
-   ```dart
-   bleBridgeService.publishScore(teams[0].score, teams[1].score);
-   ```
-4. In `startTimer()` timer callback, in the `_remainingTime > 0` branch, alongside `mqttService.publishTime(...)`, add:
-   ```dart
-   // Publish game state to bridge every 30 seconds (not every tick — avoid flooding)
-   if (_remainingTime % 30 == 0) {
-     bleBridgeService.publishGameState(currentStage.index, _remainingTime);
-   }
-   ```
-5. In `startTimer()` on stage transition: after `mqttService.publishGameState(...)`, add:
-   ```dart
-   bleBridgeService.publishGameState(currentStage.index, _remainingTime);
-   ```
-6. In `gameInit()`: after MQTT publish calls, add:
-   ```dart
-   bleBridgeService.publishScore(0, 0);
-   ```
-
-**Critical**: Do NOT add `await` to bridge calls. They must be fire-and-forget from `Game`'s perspective.
-
-**Acceptance criteria**:
-- `flutter analyze` returns 0 errors
-- Bridge calls appear in `notifyModulesScore()` and timer callback
-- No `await` keyword before bridge calls in game.dart
-
-**Verification commands**:
-```bash
-flutter analyze lib/models/game.dart
-grep -n "bleBridgeService\|await.*bridge" lib/models/game.dart
-```
-
-**Risks**: Low. Purely additive — side effect calls only.
-
----
-
-### BRIDGE-05 — Register BleBridgeService in Provider tree
-
-**Goal**: Add `BleBridgeService` to the `MultiProvider` in `main.dart` so UI can observe its state.
+**Goal**: Expose `bleBridgeService` to the UI via `MultiProvider` in `main.dart`.
+(Done before the settings UI so the UI can observe it.)
 
 **Context files to read first**:
 - `lib/main.dart`
-- `lib/models/game.dart` (bleBridgeService field added in BRIDGE-04)
+- `lib/models/game.dart`
 
 **Target files to modify**:
 - `lib/main.dart`
+- `lib/models/game.dart` (only to add the `bleBridgeService` field — see note)
+
+**Files NOT to touch**: The static module provider list and the existing Game /
+Team provider registration structure (CLAUDE.md invariant) — only ADD lines.
 
 **Implementation**:
-In `MyApp.build()`, in the `providers:` list of `MultiProvider`, add:
-```dart
-ChangeNotifierProvider.value(value: game.bleBridgeService),
-```
-Place it after the `ChangeNotifierProvider.value(value: game)` line.
+1. In `lib/models/game.dart`, add (near the `mqttService` field):
+   ```dart
+   import 'package:rcj_scoreboard/services/ble_bridge_service.dart';
+   // ...
+   BleBridgeService bleBridgeService = BleBridgeService();
+   ```
+   (This field is also used by BRIDGE-04; adding it here lets the provider and
+   settings UI reference it during Milestone A. Do NOT add any publish calls yet.)
+2. In `lib/main.dart`, in the `providers:` list of `MultiProvider`, after the
+   existing `ChangeNotifierProvider.value(value: game)` line, add:
+   ```dart
+   ChangeNotifierProvider.value(value: game.bleBridgeService),
+   ```
 
 **Acceptance criteria**:
-- `grep "bleBridgeService" lib/main.dart` finds the provider registration
+- `grep "bleBridgeService" lib/main.dart` finds the registration
 - `flutter analyze` returns 0 errors
 
 **Verification commands**:
 ```bash
-grep -n "bleBridgeService" lib/main.dart
+grep -n "bleBridgeService" lib/main.dart lib/models/game.dart
 flutter analyze
 ```
 
-**Risks**: Very low. Additive provider registration.
+**Risks**: Very low. Additive field + provider registration.
 
 ---
 
-### BRIDGE-06 — Add BLE Bridge settings section to SettingsScreen
+### BRIDGE-06 — Add "BLE Bridge" settings section (MAC + QR + connect)
 
-**Goal**: Add a new "BLE Bridge" settings section to `SettingsScreen` with MAC field, auto-connect toggle, connect/disconnect button, and status display.
+**Goal**: Add a collapsible "BLE Bridge" section to `SettingsScreen`, styled like
+the MQTT section: enable toggle, MAC input field, **QR scan button** (reuse the
+existing scanner), connect/disconnect button, and status display.
 
 **Context files to read first**:
-- `lib/screens/settings.dart` (study the MQTT section as the template — lines ~167-268)
-- `lib/services/ble_bridge_service.dart` (BRIDGE-02)
-- `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md` → "Settings UI integration"
+- `lib/screens/settings.dart` (MQTT section is the template, ~lines 169-270)
+- `lib/screens/module_settings.dart` → `buildQRButton()` (how it pushes
+  `BarcodeScannerSimple` and reads back a MAC string)
+- `lib/screens/mac_qr_scanner.dart` (`BarcodeScannerSimple`)
+- `lib/services/ble_bridge_service.dart` (BRIDGE-02a/02b)
 
 **Target files to modify**:
 - `lib/screens/settings.dart`
 
 **Files NOT to touch**:
-- `lib/screens/home.dart` — no bridge UI on main screen
+- `lib/screens/home.dart` — no bridge UI on the main control screen
 - `lib/models/game.dart`
 
 **Implementation**:
-1. Add import for `BleBridgeService`
-2. In `_SettingsScreenState.build()`, in the `ListView` children list, add a new `ValueListenableBuilder<BridgeConnectionState>` widget between the "Current Game" and "MQTT" sections:
-
+1. Add imports for `BleBridgeService` (for `BridgeConnectionState`) and
+   `BarcodeScannerSimple` (`mac_qr_scanner.dart`).
+2. In `_SettingsScreenState.build()`, insert a new section in the `ListView`
+   children BETWEEN the "Current Game" section and the MQTT
+   `ValueListenableBuilder`, wrapped in `ValueListenableBuilder<BridgeConnectionState>`:
 ```dart
 ValueListenableBuilder<BridgeConnectionState>(
   valueListenable: widget.game.bleBridgeService.connectionStateNotifier,
@@ -814,7 +814,24 @@ ValueListenableBuilder<BridgeConnectionState>(
         SettingInputField(
           title: 'Bridge MAC',
           initialValue: widget.game.bleBridgeService.bridgeMacAddress,
-          onChanged: (value) { widget.game.bleBridgeService.bridgeMacAddress = value; },
+          onChanged: (value) {
+            widget.game.bleBridgeService.bridgeMacAddress = value;
+          },
+        ),
+        SettingButton(
+          title: 'Scan QR code',
+          buttonText: 'Scan QR',
+          onPressed: () async {
+            final result = await Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const BarcodeScannerSimple()),
+            );
+            if (result != null) {
+              setState(() {
+                widget.game.bleBridgeService.bridgeMacAddress = result as String;
+              });
+            }
+          },
         ),
         SettingSwitch(
           title: 'Auto-connect',
@@ -840,66 +857,276 @@ ValueListenableBuilder<BridgeConnectionState>(
   },
 ),
 ```
+   NOTE: after a QR scan the MAC text field shows the scanned value on next open;
+   `setState` after setting the MAC is enough for the Connect button. If the field
+   must update live, give it a controller — but keep changes minimal and
+   consistent with existing `SettingInputField` usage.
 
 **Acceptance criteria**:
-- `grep -n "BLE Bridge\|bleBridgeService" lib/screens/settings.dart` shows the new section
+- `grep -n "BLE Bridge\|bleBridgeService" lib/screens/settings.dart` shows the section
 - `flutter analyze` returns 0 errors
 
 **Verification commands**:
 ```bash
-grep -n "BLE Bridge\|bleBridgeService" lib/screens/settings.dart
+grep -n "BLE Bridge\|bleBridgeService\|BarcodeScannerSimple" lib/screens/settings.dart
 flutter analyze
 ```
 
-**Manual test**: Open settings, verify "BLE Bridge" section appears between Current Game and MQTT.
-
-**Risks**: Low. Additive UI section.
+**Risks**: Low. Additive UI following the MQTT pattern.
 
 ---
 
-### BRIDGE-07 — Add auto-connect on app start
+### ✅ TEST GATE A — Connection works end to end (on Pixel 10)
 
-**Goal**: If `bridge_auto_connect = true` and a MAC is configured, attempt BLE bridge connection when the app starts.
+Run the app on the Pixel 10 with a real bridge device powered on. Verify:
+1. Settings shows a "BLE Bridge" section between "Current Game" and "MQTT".
+2. Enable the section toggle.
+3. Enter the bridge MAC manually OR tap "Scan QR" and scan the bridge's MAC QR.
+4. Tap "Connect" → status becomes "Connecting..." then "Connected".
+5. Tap "Disconnect" → status becomes "Disconnected".
+6. Toggle "Auto-connect" on; confirm the setting persists across an app restart
+   (reopen Settings, it is still on, MAC still present).
+
+**Do not proceed to Milestone B until Gate A passes.** If connection fails,
+the problem is isolated to BRIDGE-02b (BLE logic) or BRIDGE-06 (UI wiring).
+
+---
+
+## MILESTONE B — Push score + color through the pipe
+
+Goal: when the score changes, the scoreboard displays the new score in the
+correct team colors.
+
+---
+
+### BRIDGE-03 — Add queue + write-with-response to BleBridgeService
+
+**Goal**: Implement the async FIFO queue with **change-only dedup**, single
+in-flight write, and **write-with-response** (the ACK) with retry.
 
 **Context files to read first**:
-- `lib/main.dart`
-- `lib/services/ble_bridge_service.dart` (BRIDGE-02)
+- `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md` → CONFIRMED ARCHITECTURE box (perf disciplines)
+- `lib/services/ble_bridge_service.dart` (from BRIDGE-02a/02b)
+- `lib/models/bridge_message.dart` (from BRIDGE-01)
 
 **Target files to modify**:
 - `lib/services/ble_bridge_service.dart`
 
+**Files NOT to touch**: All existing files except `ble_bridge_service.dart`.
+
 **Implementation**:
-In `BleBridgeService.loadPreferences()`, at the end, after loading all preferences:
+Add (import `dart:collection`):
+1. `final Queue<BridgeMessage> _queue = Queue<BridgeMessage>();`
+2. `bool _sendInProgress = false;`
+3. Replace the `publishTopic` stub:
 ```dart
-if (_isEnabled && _autoConnect && _bridgeMacAddress.isNotEmpty) {
-  // Delay to allow BLE adapter to initialize
+/// Enqueue a (topic, value) for delivery to the bridge. Non-blocking.
+/// Safe to call when disconnected/disabled — the message is dropped (no throw),
+/// mirroring MqttService.publishMessage's no-op-when-disconnected guard.
+void publishTopic(String topic, String value) {
+  if (!isEnabled) return;                 // guard: bridge disabled
+  final msg = BridgeMessage(topic, value);
+  // Change-only dedup: a newer value for the same topic replaces an older,
+  // not-yet-sent one (latest wins for score/color snapshots).
+  _queue.removeWhere((m) => m.topic == topic);
+  _queue.add(msg);
+  queueDepthNotifier.value = _queue.length;
+  _processQueue();                        // fire-and-forget
+}
+```
+4. Queue processor — one in flight; removes whether or not it succeeded:
+```dart
+Future<void> _processQueue() async {
+  if (_sendInProgress || _queue.isEmpty || !isConnected) return;
+  _sendInProgress = true;
+  while (_queue.isNotEmpty && isConnected) {
+    final msg = _queue.first;
+    await _sendWithRetry(msg);            // ACK handled inside (write-with-response)
+    _queue.removeFirst();
+    queueDepthNotifier.value = _queue.length;
+  }
+  _sendInProgress = false;
+}
+```
+5. Send with retry — **write-with-response is the ACK**:
+```dart
+Future<bool> _sendWithRetry(BridgeMessage msg, {int maxRetries = 3}) async {
+  final bytes = msg.toBytes();
+  for (int attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      // withoutResponse:false => ATT Write Request; the bridge BLE stack ACKs.
+      // Completion without throw == delivered to the bridge.
+      await _txChar!.write(bytes, withoutResponse: false, timeout: 5);
+      return true;
+    } catch (e) {
+      if (attempt == maxRetries - 1) {
+        debugPrint('BleBridge: send "${msg.topic}" failed after $maxRetries: $e');
+      }
+    }
+  }
+  return false;
+}
+```
+6. Ensure the `connected` transition in BRIDGE-02b calls `_processQueue()` so
+   anything queued while disconnected drains on connect.
+
+**CRITICAL invariants**:
+- Exactly one write in flight (`_sendInProgress`).
+- `publishTopic` NEVER throws and NEVER blocks the caller.
+- Write-with-response stays (`withoutResponse: false`) — it is the delivery ACK.
+- No application-level ACK parsing, no `Completer`.
+
+**Acceptance criteria**:
+- `flutter analyze lib/services/ble_bridge_service.dart` returns 0 errors
+- `_sendWithRetry` uses `withoutResponse: false`
+- `publishTopic` guards disconnected/disabled and cannot throw
+
+**Verification commands**:
+```bash
+flutter analyze lib/services/ble_bridge_service.dart
+grep -n "withoutResponse\|_sendInProgress\|removeWhere\|Completer" lib/services/ble_bridge_service.dart
+```
+
+**Risks**: Low. Write-with-response: exception = failure, no exception = delivered.
+
+---
+
+### BRIDGE-04 — Publish score + color from Game (fan-out, fire-and-forget)
+
+**Goal**: When the score changes, send all four messages — `team1_score`,
+`team2_score`, `team1_color`, `team2_color` — to the bridge, alongside the
+existing MQTT publish. Fire-and-forget from `Game` (no `await`); each service
+self-guards so either link can be down.
+
+**Context files to read first**:
+- `lib/models/game.dart` (`notifyModulesScore`, `gameInit`; `bleBridgeService`
+  field was added in BRIDGE-05)
+- `lib/models/team.dart` (team `id`)
+- `lib/models/bridge_message.dart` (`BridgeTopics`)
+- `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md` → CONFIRMED ARCHITECTURE box
+
+**Target files to modify**:
+- `lib/models/game.dart`
+
+**Files NOT to touch**:
+- `lib/models/module.dart` — robot path untouched
+- `lib/services/ble_bridge_service.dart` — read only
+- the robot play/stop methods (`playAll`, `stopAll`, `bleSendPlayAll`, etc.)
+
+**Implementation**:
+1. Ensure `import 'package:rcj_scoreboard/models/bridge_message.dart';` (for
+   `BridgeTopics`). The `bleBridgeService` field already exists from BRIDGE-05.
+2. Add a private helper mapping a team to its RGB hex color. Colors live ONLY in
+   the app; use the SAME colors as `lib/screens/home.dart` (team A neon green
+   `0x77FF00`, team B neon magenta `0xFF00FF`), keyed by team `id`:
+```dart
+String _teamColorHex(Team team) => team.id == 'A' ? '77FF00' : 'FF00FF';
+```
+3. Add a fan-out method (neither call may throw upward — each service guards itself):
+```dart
+void _publishScoreToBridge() {
+  bleBridgeService.publishTopic(BridgeTopics.team1Score, teams[0].score.toString());
+  bleBridgeService.publishTopic(BridgeTopics.team2Score, teams[1].score.toString());
+  bleBridgeService.publishTopic(BridgeTopics.team1Color, _teamColorHex(teams[0]));
+  bleBridgeService.publishTopic(BridgeTopics.team2Color, _teamColorHex(teams[1]));
+}
+```
+4. Call `_publishScoreToBridge()` in `notifyModulesScore()` right AFTER the
+   existing `mqttService.publishScore(teams);` line.
+5. Call `_publishScoreToBridge()` at the end of `gameInit()` (after the MQTT
+   publish calls) so the bridge gets the reset 0–0 + colors on a new game.
+
+**CRITICAL**:
+- Do NOT add `await` before any `bleBridgeService` call. Fire-and-forget from
+  Game; the write-with-response ACK happens INSIDE the bridge service on its own
+  queue and must never block Game's logic or the robot play/stop path.
+- Do not reorder or remove existing MQTT publish calls.
+
+**Acceptance criteria**:
+- `flutter analyze lib/models/game.dart` returns 0 errors
+- `_publishScoreToBridge` is called in `notifyModulesScore` and `gameInit`
+- No `await` precedes any `bleBridgeService` call in game.dart
+
+**Verification commands**:
+```bash
+flutter analyze lib/models/game.dart
+grep -n "bleBridgeService\|_publishScoreToBridge\|_teamColorHex" lib/models/game.dart
+grep -n "await.*bleBridgeService" lib/models/game.dart   # must return NOTHING
+```
+
+**Risks**: Low. Additive side-effect calls; score changes happen right after
+`stopAll`, so robots are not awaiting the radio at that instant.
+
+---
+
+### ✅ TEST GATE B — Score reaches the scoreboard (on Pixel 10)
+
+With the bridge connected (Gate A passing):
+1. Increment Team A score → scoreboard shows the new score in **neon green**.
+2. Increment Team B score → scoreboard shows the new score in **neon magenta**.
+3. Use "Switch team order" in settings, score again → colors still follow the
+   correct team (color is keyed by team id, not screen position).
+4. Reset the game → scoreboard returns to 0–0.
+5. (If a bridge debug log / RS485 capture is available) confirm each goal yields
+   the 4 frames `team1_score`, `team2_score`, `team1_color`, `team2_color`.
+
+**Do not proceed to Milestone C until Gate B passes.**
+
+---
+
+## MILESTONE C — Polish, tests, and the safety regression
+
+---
+
+### BRIDGE-07 — Auto-connect the bridge on app start
+
+**Goal**: If `bridge_enabled` and `bridge_auto_connect` are true and a MAC is set,
+attempt the bridge connection shortly after launch.
+
+**Context files to read first**:
+- `lib/services/ble_bridge_service.dart` (BRIDGE-02a/02b)
+
+**Target files to modify**:
+- `lib/services/ble_bridge_service.dart`
+
+**Files NOT to touch**: All other files.
+
+**Implementation**:
+At the end of `loadPreferences()`, after all settings are read:
+```dart
+if (isEnabled && autoConnect && bridgeMacAddress.isNotEmpty) {
+  // Delay so the BLE adapter has time to initialize.
   Future.delayed(const Duration(seconds: 2), () => connect());
 }
 ```
 
 **Acceptance criteria**:
-- If `bridge_enabled=true`, `bridge_auto_connect=true`, `bridge_mac_address` set: connection attempt starts ~2 seconds after app launch
+- With all three conditions true, a connection attempt starts ~2 s after launch
+  (status → "Connecting...").
 
 **Verification commands**:
 ```bash
-grep -n "autoConnect\|_autoConnect\|loadPreferences" lib/services/ble_bridge_service.dart
+grep -n "autoConnect\|loadPreferences\|Future.delayed" lib/services/ble_bridge_service.dart
 flutter analyze lib/services/ble_bridge_service.dart
 ```
 
-**Manual test**: Configure bridge MAC and auto-connect, kill and restart app, observe Settings → BLE Bridge status transitions to "Connecting".
+**Manual test**: Configure MAC + enable + auto-connect, kill and relaunch,
+observe Settings → BLE Bridge status transitions to "Connecting".
 
-**Risks**: Low. Delayed and guarded by conditions.
+**Risks**: Low. Delayed and guarded.
 
 ---
 
-### BRIDGE-08 — Write bridge message unit tests
+### BRIDGE-08 — Unit tests for framing and queue dedup
 
-**Goal**: Add unit tests for `BridgeMessage` serialization, sequence number wrapping, and queue deduplication logic.
+**Goal**: Test `BridgeMessage` framing and (if reachable without hardware) the
+queue's change-only dedup.
 
 **Context files to read first**:
 - `lib/models/bridge_message.dart` (BRIDGE-01)
 - `lib/services/ble_bridge_service.dart` (BRIDGE-03)
-- `test/widget_test.dart` (existing test structure)
+- `test/widget_test.dart` (existing setup; SharedPreferences may need
+  `SharedPreferences.setMockInitialValues({})` in `setUp`)
 
 **Target files to create**:
 - `test/bridge_message_test.dart`
@@ -908,35 +1135,37 @@ flutter analyze lib/services/ble_bridge_service.dart
 
 **Implementation**:
 ```dart
+import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcj_scoreboard/models/bridge_message.dart';
 
 void main() {
-  group('BridgeMessage', () {
-    test('scoreUpdate serializes correctly', () {
-      final msg = BridgeMessage.scoreUpdate(2, 3);
-      final bytes = msg.copyWith(seqNum: 5).toBytes();
-      expect(bytes[0], kBridgeProtocolVersion);
-      expect(bytes[1], BridgeMessageType.scoreUpdate.index);
-      expect(bytes[2], 5); // seqNum
-      expect(bytes[3], 2); // scoreA
-      expect(bytes[4], 3); // scoreB
+  group('BridgeMessage framing', () {
+    test('encodes topic 0x00 value in UTF-8', () {
+      final bytes = const BridgeMessage('team1_score', '3').toBytes();
+      final sep = bytes.indexOf(0x00);
+      expect(sep, greaterThan(0));
+      expect(utf8.decode(bytes.sublist(0, sep)), 'team1_score');
+      expect(utf8.decode(bytes.sublist(sep + 1)), '3');
     });
 
-    test('gameState serializes remaining time correctly', () {
-      final msg = BridgeMessage.gameState(0, 300);
-      final bytes = msg.toBytes();
-      expect(bytes[3], 0);   // stageIndex
-      expect(bytes[4], 1);   // 300 >> 8 = 1
-      expect(bytes[5], 44);  // 300 & 0xFF = 44
+    test('color value survives framing', () {
+      final bytes = const BridgeMessage('team1_color', '77FF00').toBytes();
+      final sep = bytes.indexOf(0x00);
+      expect(utf8.decode(bytes.sublist(sep + 1)), '77FF00');
     });
 
-    test('score message is deduplicatable', () {
-      expect(BridgeMessage.scoreUpdate(1, 0).deduplicatable, isTrue);
+    test('equality is by topic+value', () {
+      expect(const BridgeMessage('t', '1'), const BridgeMessage('t', '1'));
+      expect(const BridgeMessage('t', '1') == const BridgeMessage('t', '2'), isFalse);
     });
   });
 }
 ```
+If the dedup logic is reachable without real BLE (e.g. via an exposed queue or a
+testable enqueue), add a test that enqueuing two `team1_score` values leaves only
+the latest. If not testable without a risky refactor, state that in the report
+rather than forcing it.
 
 **Acceptance criteria**:
 - `flutter test test/bridge_message_test.dart` passes
@@ -950,32 +1179,57 @@ flutter test test/bridge_message_test.dart
 
 ---
 
-### BRIDGE-09 — Update documentation
+### BRIDGE-09 — Docs update + robot-latency regression check
 
-**Goal**: After completing BRIDGE-01 through BRIDGE-08, update AI documentation to reflect the actual implementation.
+**Goal**: Update docs to reflect what was built, and run the play/stop latency
+regression check with the bridge connected.
 
 **Context files to read first**:
 - `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md`
 - `docs/ai/01_PROJECT_MAP.md`
 
 **Target files to modify**:
-- `docs/ai/01_PROJECT_MAP.md` — add `ble_bridge_service.dart` and `bridge_message.dart` to file map and key classes table
-- `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md` — update PROPOSED sections with confirmed protocol values (UUIDs etc)
+- `docs/ai/01_PROJECT_MAP.md` — add `ble_bridge_service.dart` and
+  `bridge_message.dart` to the file map / key classes table
+- `docs/ai/05_BLE_BRIDGE_FEATURE_PLAN.md` — mark iteration-1 items DONE; keep
+  iteration-2 items (timer sync, names, stage, events, full MQTT mirror) as TODO
 
-**Implementation**: Update the relevant sections with actual confirmed values from the implementation.
+**Regression check (REQUIRED, record result in the report)**:
+- With 10 robot modules connected AND the bridge connected and actively receiving
+  score updates, verify robot START/STOP latency is unchanged vs. without the
+  bridge (no perceptible serialization/delay). This validates the "one shared
+  radio" discipline. If on-device testing is unavailable, state that explicitly
+  and flag it for the owner to test on the Pixel 10.
 
-**Risks**: Very low. Documentation only.
+**Risks**: Very low for docs. The regression check is the real gate — if latency
+regresses, do NOT mark the feature complete; report it.
+
+---
+
+### ✅ TEST GATE C — Polish verified (on Pixel 10)
+
+1. With auto-connect on, kill and relaunch → bridge reconnects automatically.
+2. `flutter test` passes.
+3. **Latency regression**: 10 modules + bridge connected and receiving scores →
+   START/STOP feels identical to before the bridge existed. THIS IS THE SAFETY
+   GATE — if it regresses, stop and report.
 
 ---
 
 ## Dependency ordering
 
 ```
-PLAY-01 → PLAY-02 → PLAY-03 → PLAY-04 → PLAY-05 → PLAY-06 → PLAY-07
+PLAY-01 → PLAY-02 → PLAY-03 → PLAY-04 → PLAY-05 → PLAY-06 → PLAY-07   [DONE]
 AUDIT-FIX-01 (independent)
-AUDIT-FIX-02 (independent)
-AUDIT-FIX-03 (independent)
-BRIDGE-01 → BRIDGE-02 → BRIDGE-03 → BRIDGE-04 → BRIDGE-05 → BRIDGE-06 → BRIDGE-07 → BRIDGE-08 → BRIDGE-09
+AUDIT-FIX-02 (independent)                                            [DONE]
+AUDIT-FIX-03 (independent)                                            [DONE]
+
+BRIDGE — do one MILESTONE at a time; pass its TEST GATE before the next:
+  Milestone A: BRIDGE-01 → 02a → 02b → 05 → 06   → GATE A (connect)
+  Milestone B: BRIDGE-03 → 04                    → GATE B (score+color displays)
+  Milestone C: BRIDGE-07 → 08 → 09               → GATE C (polish + latency safety)
 ```
 
-PLAY and AUDIT tasks are independent of BRIDGE tasks. Run PLAY tasks first for safety.
+PLAY and AUDIT tasks are independent of BRIDGE tasks. Within BRIDGE, the order
+above is intentional (the connection pipe is built and tested before any data is
+sent). Do not skip a test gate.

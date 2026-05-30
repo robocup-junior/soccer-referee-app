@@ -1,5 +1,97 @@
 # BLE Bridge Feature Plan
 
+
+
+> ## ⚠️ CONFIRMED ARCHITECTURE (2026-05-30) — READ THIS FIRST
+>
+> The sections below this box were the original PROPOSAL and used a **binary
+> typed protocol**. After design discussion with the project owner, the approach
+> changed. Where the older sections conflict with this box, **this box wins.**
+> The BRIDGE-0x tasks in `06_CODEX_TASKS.md` are being rewritten to match.
+>
+> ### What the first device actually is
+> The first BLE bridge device is **also a physical scoreboard**: a 7-segment
+> display built from WS2812B (addressable RGB) LEDs, placed near the field. It
+> shows each team's current score, with the digits colored in that team's app
+> color (team A = neon green `0x77FF00`, team B = neon magenta `0xFF00FF`).
+>
+> ### The device has TWO roles
+> 1. **Scoreboard (standalone):** parses the few topics it cares about
+>    (`team1_score`, `team2_score`, team colors) and drives its LEDs. Must work
+>    **from the phone alone**, with no RPi and no internet.
+> 2. **Forwarder (optional uplink):** blindly retransmits **every** received
+>    `topic/value` pair out an RS485 cable to a Raspberry Pi. The RPi republishes
+>    them verbatim to the MQTT broker for livestream overlay + statistics. The
+>    bridge does NOT interpret most topics — it just passes them through.
+>
+> The RPi/MQTT uplink is an **optional bonus layer**. The scoreboard never depends
+> on it.
+>
+> ### Why BLE bridge in addition to MQTT
+> MQTT (existing) is the path when the phone has good internet. For harsh-
+> environment fields with poor connectivity, the BLE bridge is the reliable local
+> path: phone → BLE → bridge → RS485 → RPi → MQTT. Both interfaces coexist; the
+> phone publishes the same data to both.
+>
+> ### Protocol: "MQTT-over-BLE" (topic/value strings), NOT binary typed messages
+> Each BLE message is the **same `(topic, value)` pair the MQTT service already
+> builds**, framed as bytes: `topic + 0x00 + value` (UTF-8). Examples mirror the
+> existing MQTT topics (see `lib/services/mqtt.dart` `publishCMMessage` calls):
+> ```
+> team1_score \x00 3
+> team2_score \x00 1
+> team1_color \x00 77FF00          (RGB hex — color lives ONLY in the app)
+> team2_color \x00 FF00FF
+> team1_name  \x00 Robots United
+> team1_id    \x00 A
+> game_stage  \x00 1. Half
+> ```
+> **Rationale:** the RPi becomes a dumb forwarder (`mqtt.publish(topic, value)`
+> verbatim — no per-message-type parsing). New data types (damage time, goal
+> timestamps, future stats) need **app changes only**; bridge + RPi keep
+> forwarding blindly. All intelligence lives in the phone.
+>
+> ### Color: sent as explicit RGB, held only in the app
+> The phone sends each team's exact color as a value (e.g. `team1_color`→`77FF00`).
+> The scoreboard is a dumb display — it renders whatever color it is told. If a
+> team is ever recolored, **zero firmware changes**. Confirmed by owner.
+>
+> ### The two performance disciplines that protect robot play/stop latency
+> There is ONE shared BLE radio on Android; the bridge is an extra connection.
+> The robot START/STOP path must never be delayed (CLAUDE.md invariant). Phone
+> CPU cost of building messages is negligible — the only real risk is **radio
+> airtime contention**. Therefore:
+>
+> 1. **Change-only sends.** Score on goals, state on transitions. Never stream/poll.
+> 2. **Timer is SYNC, not per-second.** Do NOT send the time string every second
+>    over BLE (that would constantly contend with the module path). Instead the
+>    phone sends `timer_start`(+remaining), `timer_stop`/`timer_pause`, and a
+>    resync every ~10–30 s. **The bridge counts down locally** and updates its
+>    LEDs every second itself. The RPi can likewise regenerate the per-second
+>    `time` MQTT topic at the edge, so the livestream still gets smooth 1 Hz time
+>    without it ever crossing BLE once per second. (Iteration 2 — see scope below.)
+> 3. **Single message in flight** (queue depth-1) + **bridge writes never awaited
+>    by `Game`** (already invariants). The bridge physically cannot flood the radio.
+> 4. **Verify:** after wiring the bridge, re-run a 10-module play/stop latency
+>    test with the bridge connected AND actively sending; confirm no regression.
+>
+> ### MTU
+> Default BLE MTU ≈ 23 bytes (~20 usable). Scores/colors fit. Team names (≤20
+> chars) + topic string can overflow → **request a larger MTU (~247) at connect**
+> so longer values work without fragmentation. (flutter_blue_plus: pass an mtu on
+> connect, or `requestMtu` after.)
+>
+> ### Iteration scope
+> - **Iteration 1 (now):** topic/value framing (future-proof), but only actually
+>   send + display **scores + team colors**. Settings section with manual MAC
+>   entry AND QR scan (reuse `BarcodeScannerSimple` from module screens).
+>   Write-with-response for delivery. Scoreboard parses score/color locally.
+> - **Iteration 2 (later):** timer sync protocol, game stage, team names, field
+>   number, events (goal/damage/penalty), and the full MQTT-topic mirror so the
+>   RPi uplink carries everything the MQTT path does.
+>
+> ---
+
 ## Feature requirements
 
 A second BLE device type — the **BLE Bridge** — must be added to the app. The bridge is distinct from robot modules:
