@@ -289,3 +289,28 @@ and colors at once; subsequent goals land on the correct side.
 
 **Gate B result: PASS** (Pixel 10, with the two fixes above). Score displays in
 team colors, updates on goals, swaps correctly, resets to 0-0.
+
+## BRIDGE-08 — Unit tests for framing + queue dedup (Claude Code, 2026-05-31)
+
+Added `test/bridge_message_test.dart` (10 tests, all pass; full suite 11/11).
+Pure-Dart, no BLE/hardware. Covers:
+- `BridgeMessage.toBytes()` framing: `topic 0x00 value` UTF-8, exactly one
+  separator, color hex round-trips, empty value, equality/hashCode.
+- `BridgeTopics` iteration-1 names are the exact FW-contract strings.
+- Queue dedup via the **disconnected path** (enabled but not connected →
+  `publishTopic` enqueues + dedups, `_processQueue` returns at its
+  `!isConnected` guard before any BLE write): same topic collapses to 1;
+  4 distinct topics → depth 4; a repeated 4-topic goal burst stays at 4 (per-
+  topic dedup, not cross-topic); a disabled service drops publishes (depth 0).
+
+## BRIDGE-09 — latency regression (owner observation, 2026-05-31)
+
+The 10-module + bridge START/STOP latency safety check was observed on-device:
+**no significant lag** in robot play/stop with the bridge connected and receiving
+score updates. The fire-and-forget design holds under load — the #1 invariant is
+preserved. (Big-match connection capacity was separately validated on a Samsung
+Galaxy A52s, which holds the 11-peripheral case the Pixel 10 cannot.)
+
+Remaining BRIDGE-09 doc bookkeeping (mark iteration-1 done in
+`05_BLE_BRIDGE_FEATURE_PLAN.md`, add the two new files to `01_PROJECT_MAP.md`)
+is optional and not yet done.
