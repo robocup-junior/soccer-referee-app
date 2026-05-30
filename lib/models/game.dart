@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:rcj_scoreboard/models/bridge_message.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'dart:async';
 import 'package:rcj_scoreboard/models/team.dart';
@@ -112,6 +113,7 @@ class Game with ChangeNotifier {
     mqttService.publishTeamNames(teams);
     mqttService.publishTeam(teams);
     mqttService.publishScore(teams);
+    _publishScoreToBridge();
   }
 
   void gameRefresh() {
@@ -134,7 +136,7 @@ class Game with ChangeNotifier {
     }
     isTimeRunning = true;
     notifyListeners();
-    _timer = Timer.periodic(Duration(seconds: 1), (timer) {
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (_remainingTime > 0) {
         _remainingTime--;
         notifyAllModulesTimer();
@@ -169,7 +171,7 @@ class Game with ChangeNotifier {
             timerButtonText = 'REPEAT';
             gameOverAll();
           default:
-            print('unknown match stage');
+            debugPrint('unknown match stage');
         }
 
         mqttService.publishGameState(currentStage);
@@ -227,6 +229,9 @@ class Game with ChangeNotifier {
     mqttService.publishTeamNames(teams);
     mqttService.publishTeam(teams);
     mqttService.publishScore(teams);
+    // Push the swapped score+color to the scoreboard immediately, otherwise the
+    // bridge only reflects the new sides on the next goal.
+    _publishScoreToBridge();
   }
 
   /// Toggles all modules based on the current game stage.
@@ -339,20 +344,35 @@ class Game with ChangeNotifier {
       for (var module in team.modules
           .where((module) => module.isEnabled && module.isConnected)) {
         module.bleSendScore();
-        print('score sent');
+        debugPrint('score sent');
       }
     }
     // mqtt publish team scores
     // mqtt publish default values
     mqttService.publishScore(teams);
+    _publishScoreToBridge();
+  }
+
+  String _teamColorHex(Team team) => team.id == 'A' ? '77FF00' : 'FF00FF';
+
+  void _publishScoreToBridge() {
+    bleBridgeService.publishTopic(
+        BridgeTopics.team1Score, teams[0].score.toString());
+    bleBridgeService.publishTopic(
+        BridgeTopics.team2Score, teams[1].score.toString());
+    bleBridgeService.publishTopic(
+        BridgeTopics.team1Color, _teamColorHex(teams[0]));
+    bleBridgeService.publishTopic(
+        BridgeTopics.team2Color, _teamColorHex(teams[1]));
   }
 
   void changeNumberOfPlaying(int add) {
     _numberOfPlaying += add;
 
     if (_numberOfPlaying < 0) _numberOfPlaying = 0;
-    if (_numberOfPlaying > numberOfPLayers * 2)
+    if (_numberOfPlaying > numberOfPLayers * 2) {
       _numberOfPlaying = numberOfPLayers * 2;
+    }
 
     if (_numberOfPlaying < 2) notifyListeners();
   }

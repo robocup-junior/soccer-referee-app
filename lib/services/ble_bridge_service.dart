@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -21,6 +22,8 @@ class BleBridgeService extends ChangeNotifier {
   BluetoothDevice? _device;
   BluetoothCharacteristic? _txChar;
   StreamSubscription<BluetoothConnectionState>? _connSub;
+  final Queue<BridgeMessage> _queue = Queue<BridgeMessage>();
+  bool _sendInProgress = false;
 
   final ValueNotifier<BridgeConnectionState> connectionStateNotifier =
       ValueNotifier(BridgeConnectionState.disconnected);
@@ -90,9 +93,48 @@ class BleBridgeService extends ChangeNotifier {
     connectionStateNotifier.value = BridgeConnectionState.disconnected;
   }
 
-  void publishTopic(String topic, String value) {}
+  void publishTopic(String topic, String value) {
+    if (!isEnabled) return;
 
-  Future<void> _processQueue() async {}
+    final msg = BridgeMessage(topic, value);
+    _queue.removeWhere((m) => m.topic == topic);
+    _queue.add(msg);
+    queueDepthNotifier.value = _queue.length;
+    _processQueue();
+  }
+
+  Future<void> _processQueue() async {
+    if (_sendInProgress || _queue.isEmpty || !isConnected) return;
+
+    _sendInProgress = true;
+    while (_queue.isNotEmpty && isConnected) {
+      // Pop before awaiting: removing the in-flight message from the queue up
+      // front means a concurrent publishTopic() (its removeWhere/add) can never
+      // shift the queue out from under a removeFirst() and drop an unsent
+      // message. A newer value for the same topic simply enqueues for the next
+      // iteration.
+      final msg = _queue.removeFirst();
+      queueDepthNotifier.value = _queue.length;
+      await _sendWithRetry(msg);
+    }
+    _sendInProgress = false;
+  }
+
+  Future<bool> _sendWithRetry(BridgeMessage msg, {int maxRetries = 3}) async {
+    final bytes = msg.toBytes();
+    for (int attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        await _txChar!.write(bytes, withoutResponse: false, timeout: 5);
+        return true;
+      } catch (e) {
+        if (attempt == maxRetries - 1) {
+          debugPrint(
+              'BleBridge: send "${msg.topic}" failed after $maxRetries: $e');
+        }
+      }
+    }
+    return false;
+  }
 
   void _registerBleSubscriber(BluetoothDevice device) {
     _connSub =

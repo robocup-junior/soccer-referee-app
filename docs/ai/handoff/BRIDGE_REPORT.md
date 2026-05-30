@@ -184,3 +184,108 @@ Removed from `settings.dart`: the "Auto-connect" `SettingSwitch`. GATT-level
 Spec updated to match: BRIDGE-02a/06 notes, and **BRIDGE-07 cancelled** (it was
 the launch auto-connect task). Re-verified: both bridge files + settings.dart
 analyze with no new issues; debug APK rebuilds.
+
+## BRIDGE-03 — Add queue + write-with-response to BleBridgeService
+
+**Summary**: Replaced the bridge publish stubs with an enabled-only, non-blocking FIFO queue. Pending messages are deduplicated by topic so the latest score/color snapshot wins, and the queue drains one write-with-response at a time with retry.
+
+**Files changed/created**:
+- `lib/services/ble_bridge_service.dart` — added `Queue<BridgeMessage>`, `_sendInProgress`, topic deduplication, queue processing, and `_sendWithRetry()`.
+
+**Deviations**: none.
+
+**Verification results**:
+```text
+$ flutter analyze lib/services/ble_bridge_service.dart
+Analyzing ble_bridge_service.dart...
+No issues found! (ran in 0.1s)
+
+$ grep -n "withoutResponse\|_sendInProgress\|removeWhere\|Completer" lib/services/ble_bridge_service.dart
+26:  bool _sendInProgress = false;
+100:    _queue.removeWhere((m) => m.topic == topic);
+107:    if (_sendInProgress || _queue.isEmpty || !isConnected) return;
+109:    _sendInProgress = true;
+116:    _sendInProgress = false;
+123:        await _txChar!.write(bytes, withoutResponse: false, timeout: 5);
+```
+
+**Manual test status**: Not run; requires Pixel 10 and physical bridge hardware for Gate B.
+
+**Open questions / risks**: Gate B should confirm the bridge accepts ATT write-with-response frames reliably while connected.
+
+## BRIDGE-04 — Publish score + color from Game
+
+**Summary**: Added bridge score/color fan-out from `Game` after the existing MQTT score publish path. New-game reset sends `team1_score`, `team2_score`, `team1_color`, and `team2_color`; score changes send the same four topics without awaiting the bridge service.
+
+**Files changed/created**:
+- `lib/models/game.dart` — imported `BridgeTopics`, added team-id-to-color mapping, added `_publishScoreToBridge()`, and called it from `gameInit()` and `notifyModulesScore()`.
+
+**Deviations**: Also cleaned four existing analyzer-only issues in `game.dart` (`const Duration`, two `print` calls changed to `debugPrint`, and braces around one `if`) so the task's targeted analyzer command exits cleanly.
+
+**Verification results**:
+```text
+$ flutter analyze lib/models/game.dart
+Analyzing game.dart...
+No issues found! (ran in 0.2s)
+
+$ grep -n "bleBridgeService\|_publishScoreToBridge\|_teamColorHex" lib/models/game.dart
+41:  BleBridgeService bleBridgeService = BleBridgeService();
+116:    _publishScoreToBridge();
+350:    _publishScoreToBridge();
+353:  String _teamColorHex(Team team) => team.id == 'A' ? '77FF00' : 'FF00FF';
+355:  void _publishScoreToBridge() {
+356:    bleBridgeService.publishTopic(
+358:    bleBridgeService.publishTopic(
+360:    bleBridgeService.publishTopic(
+361:        BridgeTopics.team1Color, _teamColorHex(teams[0]));
+362:    bleBridgeService.publishTopic(
+363:        BridgeTopics.team2Color, _teamColorHex(teams[1]));
+
+$ grep -n "await.*bleBridgeService" lib/models/game.dart
+# no output, as required
+```
+
+Additional workflow check:
+```text
+$ flutter analyze
+Analyzing rcj_scoreboard...
+150 issues found. (ran in 1.1s)
+```
+
+The remaining full-project analyzer issues are outside the Milestone B bridge/game changes.
+
+**Manual test status**: Gate B was not run in this environment; it requires Pixel 10 and the physical scoreboard bridge.
+
+**Open questions / risks**: Gate B still needs to verify score display, neon green/magenta colors by team id after team-order switch, reset to 0-0, and optional RS485/debug capture of the four frames.
+
+## Milestone B review (Claude Code, 2026-05-31)
+
+**Verdict: PASS.** BRIDGE-03/04 match the specs. `publishTopic` self-guards on
+`!isEnabled`; queue dedups by topic; drain uses write-with-response with retry.
+`_publishScoreToBridge()` fires at `gameInit()` (reset) and `notifyModulesScore()`
+(goal), colors by team id (A `77FF00` / B `FF00FF`), fire-and-forget (no
+`await` on the bridge service — robot play/stop latency unaffected; play/stop
+path untouched). Both files analyze clean; debug APK builds. The 4 incidental
+`game.dart` lint cleanups (`const Duration`, `print`→`debugPrint`, braces) are
+safe and disclosed.
+
+**One fix applied during review — dedup-during-send race in `_processQueue()`.**
+The original peek-send-`removeFirst` pattern could, if a `publishTopic()` landed
+during the in-flight BLE write, let `removeWhere` shift the queue so the later
+`removeFirst()` dropped a *different, unsent* message. Real-world probability is
+near zero (window = one ~tens-of-ms write, scores are human-paced), but it is a
+genuine correctness flaw. Changed to **pop-before-await**: `final msg =
+_queue.removeFirst();` then `await _sendWithRetry(msg);`. The in-flight message
+is no longer in the queue, so a concurrent same-topic publish just enqueues a
+fresh value for the next iteration. Re-analyzed clean; APK rebuilds.
+
+**Second fix during Gate B — team swap did not reach the scoreboard.** Gate B on
+Pixel 10 surfaced that swapping team positions at half-time only updated the
+board on the *next* goal. `_publishScoreToBridge()` was wired into `gameInit()`
+and the score path but not into `toggleTeamOrder()` (the swap chokepoint, also
+used by `setTeamToDefaultOrder()`). Added `_publishScoreToBridge()` there so the
+swapped score+color push immediately. Verified on device: board swaps numbers
+and colors at once; subsequent goals land on the correct side.
+
+**Gate B result: PASS** (Pixel 10, with the two fixes above). Score displays in
+team colors, updates on goals, swaps correctly, resets to 0-0.
