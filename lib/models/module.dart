@@ -50,6 +50,10 @@ class Module with ChangeNotifier {
   int _penaltyTime = 0;
   String macAddress = '';
   String bleStatus = 'Disconnected';
+  // True while we want to be connected (connect tapped, autoConnect active).
+  // Lets a device-level disconnect read as "Connecting..." (still trying) rather
+  // than "Disconnected", until the user explicitly disconnects.
+  bool _connectIntent = false;
   BluetoothDevice? bleDevice;
   StreamSubscription<BluetoothConnectionState>? subscription;
   BluetoothCharacteristic? bleTX;
@@ -104,6 +108,7 @@ class Module with ChangeNotifier {
     subscription?.cancel();
     //bleDevice?.disconnect();
 
+    _connectIntent = true;
     bleStatus = 'Connecting...';
     notifyListeners();
 
@@ -311,7 +316,11 @@ class Module with ChangeNotifier {
     // cancel to prevent duplicate listeners
     subscription?.cancel();
 
+    // Explicit user disconnect — stop intending to be connected so the status
+    // reads "Disconnected" rather than "Connecting...".
+    _connectIntent = false;
     _isConnected = false;
+    bleStatus = 'Disconnected';
 
     notifyListeners();
 
@@ -506,7 +515,10 @@ class Module with ChangeNotifier {
         // 1. typically, start a periodic timer that tries to
         //    reconnect, or just call connect() again right now
         // 2. you must always re-discover services after disconnection!
-        bleStatus = 'Disconnected';
+        // While we still intend to be connected (autoConnect is retrying in the
+        // background), report "Connecting..." instead of "Disconnected" — this
+        // also covers the initial disconnected event right after connect().
+        bleStatus = _connectIntent ? 'Connecting...' : 'Disconnected';
         notifyListeners();
         print("disconnect");
       } else if (state == BluetoothConnectionState.connected) {

@@ -24,6 +24,10 @@ class BleBridgeService extends ChangeNotifier {
   StreamSubscription<BluetoothConnectionState>? _connSub;
   final Queue<BridgeMessage> _queue = Queue<BridgeMessage>();
   bool _sendInProgress = false;
+  // True while we want to be connected (connect() called, autoConnect active).
+  // Lets a device-level disconnect read as "Connecting..." (still retrying)
+  // instead of "Disconnected", until disconnect() is called explicitly.
+  bool _connectIntent = false;
 
   final ValueNotifier<BridgeConnectionState> connectionStateNotifier =
       ValueNotifier(BridgeConnectionState.disconnected);
@@ -66,6 +70,7 @@ class BleBridgeService extends ChangeNotifier {
       return;
     }
 
+    _connectIntent = true;
     connectionStateNotifier.value = BridgeConnectionState.connecting;
 
     try {
@@ -80,6 +85,8 @@ class BleBridgeService extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
+    // Explicit user disconnect — stop intending to be connected.
+    _connectIntent = false;
     await _connSub?.cancel();
     _connSub = null;
 
@@ -143,7 +150,11 @@ class BleBridgeService extends ChangeNotifier {
 
       if (state == BluetoothConnectionState.disconnected) {
         _txChar = null;
-        connectionStateNotifier.value = BridgeConnectionState.disconnected;
+        // Still intending to be connected (autoConnect retrying, or the initial
+        // disconnected event right after connect()) → show "Connecting...".
+        connectionStateNotifier.value = _connectIntent
+            ? BridgeConnectionState.connecting
+            : BridgeConnectionState.disconnected;
         notifyListeners();
       } else if (state == BluetoothConnectionState.connected) {
         await _onConnected();
@@ -175,6 +186,9 @@ class BleBridgeService extends ChangeNotifier {
   }
 
   Future<void> _setErrorAndDisconnect() async {
+    // Gave up (setup/discovery error) — drop the connect intent so a stray
+    // event can't flip the status back to "Connecting...".
+    _connectIntent = false;
     await _connSub?.cancel();
     _connSub = null;
 
