@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'dart:async';
 import 'package:rcj_scoreboard/models/team.dart';
+import 'package:rcj_scoreboard/services/ble_bridge_service.dart';
 import 'package:rcj_scoreboard/services/mqtt.dart';
 import 'package:rcj_scoreboard/services/match_data.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -36,6 +37,7 @@ class Game with ChangeNotifier {
   SharedPreferences? _prefs;
   //MQTT
   MqttService mqttService = MqttService();
+  BleBridgeService bleBridgeService = BleBridgeService();
   MatchDataService matchDataService = MatchDataService();
 
   // Callback to request showing the dialog

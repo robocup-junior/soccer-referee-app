@@ -631,7 +631,11 @@ Create `lib/services/ble_bridge_service.dart` with:
   (follow mqtt.dart exactly), keys:
   - `bridge_enabled` (bool) → `isEnabled`
   - `bridge_mac_address` (String) → `bridgeMacAddress`
-  - `bridge_auto_connect` (bool) → `autoConnect`
+  - (No `bridge_auto_connect` — phone-side launch auto-connect was dropped
+    on 2026-05-31 after Gate A. Referees swap phones between games, so a
+    freshly-opened app must NOT auto-grab the bridge. Connect is always
+    manual. GATT-level `autoConnect: true` in `connect()` is unrelated and
+    stays.)
 - `Future<void> loadPreferences()` (called from constructor, same as MqttService)
 - `bool get isConnected => connectionStateNotifier.value == BridgeConnectionState.connected;`
 - Stub methods that BRIDGE-02b/03 will fill in (declare them now so the file
@@ -649,7 +653,7 @@ Create `lib/services/ble_bridge_service.dart` with:
 **Verification commands**:
 ```bash
 flutter analyze lib/services/ble_bridge_service.dart
-grep -n "bridge_enabled\|bridge_mac_address\|bridge_auto_connect\|BridgeConnectionState" lib/services/ble_bridge_service.dart
+grep -n "bridge_enabled\|bridge_mac_address\|BridgeConnectionState" lib/services/ble_bridge_service.dart
 ```
 
 **Risks**: Very low. No BLE, pure state + prefs.
@@ -833,13 +837,8 @@ ValueListenableBuilder<BridgeConnectionState>(
             }
           },
         ),
-        SettingSwitch(
-          title: 'Auto-connect',
-          value: widget.game.bleBridgeService.autoConnect,
-          onChanged: (value) {
-            setState(() { widget.game.bleBridgeService.autoConnect = value; });
-          },
-        ),
+        // (No "Auto-connect" switch — phone-side launch auto-connect was
+        // dropped after Gate A. Connect is always manual.)
         SettingButton(
           title: 'Bridge connection',
           buttonText: bridgeState == BridgeConnectionState.connected ? 'Disconnect' : 'Connect',
@@ -884,8 +883,8 @@ Run the app on the Pixel 10 with a real bridge device powered on. Verify:
 3. Enter the bridge MAC manually OR tap "Scan QR" and scan the bridge's MAC QR.
 4. Tap "Connect" → status becomes "Connecting..." then "Connected".
 5. Tap "Disconnect" → status becomes "Disconnected".
-6. Toggle "Auto-connect" on; confirm the setting persists across an app restart
-   (reopen Settings, it is still on, MAC still present).
+6. Confirm the MAC persists across an app restart (reopen Settings, MAC still
+   present). Connect stays manual — the app does NOT auto-connect on launch.
 
 **Do not proceed to Milestone B until Gate A passes.** If connection fails,
 the problem is isolated to BRIDGE-02b (BLE logic) or BRIDGE-06 (UI wiring).
@@ -1078,42 +1077,16 @@ With the bridge connected (Gate A passing):
 
 ---
 
-### BRIDGE-07 — Auto-connect the bridge on app start
+### BRIDGE-07 — ~~Auto-connect the bridge on app start~~ CANCELLED (2026-05-31)
 
-**Goal**: If `bridge_enabled` and `bridge_auto_connect` are true and a MAC is set,
-attempt the bridge connection shortly after launch.
+**CANCELLED after Gate A.** Phone-side launch auto-connect is intentionally NOT
+implemented. Referees swap phones between games, so a freshly-opened app must not
+auto-grab a bridge that another phone may now be driving. Connect is always
+manual. (GATT-level `autoConnect: true` inside `connect()`, which makes the
+bridge/module reconnect after a link drop, is a separate mechanism and stays.)
+The `bridge_auto_connect` pref and the "Auto-connect" toggle were removed.
 
-**Context files to read first**:
-- `lib/services/ble_bridge_service.dart` (BRIDGE-02a/02b)
-
-**Target files to modify**:
-- `lib/services/ble_bridge_service.dart`
-
-**Files NOT to touch**: All other files.
-
-**Implementation**:
-At the end of `loadPreferences()`, after all settings are read:
-```dart
-if (isEnabled && autoConnect && bridgeMacAddress.isNotEmpty) {
-  // Delay so the BLE adapter has time to initialize.
-  Future.delayed(const Duration(seconds: 2), () => connect());
-}
-```
-
-**Acceptance criteria**:
-- With all three conditions true, a connection attempt starts ~2 s after launch
-  (status → "Connecting...").
-
-**Verification commands**:
-```bash
-grep -n "autoConnect\|loadPreferences\|Future.delayed" lib/services/ble_bridge_service.dart
-flutter analyze lib/services/ble_bridge_service.dart
-```
-
-**Manual test**: Configure MAC + enable + auto-connect, kill and relaunch,
-observe Settings → BLE Bridge status transitions to "Connecting".
-
-**Risks**: Low. Delayed and guarded.
+Milestone C is now just BRIDGE-08 → 09.
 
 ---
 
@@ -1208,7 +1181,8 @@ regresses, do NOT mark the feature complete; report it.
 
 ### ✅ TEST GATE C — Polish verified (on Pixel 10)
 
-1. With auto-connect on, kill and relaunch → bridge reconnects automatically.
+1. Kill and relaunch → MAC still set; bridge does NOT auto-connect (Connect is
+   manual by design — see cancelled BRIDGE-07).
 2. `flutter test` passes.
 3. **Latency regression**: 10 modules + bridge connected and receiving scores →
    START/STOP feels identical to before the bridge existed. THIS IS THE SAFETY
@@ -1227,7 +1201,7 @@ AUDIT-FIX-03 (independent)                                            [DONE]
 BRIDGE — do one MILESTONE at a time; pass its TEST GATE before the next:
   Milestone A: BRIDGE-01 → 02a → 02b → 05 → 06   → GATE A (connect)
   Milestone B: BRIDGE-03 → 04                    → GATE B (score+color displays)
-  Milestone C: BRIDGE-07 → 08 → 09               → GATE C (polish + latency safety)
+  Milestone C: BRIDGE-08 → 09 (BRIDGE-07 cancelled) → GATE C (polish + latency safety)
 ```
 
 PLAY and AUDIT tasks are independent of BRIDGE tasks. Within BRIDGE, the order

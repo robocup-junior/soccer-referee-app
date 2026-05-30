@@ -5,10 +5,8 @@ import 'package:rcj_scoreboard/models/game.dart';
 import 'package:flutter/services.dart';
 
 void main() {
-
   WidgetsFlutterBinding.ensureInitialized();
-  SystemChrome.setPreferredOrientations(
-  [DeviceOrientation.portraitUp]);
+  SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
   // // A team
   // Module moduleA1 = Module('A1');
@@ -33,7 +31,7 @@ void main() {
 
   Game game = Game();
 
-  runApp(MyApp(game : game));
+  runApp(MyApp(game: game));
 }
 
 class MyApp extends StatelessWidget {
@@ -46,9 +44,12 @@ class MyApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: game),
+        ChangeNotifierProvider.value(value: game.bleBridgeService),
         ...game.teams.map((team) => ChangeNotifierProvider.value(value: team)),
-        ...game.teams[0].modules.map((module) => ChangeNotifierProvider.value(value: module)),
-        ...game.teams[1].modules.map((module) => ChangeNotifierProvider.value(value: module)),
+        ...game.teams[0].modules
+            .map((module) => ChangeNotifierProvider.value(value: module)),
+        ...game.teams[1].modules
+            .map((module) => ChangeNotifierProvider.value(value: module)),
       ],
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
