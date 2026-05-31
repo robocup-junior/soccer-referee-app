@@ -118,6 +118,9 @@ class Module with ChangeNotifier {
       //bleStatus = 'Connecting...';
       await bleDevice?.connect(autoConnect:true, mtu: null);
     } catch (e) {
+      // Gave up — drop the connect intent (parity with the bridge) so a stray
+      // event can never flip "Connection error" back to "Connecting...".
+      _connectIntent = false;
       bleStatus = 'Connection error';
       print('BLE connect error');
       subscription?.cancel();
