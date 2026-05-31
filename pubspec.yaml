@@ -82,7 +82,9 @@ flutter_native_splash:
   branding: "assets/branding/fuze.png"
   android_12:
     color: "#000000"
-    image: "assets/icon/logo_padded.png"
+    # Extra padding (ball ~55% of canvas) so it stays clearly round inside the
+    # OEM icon mask — circle on Pixel, squircle on Samsung One UI.
+    image: "assets/icon/logo_splash.png"
     icon_background_color: "#00a099"
     branding: "assets/branding/fuze.png"
 
