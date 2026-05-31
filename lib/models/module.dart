@@ -311,7 +311,11 @@ class Module with ChangeNotifier {
 
 
   void bleDisconnect() async {
-    if (bleDevice == null || !bleDevice!.isConnected) return;
+    // Note: no `!isConnected` guard. While autoConnect is still retrying the
+    // device is NOT connected, yet we must still call disconnect() to cancel
+    // that pending retry loop and clear the connect intent — otherwise a dead
+    // module is stuck on "Connecting..." forever with no way out.
+    if (bleDevice == null) return;
 
     // Disconnect from device also disable auto connect
     await bleDevice?.disconnect();
@@ -548,6 +552,9 @@ class Module with ChangeNotifier {
 
   bool get isEnabled => _isEnabled;
   bool get isConnected => _isConnected;
+  // Trying to connect (autoConnect retrying), not yet connected. Lets the UI
+  // offer a Cancel action to break out of an endless "Connecting..." loop.
+  bool get isConnecting => _connectIntent && !_isConnected;
   bool get isPlaying => _isPlaying;
   String get name => _name;
   int get penaltyTime => _penaltyTime;

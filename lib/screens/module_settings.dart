@@ -225,7 +225,9 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
               child: ElevatedButton(
 
                 onPressed: () async {
-                  if (module.isConnected) {
+                  // Connected OR mid-connect → the button cancels/disconnects,
+                  // so a stuck "Connecting..." (dead module) can always be broken.
+                  if (module.isConnected || module.isConnecting) {
                     module.bleDisconnect();
                   } else {
                     module.setBleDevice(BluetoothDevice.fromId(_controller.text.toUpperCase()));
@@ -236,7 +238,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.grey[700],
                 ),
-                child: Text(module.isConnected ? 'Disconnect' : 'Connect', style: TextStyle(color: Colors.white, fontSize: 16, ),),
+                child: Text(module.isConnected ? 'Disconnect' : module.isConnecting ? 'Cancel' : 'Connect', style: TextStyle(color: Colors.white, fontSize: 16, ),),
               ),
             ),
 
