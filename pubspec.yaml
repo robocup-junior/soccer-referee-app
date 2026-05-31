@@ -57,6 +57,35 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^4.0.0
 
+  # Icon + splash generators (used at build-config time, not at runtime).
+  flutter_launcher_icons: ^0.14.1
+  flutter_native_splash: ^2.4.4
+
+# Adaptive launcher icon: white RCJ logo on the brand teal, filling the circle.
+flutter_launcher_icons:
+  android: true
+  ios: false
+  min_sdk_android: 21
+  image_path: "assets/icon/logo_full.png"
+  adaptive_icon_background: "#00a099"
+  # Full-bleed logo; flutter_launcher_icons adds its own 16% safe-zone inset.
+  adaptive_icon_foreground: "assets/icon/logo_trans.png"
+
+# Splash: black full-screen background, teal circle with the white logo centered,
+# RoboFuze wordmark as bottom branding.
+flutter_native_splash:
+  android: true
+  ios: false
+  web: false
+  color: "#000000"
+  image: "assets/icon/logo_full.png"
+  branding: "assets/branding/fuze.png"
+  android_12:
+    color: "#000000"
+    image: "assets/icon/logo_padded.png"
+    icon_background_color: "#00a099"
+    branding: "assets/branding/fuze.png"
+
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
 
