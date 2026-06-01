@@ -269,7 +269,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                         ? 'Connected'
                                         : connectionState ==
                                                 MqttConnectionStateEx.connecting
-                                            ? 'Connecting'
+                                            ? 'Connecting...'
                                             : connectionState ==
                                                     MqttConnectionStateEx.error
                                                 ? (widget
