@@ -14,6 +14,7 @@ This file tells future Claude/Codex agents what each documentation file contains
 | For Android/Play work | `04_ANDROID15_PLAY_COMPLIANCE_PLAN.md` | Edge-to-edge, deprecated APIs, 16 kB pages |
 | For BLE bridge work | `05_BLE_BRIDGE_FEATURE_PLAN.md` | Full feature design and protocol proposal |
 | For task execution | `06_CODEX_TASKS.md` | Specific small tasks with step-by-step instructions |
+| For what actually shipped | `handoff/BRIDGE_REPORT.md`, `handoff/AUDIT-FIX-03_REPORT.md` | Codex/Claude review notes, gate results, fixes as built |
 
 ## Topic routing
 
@@ -46,6 +47,18 @@ This file tells future Claude/Codex agents what each documentation file contains
 - Build outputs (use `build/` tree — but do not modify)
 - Secrets or credentials (these are never documented here)
 
+## Release status
+- **0.9.8 / versionCode 10** shipped to Google Play **Production (100%)** on
+  **2026-06-01**, git tag **`v0.9.8`** (commit that built it: `5750ca5`). Includes
+  the Play-compliance toolchain upgrade + BLE bridge iteration 1. Working version
+  is now `0.9.9+11` (next dev cycle).
+- Play App Signing is enabled; the upload key is `upload` (keystore + passwords
+  backed up by the owner, outside the repo). `android/key.properties` is gitignored.
+
 ## Freshness
-This documentation was generated on **2026-05-24** from Flutter 3.22.2 / pubspec.lock snapshot.
-Verify current versions with `flutter --version` and `cat pubspec.lock` before acting on version-specific claims.
+This documentation was first generated **2026-05-24** (Flutter 3.22.2) and last
+synced **2026-06-01** for the 0.9.8 release (Flutter **3.44.0**). The 0x–0x docs
+below may still describe the *pre-upgrade* world or *proposal-stage* designs — when
+they conflict with `CLAUDE.md` or the `handoff/` reports, the newer file wins.
+Always verify versions with `flutter --version` and `pubspec.yaml` before acting on
+version-specific claims.

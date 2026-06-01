@@ -1,5 +1,16 @@
 # BLE Bridge Feature Plan
 
+> ## ✅ STATUS (2026-06-01): ITERATION 1 SHIPPED
+> Iteration 1 is **built, tested, and shipped in Play release 0.9.8** (versionCode
+> 10, tag `v0.9.8`). Milestones A/B/C complete (Codex built A/B, Claude Code
+> reviewed + fixed; BRIDGE-07 auto-connect cancelled). Gates A/B + robot-latency
+> check all passed on Pixel 10; verified on Galaxy A52s. As-built details +
+> review notes are in `handoff/BRIDGE_REPORT.md`. Source: `ble_bridge_service.dart`,
+> `bridge_message.dart`, tests in `test/bridge_message_test.dart`. The firmware
+> (WS2812B scoreboard + RS485 forwarder) lives in a **separate FW repo** written by
+> the owner. The "CONFIRMED ARCHITECTURE" box below is the design that shipped; the
+> proposal sections beneath it are historical.
+
 
 
 > ## ⚠️ CONFIRMED ARCHITECTURE (2026-05-30) — READ THIS FIRST

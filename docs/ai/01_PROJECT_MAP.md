@@ -1,5 +1,12 @@
 # Project Map
 
+> ⚠️ **Freshness (2026-06-01):** version strings in this file (AGP 8.1.4, NDK 25,
+> Flutter 3.22.2, Gradle 8.7, pubspec.lock July 2025) are from the original
+> 2026-05-24 snapshot and are **out of date**. Current shipped toolchain is in
+> `CLAUDE.md` (Flutter 3.44.0, AGP 8.11.1, Gradle 8.14, NDK r28.2, Kotlin 2.2.20,
+> minSdk 24). File paths/symbols below are still accurate; treat version numbers as
+> historical.
+
 ## Repository layout
 
 ```
@@ -7,8 +14,9 @@ rcj_scoreboard/
 ├── lib/                        # All Dart/Flutter source
 │   ├── main.dart               # Entry point, provider registration, orientation lock
 │   ├── models/
-│   │   ├── game.dart           # Central game state + timer + MQTT orchestration
+│   │   ├── game.dart           # Central game state + timer + MQTT + bridge orchestration
 │   │   ├── module.dart         # BLE robot module model + all BLE send logic
+│   │   ├── bridge_message.dart # BridgeMessage framing + BridgeTopics names (BLE bridge)
 │   │   └── team.dart           # Team name + score
 │   ├── screens/
 │   │   ├── home.dart           # Main control UI (double-tap all actions)
@@ -18,6 +26,7 @@ rcj_scoreboard/
 │   ├── services/
 │   │   ├── ble.dart            # BLE adapter init/enable helper only
 │   │   ├── mqtt.dart           # MQTT publish service + SharedPreferences persistence
+│   │   ├── ble_bridge_service.dart # BLE scoreboard bridge: MQTT-over-BLE, dedup queue, ACK
 │   │   └── match_data.dart     # HTTP match schedule fetch + SharedPreferences
 │   └── utils/
 │       └── colors.dart         # App color constants (AppColors)
@@ -34,6 +43,7 @@ rcj_scoreboard/
 │   ├── settings.gradle         # AGP plugin 8.3.2, Kotlin 1.7.10 ← mismatch
 │   └── gradle/wrapper/gradle-wrapper.properties  # Gradle 8.7
 ├── test/
+│   ├── bridge_message_test.dart # BLE bridge: framing, BridgeTopics, queue dedup (10 tests)
 │   └── widget_test.dart        # Broken smoke test (calls MyApp() without required game param)
 ├── pubspec.yaml                # Dependencies
 ├── pubspec.lock                # Locked versions (snapshot from 2025-07-17)
@@ -93,6 +103,25 @@ rcj_scoreboard/
 - Persists settings to `SharedPreferences` (keys: `mqtt_*`)
 - Key publish methods: `publishTime`, `publishScore`, `publishTeamNames`, `publishTeam`, `publishGameState`
 - Topic structure: `rcj_soccer/[field_N]/[subtopic]`
+
+### `BLEBridgeService` — `lib/services/ble_bridge_service.dart`
+- BLE scoreboard bridge (iteration 1). Publishes the **same `(topic,value)` data the
+  MqttService builds**, framed as `topic + 0x00 + value` (UTF-8) — see
+  `bridge_message.dart` (`BridgeMessage`, `BridgeTopics`).
+- Uses Nordic UART Service (same UUIDs as the modules). Write-with-response
+  (`withoutResponse: false`) acts as the ACK.
+- Per-topic **dedup queue** (`Queue<BridgeMessage>` + `_sendInProgress`): a newer value
+  for a topic replaces the queued older one; `_processQueue` pops-before-await so a
+  publish landing mid-send can't drop an unsent message.
+- `connectionStateNotifier` (`BridgeConnectionState`), `queueDepthNotifier`.
+  `_connectIntent` mirrors the module pattern so a device-level disconnect reads
+  "Connecting…" while autoConnect retries; `bleDisconnect()` clears it to break a stuck
+  loop. **Phone-side launch auto-connect was intentionally removed** (referees swap
+  phones between games) — only GATT-level `autoConnect:true` remains.
+- `Game` fans out to both transports via helpers: `_broadcastScore()` /
+  `_broadcastTeamInfo()` / `_broadcastStageAndTime()` / `_broadcastFullState()`. MQTT
+  behavior is byte-for-byte unchanged; the bridge is purely additive.
+- **Fully separate from the robot START/STOP path** — never awaited on that path.
 
 ### `MatchDataService` — `lib/services/match_data.dart:37`
 - Not a `ChangeNotifier`; uses `ValueNotifier<String> stateNotifier`
