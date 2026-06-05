@@ -18,7 +18,7 @@ void main() async {
 class MyApp extends StatelessWidget {
   final Game game;
 
-  MyApp({required this.game});
+  const MyApp({required this.game, super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -35,13 +35,13 @@ class MyApp extends StatelessWidget {
         theme: ThemeData(
           brightness: Brightness.dark,
           primarySwatch: Colors.blue,
-          textTheme: TextTheme(
+          textTheme: const TextTheme(
             //bodySmall: TextStyle(color: Colors.white),
             bodyMedium: TextStyle(color: Colors.white),
             //bodyLarge: TextStyle(color: Colors.white),
           ),
         ),
-        home: Home(),
+        home: const Home(),
       ),
     );
   }

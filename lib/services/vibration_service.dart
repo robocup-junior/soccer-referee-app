@@ -22,7 +22,7 @@ class VibrationService with ChangeNotifier {
   Future<void> _initVibrator() async {
     if (kIsWeb) return;
     try {
-      _hasVibrator = await Vibration.hasVibrator() ?? false;
+      _hasVibrator = await Vibration.hasVibrator();
     } catch (_) {}
   }
 

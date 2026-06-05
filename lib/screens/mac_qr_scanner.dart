@@ -10,7 +10,7 @@ class BarcodeScannerSimple extends StatefulWidget {
 
 class _BarcodeScannerSimpleState extends State<BarcodeScannerSimple> {
   Barcode? _barcode;
-  bool pop_enable = true;  // to make sure pop is called only ones
+  bool popEnable = true;  // to make sure pop is called only once
 
   bool isValidMacAddress(String? macAddress) {
     if (macAddress == null) {
@@ -56,8 +56,8 @@ class _BarcodeScannerSimpleState extends State<BarcodeScannerSimple> {
 
   void _handleBarcode(BarcodeCapture barcodes) {
 
-    if (pop_enable && isValidMacAddress(barcodes.barcodes.firstOrNull?.displayValue)) {
-      pop_enable = false;
+    if (popEnable && isValidMacAddress(barcodes.barcodes.firstOrNull?.displayValue)) {
+      popEnable = false;
       Navigator.pop(context, barcodes.barcodes.firstOrNull?.displayValue);
     }
 
@@ -82,7 +82,7 @@ class _BarcodeScannerSimpleState extends State<BarcodeScannerSimple> {
           color: Colors.white,
         ),
         backgroundColor: Colors.blue[900],
-        title: Text('Scan module QR code', style: const TextStyle(color: Colors.white)),
+        title: const Text('Scan module QR code', style: TextStyle(color: Colors.white)),
       ),
       body: Stack(
         children: [
@@ -96,7 +96,7 @@ class _BarcodeScannerSimpleState extends State<BarcodeScannerSimple> {
             child: Container(
               alignment: Alignment.bottomCenter,
               height: 100,
-              color: Colors.black.withOpacity(0.85),
+              color: Colors.black.withValues(alpha: 0.85),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [

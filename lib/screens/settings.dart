@@ -7,11 +7,10 @@ import '../utils/colors.dart';
 class SettingsScreen extends StatefulWidget {
   final Game game;
 
-  SettingsScreen({required this.game});
+  const SettingsScreen({super.key, required this.game});
 
   @override
-  _SettingsScreenState createState() => _SettingsScreenState();
-}
+  State<SettingsScreen> createState() => _SettingsScreenState();}
 
 class _SettingsScreenState extends State<SettingsScreen> {
   late SetItem _selectedGameDuration;
@@ -51,18 +50,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _selectedGameDuration = _gameDurations.firstWhere(
-        (item) => item.values == widget.game.periodTime,
-        orElse: () => _gameDurations[4]);
-    _selectedHalftimeBreak = _halftimeBreaks.firstWhere(
-        (item) => item.values == widget.game.halfTimeDuration,
+    _selectedGameDuration =
+        _gameDurations.firstWhere((item) => item.values == widget.game.periodTime, orElse: () => _gameDurations[4]);
+    _selectedHalftimeBreak = _halftimeBreaks.firstWhere((item) => item.values == widget.game.halfTimeDuration,
         orElse: () => _halftimeBreaks[2]);
-    _selectedNumberOfPlayers = _numberOfPlayersList.firstWhere(
-        (item) => item.values == widget.game.numberOfPLayers,
+    _selectedNumberOfPlayers = _numberOfPlayersList.firstWhere((item) => item.values == widget.game.numberOfPLayers,
         orElse: () => _numberOfPlayersList[1]);
-    _selectedPenaltyTime = _penaltyTimes.firstWhere(
-        (item) => item.values == widget.game.penaltyTime,
-        orElse: () => _penaltyTimes[1]);
+    _selectedPenaltyTime =
+        _penaltyTimes.firstWhere((item) => item.values == widget.game.penaltyTime, orElse: () => _penaltyTimes[1]);
   }
 
   @override
@@ -74,10 +69,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     return PopScope(
       canPop: true,
-      onPopInvoked: (didPop) {},
+      onPopInvokedWithResult: (didPop, result) {},
       child: PopScope(
         canPop: false,
-        onPopInvoked: (didPop) {
+        onPopInvokedWithResult: (didPop, result) {
           if (didPop) {
             return;
           }
@@ -129,9 +124,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 ),
                               ],
                             );
-                          }
-                      ),
-
+                          }),
                       SettingsSection(
                         title: 'Current Game',
                         locked: false,
@@ -165,10 +158,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                         ],
                       ),
-
                       ValueListenableBuilder<MqttConnectionStateEx>(
-                          valueListenable:
-                              widget.game.mqttService.connectionStateNotifier,
+                          valueListenable: widget.game.mqttService.connectionStateNotifier,
                           builder: (context, connectionState, child) {
                             return SettingsSection(
                               title: 'MQTT',
@@ -187,7 +178,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       : connectionState == MqttConnectionStateEx.connecting
                                           ? 'Connecting'
                                           : connectionState == MqttConnectionStateEx.error
-                                              ? (widget.game.mqttService.lastErrorMessage.isNotEmpty 
+                                              ? (widget.game.mqttService.lastErrorMessage.isNotEmpty
                                                   ? widget.game.mqttService.lastErrorMessage
                                                   : 'Connection error')
                                               : 'Disconnected',
@@ -204,32 +195,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
                                 SettingInputField(
                                     title: 'Server IP',
-                                    initialValue:
-                                        widget.game.mqttService.server ?? '',
+                                    initialValue: widget.game.mqttService.server ?? '',
                                     onChanged: (value) {
                                       widget.game.mqttService.server = value;
                                     }),
                                 SettingInputField(
                                     title: 'Port',
-                                    initialValue: widget.game.mqttService.port
-                                            ?.toString() ??
-                                        '',
+                                    initialValue: widget.game.mqttService.port?.toString() ?? '',
                                     onChanged: (value) {
-                                      widget.game.mqttService.port =
-                                          int.tryParse(value);
+                                      widget.game.mqttService.port = int.tryParse(value);
                                     }),
                                 SettingInputField(
                                     title: 'Username',
-                                    initialValue:
-                                        widget.game.mqttService.username ?? '',
+                                    initialValue: widget.game.mqttService.username ?? '',
                                     onChanged: (value) {
                                       widget.game.mqttService.username = value;
                                     }),
                                 SettingInputField(
                                     title: 'Password',
                                     isPassword: true,
-                                    initialValue:
-                                        widget.game.mqttService.password ?? '',
+                                    initialValue: widget.game.mqttService.password ?? '',
                                     onChanged: (value) {
                                       widget.game.mqttService.password = value;
                                     }),
@@ -244,17 +229,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 ),
                                 SettingInputField(
                                     title: 'Field Number',
-                                    initialValue: widget.game.mqttService.field_number,
+                                    initialValue: widget.game.mqttService.fieldNumber,
                                     onChanged: (value) {
-                                      widget.game.mqttService.topic_field = value;
+                                      widget.game.mqttService.topicField = value;
                                     }),
                                 SettingButton(
                                   title: 'Connect to MQTT',
-                                  buttonText:
-                                  (connectionState == MqttConnectionStateEx.connected ||
-                                      connectionState == MqttConnectionStateEx.connecting)
-                                          ? 'Disconnect'
-                                          : 'Connect',
+                                  buttonText: (connectionState == MqttConnectionStateEx.connected ||
+                                          connectionState == MqttConnectionStateEx.connecting)
+                                      ? 'Disconnect'
+                                      : 'Connect',
                                   onPressed: () async {
                                     if (connectionState == MqttConnectionStateEx.connected ||
                                         connectionState == MqttConnectionStateEx.connecting) {
@@ -368,10 +352,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           );
                         },
                       ),
-                      SettingsSection(
+                      const SettingsSection(
                         title: 'About',
                         locked: false,
-                        settings: const [
+                        settings: [
                           Padding(
                             padding: EdgeInsets.symmetric(vertical: 4.0),
                             child: Text('Created for RoboFuze.com', style: TextStyle(fontSize: 14)),
@@ -386,7 +370,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                           Padding(
                             padding: EdgeInsets.symmetric(vertical: 4.0),
-                            child: Text('Version: 0.9.7', style: TextStyle(fontSize: 14)),
+                            child: Text('Version: 0.10.0', style: TextStyle(fontSize: 14)),
                           ),
                           Padding(
                             padding: EdgeInsets.symmetric(vertical: 4.0),
@@ -396,21 +380,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             padding: EdgeInsets.symmetric(vertical: 4.0),
                             child: Text('License: Apache 2.0', style: TextStyle(fontSize: 14)),
                           ),
-
                         ],
                       ),
                     ],
                   ),
                 ),
-                // const Row(
-                //   mainAxisAlignment: MainAxisAlignment.center,
-                //   children: [
-                //     Text(
-                //         'Created for RoboFuze.com by Martin Faltus 2025 \nVersion 0.9.2',
-                //         textAlign: TextAlign.center,
-                //         style: TextStyle(fontSize: 12)),
-                //   ],
-                // ),
               ],
             ),
           ),
@@ -428,8 +402,7 @@ class SettingsSection extends StatelessWidget {
   final bool? enabled;
   final ValueChanged<bool>? onToggle;
 
-  SettingsSection(
-      {required this.title, required this.settings, this.locked = false, this.enabled, this.onToggle});
+  const SettingsSection({super.key, required this.title, required this.settings, this.locked = false, this.enabled, this.onToggle});
 
   @override
   Widget build(BuildContext context) {
@@ -445,14 +418,13 @@ class SettingsSection extends StatelessWidget {
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 Text(
                   title,
-                  style: const TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.bold),
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 if (enabled != null && onToggle != null)
                   Switch(
                     value: enabled!,
                     onChanged: onToggle,
-                    activeColor: Colors.blue,
+                    activeThumbColor: Colors.blue,
                   ),
                 if (locked) const Icon(Icons.lock, color: Colors.white),
               ]),
@@ -472,7 +444,7 @@ class SettingDropdownButton extends StatelessWidget {
   final List<SetItem> options;
   final ValueChanged<SetItem?> onChanged;
 
-  SettingDropdownButton({
+  const SettingDropdownButton({super.key,
     required this.title,
     required this.value,
     required this.options,
@@ -512,7 +484,7 @@ class SettingButton extends StatelessWidget {
   final String buttonText;
   final Function()? onPressed;
 
-  SettingButton({
+  const SettingButton({super.key,
     required this.title,
     required this.buttonText,
     required this.onPressed,
@@ -530,11 +502,10 @@ class SettingButton extends StatelessWidget {
             flex: 2,
             child: ElevatedButton(
               onPressed: onPressed,
-              child:
-                  Text(buttonText, style: const TextStyle(color: Colors.white)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.grey[700],
               ),
+              child: Text(buttonText, style: const TextStyle(color: Colors.white)),
             ),
           )
         ],
@@ -585,14 +556,13 @@ class SettingButton extends StatelessWidget {
 //   }
 // }
 
-
 class SettingInputField extends StatefulWidget {
   final String title;
   final String initialValue;
   final ValueChanged<String> onChanged;
   final bool isPassword;
 
-  SettingInputField({
+  const SettingInputField({super.key,
     required this.title,
     required this.initialValue,
     required this.onChanged,
@@ -600,7 +570,7 @@ class SettingInputField extends StatefulWidget {
   });
 
   @override
-  _SettingInputFieldState createState() => _SettingInputFieldState();
+  State <SettingInputField> createState() => _SettingInputFieldState();
 }
 
 class _SettingInputFieldState extends State<SettingInputField> {
@@ -655,7 +625,7 @@ class _SettingInputFieldState extends State<SettingInputField> {
               obscureText: _obscure,
               style: const TextStyle(color: Colors.white),
               decoration: InputDecoration(
-                border: OutlineInputBorder(),
+                border: const OutlineInputBorder(),
                 filled: true,
                 fillColor: Colors.grey[800],
               ),
@@ -667,20 +637,15 @@ class _SettingInputFieldState extends State<SettingInputField> {
   }
 }
 
-
-
-
-
-
 // SettingStatus widget to display the status of a setting
 class SettingStatus extends StatefulWidget {
   final String title;
   final String status;
 
-  SettingStatus({required this.title, required this.status});
+  const SettingStatus({super.key, required this.title, required this.status});
 
   @override
-  _SettingStatusState createState() => _SettingStatusState();
+  State <SettingStatus> createState() => _SettingStatusState();
 }
 
 class _SettingStatusState extends State<SettingStatus> {
@@ -737,8 +702,8 @@ class SettingSwitch extends StatelessWidget {
     required this.title,
     required this.value,
     required this.onChanged,
-    Key? key,
-  }) : super(key: key);
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -753,7 +718,7 @@ class SettingSwitch extends StatelessWidget {
             child: Switch(
               value: value,
               onChanged: onChanged,
-              activeColor: Colors.blue,
+              activeThumbColor: Colors.blue,
             ),
           ),
         ],
@@ -761,8 +726,6 @@ class SettingSwitch extends StatelessWidget {
     );
   }
 }
-
-
 
 // SettingAlertChips widget for multi-select vibration alert thresholds
 class SettingAlertChips extends StatelessWidget {
@@ -776,8 +739,8 @@ class SettingAlertChips extends StatelessWidget {
     required this.options,
     required this.selected,
     required this.onToggle,
-    Key? key,
-  }) : super(key: key);
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -819,10 +782,7 @@ class SetItem {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is SetItem &&
-          runtimeType == other.runtimeType &&
-          values == other.values &&
-          name == other.name;
+      other is SetItem && runtimeType == other.runtimeType && values == other.values && name == other.name;
 
   @override
   int get hashCode => values.hashCode ^ name.hashCode;

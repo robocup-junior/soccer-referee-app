@@ -120,7 +120,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _runClockStartedAt = DateTime.now();
     _runClockStartRemainingTime = _remainingTime;
     notifyListeners();
-    _timer = Timer.periodic(Duration(seconds: 1), (_) {
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (isTimeRunning) {
         _tickTimer();
       }
@@ -162,7 +162,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           timerButtonText = 'REPEAT';
           gameOverAll();
         default:
-          print('unknown match stage');
+          debugPrint('unknown match stage');
       }
 
       mqttService.publishGameState(currentStage);
@@ -284,7 +284,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (!vibrationService.gameTimerEnabled) return;
     if (currentStage != MatchStage.firstHalf &&
         currentStage != MatchStage.halfTime &&
-        currentStage != MatchStage.secondHalf) return;
+        currentStage != MatchStage.secondHalf) {
+      return;
+    }
     if (!vibrationService.gameTimerAlerts.contains(_remainingTime)) return;
 
     vibrationService.vibrateGameTimer();
@@ -360,7 +362,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         NotificationService.scheduleGameAlerts(
             _remainingTime, vibrationService.gameTimerAlerts);
         default:
-          print('unknown match stage');
+          debugPrint('unknown match stage');
       }
     }
     // Damage timers – one notification set per module currently in damage state.
@@ -460,7 +462,7 @@ int getScore(String team, {bool oppositeTeam = false}) {
     for (var team in teams) {
       for (var module in team.modules.where((module) => module.isEnabled && module.isConnected)) {
         module.bleSendScore();
-        print('score sent');
+        debugPrint('score sent');
       }
     }
     // mqtt publish team scores
@@ -534,7 +536,7 @@ int getScore(String team, {bool oppositeTeam = false}) {
     if (match != null) {
       teams[0].name = match.team1;
       teams[1].name = match.team2;
-      mqttService.topic_field = match.field;
+      mqttService.topicField = match.field;
       mqttService.publishTeamNames(teams);
       mqttService.publishTeam(teams);
 

@@ -17,7 +17,7 @@ class ModuleSettingsScreen extends StatefulWidget {
   const ModuleSettingsScreen({super.key});
 
   @override
-  _ModuleSettingsScreen createState() => _ModuleSettingsScreen();
+  State<ModuleSettingsScreen> createState() => _ModuleSettingsScreen();
 }
 
 class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
@@ -182,20 +182,20 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
+                const Text(
                   'Module status:',
                   style: TextStyle(fontSize: 18),
                 ),
                 Text(
                   deviceStatus == 'OK' ? module.bleStatus : deviceStatus,
-                  style: TextStyle(fontSize: 18),
+                  style: const TextStyle(fontSize: 18),
                 ),
               ],
             ),
 
-            SizedBox(height: 10),
-            Divider(),
-            SizedBox(height: 10),
+            const SizedBox(height: 10),
+            const Divider(),
+            const SizedBox(height: 10),
 
             Row(
               crossAxisAlignment: CrossAxisAlignment.center,
@@ -205,18 +205,18 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                     controller: _labelController,
                     decoration: InputDecoration(
                       labelText: 'Bot label (default: ${module.defaultName})',
-                      labelStyle: TextStyle(color: Colors.grey),
+                      labelStyle: const TextStyle(color: Colors.grey),
                       hintText: module.defaultName,
-                      hintStyle: TextStyle(color: Colors.grey),
+                      hintStyle: const TextStyle(color: Colors.grey),
                       helperText: 'First 2 characters shown on robot display',
-                      helperStyle: TextStyle(color: Colors.grey),
-                      border: OutlineInputBorder(),
+                      helperStyle: const TextStyle(color: Colors.grey),
+                      border: const OutlineInputBorder(),
                     ),
-                    style: TextStyle(color: Colors.white),
+                    style: const TextStyle(color: Colors.white),
                     maxLength: 10,
                   ),
                 ),
-                SizedBox(width: 8),
+                const SizedBox(width: 8),
                 ElevatedButton(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.grey[700],
@@ -224,14 +224,14 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                   onPressed: () {
                     module.setLabel(_labelController.text);
                   },
-                  child: Text('Save', style: TextStyle(color: Colors.white)),
+                  child: const Text('Save', style: TextStyle(color: Colors.white)),
                 ),
               ],
             ),
 
-            SizedBox(height: 10),
-            Divider(),
-            SizedBox(height: 10),
+            const SizedBox(height: 10),
+            const Divider(),
+            const SizedBox(height: 10),
 
             TextField(
 
@@ -239,16 +239,16 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
               inputFormatters: [maskFormatter],
               decoration: InputDecoration(
                 labelText: (!kIsWeb && Platform.isIOS) ? 'Enter device UUID' : 'Enter MAC Address',
-                labelStyle: TextStyle(color: Colors.grey),
+                labelStyle: const TextStyle(color: Colors.grey),
                 hintText: (!kIsWeb && Platform.isIOS) ? 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' :'xx:xx:xx:xx:xx:xx',
-                hintStyle: TextStyle(color: Colors.grey),
-                border: OutlineInputBorder(),
+                hintStyle: const TextStyle(color: Colors.grey),
+                border: const OutlineInputBorder(),
 
               ),
-              style: TextStyle(color: Colors.white),
+              style: const TextStyle(color: Colors.white),
               maxLength: (!kIsWeb && Platform.isIOS) ? 36 : 17,
             ),
-            SizedBox(height: 5),
+            const SizedBox(height: 5),
             Container(
               height: 50,
               margin: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 5.0),
@@ -267,11 +267,11 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.grey[700],
                 ),
-                child: Text(module.isConnected ? 'Disconnect' : 'Connect', style: TextStyle(color: Colors.white, fontSize: 16, ),),
+                child: Text(module.isConnected ? 'Disconnect' : 'Connect', style: const TextStyle(color: Colors.white, fontSize: 16, ),),
               ),
             ),
 
-            SizedBox(height: 20),
+            const SizedBox(height: 20),
             Row(
               //mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
@@ -281,22 +281,22 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.grey[700],
                     ),
-                    icon: Icon(Icons.bluetooth, color: Colors.white),
-                    label: Text(bleIsScanning ? 'Stop scanning' : 'Scan Bluetooth', style: TextStyle(color: Colors.white),overflow: TextOverflow.fade,),
+                    icon: const Icon(Icons.bluetooth, color: Colors.white),
+                    label: Text(bleIsScanning ? 'Stop scanning' : 'Scan Bluetooth', style: const TextStyle(color: Colors.white),overflow: TextOverflow.fade,),
                     onPressed: () {
                       bleIsScanning ? FlutterBluePlus.stopScan() : startScanning();
                     },
                   ),
                 ),
-                SizedBox(width: 4,),
+                const SizedBox(width: 4,),
                 Expanded(
                   flex: 1,
                   child: buildQRButton(),
                 ),
               ],
             ),
-            SizedBox(height: 16),
-            Text(
+            const SizedBox(height: 16),
+            const Text(
               'Devices list:',
               style: TextStyle(fontSize: 16),
             ),
@@ -305,20 +305,18 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                 itemCount: devices.length,
 
                 itemBuilder: (context, index) {
-                  return Container(
-                    child: ListTile(
-                      tileColor: selectedIndex == index ? Colors.grey[700] : null,
-                      title: Text(devices[index].platformName, style: TextStyle(color: Colors.white)),
-                      subtitle: Text(devices[index].remoteId.toString(), style: TextStyle(color: Colors.white)),
-                      onTap: () {
-                        if (mounted) {
-                          setState(() {
-                          selectedIndex = index;
-                          _controller.text = devices[index].remoteId.toString();
-                          });
-                        }
-                      },
-                    ),
+                  return ListTile(
+                    tileColor: selectedIndex == index ? Colors.grey[700] : null,
+                    title: Text(devices[index].platformName, style: const TextStyle(color: Colors.white)),
+                    subtitle: Text(devices[index].remoteId.toString(), style: const TextStyle(color: Colors.white)),
+                    onTap: () {
+                      if (mounted) {
+                        setState(() {
+                        selectedIndex = index;
+                        _controller.text = devices[index].remoteId.toString();
+                        });
+                      }
+                    },
                   );
                 },
               ),
@@ -335,11 +333,11 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
         style: ElevatedButton.styleFrom(
           backgroundColor: Colors.grey[700],
         ),
-        icon: Icon(Icons.qr_code_2, color: Colors.white),
-        label: Text('Scan QR code', style: TextStyle(color: Colors.white)),
+        icon: const Icon(Icons.qr_code_2, color: Colors.white),
+        label: const Text('Scan QR code', style: TextStyle(color: Colors.white)),
         onPressed: () async {
           final result = await Navigator.push(context,
-            MaterialPageRoute(builder: (context) => BarcodeScannerSimple()),
+            MaterialPageRoute(builder: (context) => const BarcodeScannerSimple()),
           );
           if (!context.mounted) return;
           if (result != null) {
@@ -358,7 +356,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     Future<void> handleIosResult(dynamic pResult) async {
       bool validResult = false;
       String? bleDeviceName = 'RCJs-m_$pResult';
-      print(bleDeviceName);
+      debugPrint(bleDeviceName);
 
       await FlutterBluePlus.startScan(timeout: const Duration(seconds: 3));
 
@@ -368,7 +366,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
       )) {
         for (ScanResult r in results) {
           if (r.device.platformName == bleDeviceName) {
-            //print('App-specific UUID: ${r.device.remoteId}');
+            //debugPrint('App-specific UUID: ${r.device.remoteId}');
             _controller.text = r.device.remoteId.toString();
             validResult = true;
             await FlutterBluePlus.stopScan();
@@ -382,7 +380,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
       await FlutterBluePlus.stopScan();
 
       //Error handling if no device to mac was found
-      if (!validResult && context.mounted) {
+      if (!validResult && mounted) {
         await showCupertinoDialog(
           context: context,
           builder: (BuildContext context) {
@@ -437,7 +435,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
   //
   //               ElevatedButton(
   //                   onPressed: () {
-  //                     print(_controller.text);
+  //                     debugPrint(_controller.text);
   //                     widget.module.setDevice(BluetoothDevice.fromId(_controller.text.toUpperCase()));
   //                   },
   //                   child: Text('Connect')
