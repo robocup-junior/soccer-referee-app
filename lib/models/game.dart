@@ -6,6 +6,7 @@ import 'package:rcj_scoreboard/services/mqtt.dart';
 import 'package:rcj_scoreboard/services/match_data.dart';
 import 'package:rcj_scoreboard/services/notification_service.dart';
 import 'package:rcj_scoreboard/services/vibration_service.dart';
+import 'package:rcj_scoreboard/services/wakelock_service.dart';
 
 enum MatchStage {
   firstHalf,
@@ -35,6 +36,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   MqttService mqttService = MqttService();
   MatchDataService matchDataService = MatchDataService();
   VibrationService vibrationService = VibrationService();
+  WakelockService wakelockService = WakelockService();
 
 
   // Callback to request showing the dialog
