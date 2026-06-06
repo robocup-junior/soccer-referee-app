@@ -60,8 +60,49 @@ class GamePreset {
       );
 }
 
+class SavedDevice {
+  final String id;
+  String name;
+  final String macAddress;
+  final String label;
+
+  SavedDevice({
+    required this.id,
+    required this.name,
+    required this.macAddress,
+    required this.label,
+  });
+
+  factory SavedDevice.create({
+    required String name,
+    required String macAddress,
+    required String label,
+  }) =>
+      SavedDevice(
+        id: const Uuid().v4(),
+        name: name,
+        macAddress: macAddress,
+        label: label,
+      );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        'macAddress': macAddress,
+        'label': label,
+      };
+
+  factory SavedDevice.fromJson(Map<String, dynamic> json) => SavedDevice(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        macAddress: json['macAddress'] as String? ?? '',
+        label: json['label'] as String? ?? '',
+      );
+}
+
 class PresetService {
   static const _prefsKey = 'module_presets';
+  static const _devicesKey = 'saved_devices';
 
   Future<List<GamePreset>> loadAll() async {
     final prefs = await SharedPreferences.getInstance();
@@ -100,6 +141,46 @@ class PresetService {
     await prefs.setString(
       _prefsKey,
       jsonEncode(presets.map((p) => p.toJson()).toList()),
+    );
+  }
+
+  Future<List<SavedDevice>> loadAllDevices() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_devicesKey);
+    if (raw == null) return [];
+    try {
+      final list = jsonDecode(raw) as List<dynamic>;
+      return list
+          .map((e) => SavedDevice.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } catch (e) {
+      debugPrint('Error loading saved devices: $e');
+      return [];
+    }
+  }
+
+  Future<void> saveDevice(SavedDevice device) async {
+    final devices = await loadAllDevices();
+    final index = devices.indexWhere((d) => d.id == device.id);
+    if (index >= 0) {
+      devices[index] = device;
+    } else {
+      devices.add(device);
+    }
+    await _persistDevices(devices);
+  }
+
+  Future<void> deleteDevice(String id) async {
+    final devices = await loadAllDevices();
+    devices.removeWhere((d) => d.id == id);
+    await _persistDevices(devices);
+  }
+
+  Future<void> _persistDevices(List<SavedDevice> devices) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _devicesKey,
+      jsonEncode(devices.map((d) => d.toJson()).toList()),
     );
   }
 }
