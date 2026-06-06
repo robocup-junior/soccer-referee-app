@@ -546,6 +546,18 @@ class Module with ChangeNotifier {
     notifyListeners();
   }
 
+  void applyPresetConfig(String macAddress, String label) {
+    if (label.isNotEmpty) {
+      setLabel(label);
+    }
+    if (macAddress.isNotEmpty) {
+      setBleDevice(BluetoothDevice.fromId(macAddress.toUpperCase()));
+      if (_isEnabled) {
+        bleConnect();
+      }
+    }
+  }
+
 }
 
 

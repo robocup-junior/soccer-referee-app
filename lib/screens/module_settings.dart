@@ -11,6 +11,7 @@ import 'package:mask_text_input_formatter/mask_text_input_formatter.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
 
 import 'mac_qr_scanner.dart';
+import 'package:rcj_scoreboard/services/preset_service.dart';
 
 class ModuleSettingsScreen extends StatefulWidget {
 
@@ -74,6 +75,87 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     // });
   }
 
+
+  Future<void> _saveCurrentDevice() async {
+    final mac = _controller.text.trim();
+    if (mac.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter a MAC address first')),
+      );
+      return;
+    }
+
+    final nameController = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Save Device'),
+        content: TextField(
+          controller: nameController,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Device name',
+            hintText: 'e.g. Red robot #3',
+          ),
+          onSubmitted: (v) => Navigator.pop(context, v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, null),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, nameController.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (name == null || name.trim().isEmpty) return;
+
+    final device = SavedDevice.create(
+      name: name.trim(),
+      macAddress: mac,
+      label: _labelController.text.trim(),
+    );
+    await PresetService().saveDevice(device);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('"${device.name}" saved')),
+      );
+    }
+  }
+
+  Future<void> _loadSavedDevice() async {
+    final devices = await PresetService().loadAllDevices();
+    if (!mounted) return;
+
+    if (devices.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No saved devices yet')),
+      );
+      return;
+    }
+
+    final selected = await showDialog<SavedDevice>(
+      context: context,
+      builder: (context) => _SavedDevicesDialog(devices: devices),
+    );
+
+    if (selected == null || !mounted) return;
+
+    final module = Provider.of<Module>(context, listen: false);
+    setState(() {
+      _controller.text = selected.macAddress;
+      _labelController.text = selected.label;
+    });
+    module.setLabel(selected.label);
+    module.setBleDevice(BluetoothDevice.fromId(selected.macAddress.toUpperCase()));
+    module.bleConnect();
+    FlutterBluePlus.stopScan();
+  }
 
   void startScanning() async {
     setState(() {
@@ -247,6 +329,32 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
               ),
               style: const TextStyle(color: Colors.white),
               maxLength: (!kIsWeb && Platform.isIOS) ? 36 : 17,
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.grey[700],
+                    ),
+                    icon: const Icon(Icons.bookmark_add_outlined, color: Colors.white),
+                    label: const Text('Save device', style: TextStyle(color: Colors.white)),
+                    onPressed: _saveCurrentDevice,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.grey[700],
+                    ),
+                    icon: const Icon(Icons.bookmark_outlined, color: Colors.white),
+                    label: const Text('Load device', style: TextStyle(color: Colors.white)),
+                    onPressed: _loadSavedDevice,
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 5),
             Container(
@@ -451,6 +559,66 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
   //   );
   // }
  }
+
+class _SavedDevicesDialog extends StatefulWidget {
+  final List<SavedDevice> devices;
+
+  const _SavedDevicesDialog({required this.devices});
+
+  @override
+  State<_SavedDevicesDialog> createState() => _SavedDevicesDialogState();
+}
+
+class _SavedDevicesDialogState extends State<_SavedDevicesDialog> {
+  late List<SavedDevice> _devices;
+
+  @override
+  void initState() {
+    super.initState();
+    _devices = List.from(widget.devices);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Load Saved Device'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: ListView.builder(
+          shrinkWrap: true,
+          itemCount: _devices.length,
+          itemBuilder: (context, index) {
+            final device = _devices[index];
+            return ListTile(
+              title: Text(device.name),
+              subtitle: Text(
+                device.macAddress,
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                onPressed: () async {
+                  await PresetService().deleteDevice(device.id);
+                  setState(() => _devices.removeAt(index));
+                  if (_devices.isEmpty && context.mounted) {
+                    Navigator.pop(context, null);
+                  }
+                },
+              ),
+              onTap: () => Navigator.pop(context, device),
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, null),
+          child: const Text('Cancel'),
+        ),
+      ],
+    );
+  }
+}
 
 
 
