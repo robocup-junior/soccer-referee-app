@@ -7,6 +7,7 @@ import 'package:rcj_scoreboard/services/match_data.dart';
 import 'package:rcj_scoreboard/services/notification_service.dart';
 import 'package:rcj_scoreboard/services/vibration_service.dart';
 import 'package:rcj_scoreboard/services/wakelock_service.dart';
+import 'package:rcj_scoreboard/services/preset_service.dart';
 
 enum MatchStage {
   firstHalf,
@@ -551,6 +552,30 @@ int getScore(String team, {bool oppositeTeam = false}) {
     mqttService.publishTeamNames(teams);
     // mqttService.publishTeam(teams);
     // mqttService.publishScore(teams);
+  }
+
+  GamePreset createPreset(String name) {
+    final configs = teams
+        .expand((t) => t.modules)
+        .where((m) => m.macAddress.isNotEmpty)
+        .map((m) => ModuleConfig(
+              moduleId: m.moduleId,
+              macAddress: m.macAddress,
+              label: m.hasCustomLabel ? m.name : '',
+            ))
+        .toList();
+    return GamePreset.create(name, configs);
+  }
+
+  void applyPreset(GamePreset preset) {
+    for (final config in preset.modules) {
+      final module = teams
+          .expand((t) => t.modules)
+          .where((m) => m.moduleId == config.moduleId)
+          .firstOrNull;
+      module?.applyPresetConfig(config.macAddress, config.label);
+    }
+    notifyListeners();
   }
 
 }

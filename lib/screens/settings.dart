@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/game.dart';
 import '../services/mqtt.dart';
+import '../services/preset_service.dart';
 import '../services/vibration_service.dart';
 import '../utils/colors.dart';
 
@@ -158,6 +159,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                         ],
                       ),
+                      ModulePresetsSection(game: widget.game),
                       ValueListenableBuilder<MqttConnectionStateEx>(
                           valueListenable: widget.game.mqttService.connectionStateNotifier,
                           builder: (context, connectionState, child) {
@@ -805,4 +807,168 @@ class SetItem {
 
   @override
   int get hashCode => values.hashCode ^ name.hashCode;
+}
+
+class ModulePresetsSection extends StatefulWidget {
+  final Game game;
+
+  const ModulePresetsSection({super.key, required this.game});
+
+  @override
+  State<ModulePresetsSection> createState() => _ModulePresetsSectionState();
+}
+
+class _ModulePresetsSectionState extends State<ModulePresetsSection> {
+  final PresetService _presetService = PresetService();
+  List<GamePreset>? _presets;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPresets();
+  }
+
+  Future<void> _loadPresets() async {
+    final presets = await _presetService.loadAll();
+    if (mounted) {
+      setState(() {
+        _presets = presets;
+      });
+    }
+  }
+
+  Future<void> _saveCurrentPreset() async {
+    final name = await _showNameDialog();
+    if (name == null || name.trim().isEmpty) return;
+
+    final preset = widget.game.createPreset(name.trim());
+    await _presetService.save(preset);
+    await _loadPresets();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Preset "${preset.name}" saved')),
+      );
+    }
+  }
+
+  Future<String?> _showNameDialog() async {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Save Preset'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Preset name',
+            hintText: 'e.g. My team robots',
+          ),
+          onSubmitted: (v) => Navigator.pop(context, v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, null),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _loadPreset(GamePreset preset) async {
+    widget.game.applyPreset(preset);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Loaded "${preset.name}" – connecting robots...')),
+      );
+    }
+  }
+
+  Future<void> _deletePreset(GamePreset preset) async {
+    await _presetService.delete(preset.id);
+    await _loadPresets();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final presets = _presets;
+
+    final settingItems = <Widget>[
+      SettingButton(
+        title: 'Save current robot configuration',
+        buttonText: 'Save',
+        onPressed: _saveCurrentPreset,
+      ),
+      if (presets == null)
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 8.0),
+          child: Center(child: CircularProgressIndicator()),
+        )
+      else if (presets.isEmpty)
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 4.0),
+          child: Text(
+            'No presets saved yet.',
+            style: TextStyle(color: Colors.grey, fontSize: 14),
+          ),
+        )
+      else
+        ...presets.map((preset) => _PresetTile(
+              preset: preset,
+              onLoad: () => _loadPreset(preset),
+              onDelete: () => _deletePreset(preset),
+            )),
+    ];
+
+    return SettingsSection(
+      title: 'Module Presets',
+      locked: false,
+      settings: settingItems,
+    );
+  }
+}
+
+class _PresetTile extends StatelessWidget {
+  final GamePreset preset;
+  final VoidCallback onLoad;
+  final VoidCallback onDelete;
+
+  const _PresetTile({
+    required this.preset,
+    required this.onLoad,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              preset.name,
+              style: const TextStyle(fontSize: 14),
+            ),
+          ),
+          TextButton(
+            onPressed: onLoad,
+            child: const Text('Load'),
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline, color: Colors.red),
+            onPressed: onDelete,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+          ),
+        ],
+      ),
+    );
+  }
 }
