@@ -352,6 +352,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           );
                         },
                       ),
+                      AnimatedBuilder(
+                        animation: widget.game.wakelockService,
+                        builder: (context, child) {
+                          final ws = widget.game.wakelockService;
+                          return SettingsSection(
+                            title: 'Display',
+                            locked: false,
+                            settings: [
+                              SettingSwitch(
+                                title: 'Keep Screen Awake',
+                                value: ws.enabled,
+                                onChanged: (value) {
+                                  ws.enabled = value;
+                                },
+                              ),
+                            ],
+                          );
+                        },
+                      ),
                       const SettingsSection(
                         title: 'About',
                         locked: false,
