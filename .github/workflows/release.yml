@@ -21,8 +21,13 @@ jobs:
       - name: Extract version from pubspec.yaml
         id: extract
         run: |
-          VERSION_NAME=$(grep '^version:' pubspec.yaml | awk '{print $2}' | cut -d'+' -f1)
-          VERSION_CODE=${{ github.run_number }}
+          # versionName is the part before '+', versionCode is the build number
+          # after '+'. Deriving the code from pubspec (not github.run_number)
+          # keeps it monotonic with the shipped Play release and deterministic
+          # across re-runs. Bump the '+N' in pubspec.yaml to cut a new release.
+          VERSION_LINE=$(grep '^version:' pubspec.yaml | awk '{print $2}')
+          VERSION_NAME=$(echo "$VERSION_LINE" | cut -d'+' -f1)
+          VERSION_CODE=$(echo "$VERSION_LINE" | cut -d'+' -f2)
           TAG="v${VERSION_NAME}"
           echo "version_name=${VERSION_NAME}" >> $GITHUB_OUTPUT
           echo "version_code=${VERSION_CODE}" >> $GITHUB_OUTPUT
@@ -31,21 +36,14 @@ jobs:
 
       - name: Fail if tag already exists
         run: |
+          # Guard only — does NOT create a tag. The tag is created by the final
+          # github-release job, after a successful signed build, so a failed
+          # build can never leave a dangling tag that blocks every re-run.
           if git rev-parse "${{ steps.extract.outputs.tag }}" >/dev/null 2>&1; then
             echo "ERROR: Tag ${{ steps.extract.outputs.tag }} already exists."
             echo "Bump the version in pubspec.yaml before merging to main."
             exit 1
           fi
-
-      - name: Create and push tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.extract.outputs.tag }}" \
-            -m "Release ${{ steps.extract.outputs.tag }}"
-          git push origin "${{ steps.extract.outputs.tag }}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ── 2. Build signed Android artifacts ───────────────────────────
   build-android:
@@ -57,6 +55,7 @@ jobs:
 
       - uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.44.0'
           channel: stable
           cache: true
 
@@ -71,13 +70,11 @@ jobs:
           storeFile=release.keystore
           EOF
 
-      - name: Set build number
-        run: |
-          sed -i "s/^version:.*/version: ${{ needs.version.outputs.version_name }}+${{ needs.version.outputs.version_code }}/" pubspec.yaml
-
       - name: Install dependencies
         run: flutter pub get
 
+      # versionName/versionCode come straight from pubspec.yaml (version: x.y.z+N),
+      # so no pubspec rewrite is needed here.
       - name: Build signed APK
         run: flutter build apk --release
 
@@ -96,7 +93,7 @@ jobs:
           name: release-aab
           path: build/app/outputs/bundle/release/app-release.aab
 
-  # ── 3. Create GitHub Release ─────────────────────────────────────
+  # ── 3. Create GitHub Release (also creates the tag) ──────────────
   github-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
@@ -125,6 +122,8 @@ jobs:
           echo "EOF" >> $GITHUB_ENV
 
       - name: Create GitHub Release
+        # action-gh-release creates the tag from tag_name at this commit if it
+        # does not yet exist — so the tag only appears once artifacts are built.
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.version.outputs.tag }}
