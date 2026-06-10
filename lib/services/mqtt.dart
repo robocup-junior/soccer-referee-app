@@ -49,8 +49,8 @@ class MqttService {
     _topic = prefs.getString('mqtt_topic') ?? '';
     _port = prefs.getInt('mqtt_port') ?? 8883;
     _server = prefs.getString('mqtt_server') ?? 'f2ec5c0344964af6a9b036e32a4f726c.s1.eu.hivemq.cloud';
-    _username = prefs.getString('mqtt_username') ?? 'RCj_soccer_2025';
-    _password = prefs.getString('mqtt_password') ?? '';
+    _username = prefs.getString('mqtt_username') ?? 'RCj_soccer_2026';
+    _password = prefs.getString('mqtt_password') ?? 'S_p-@P2_rL7ZFv9XYZ';
   }
 
 

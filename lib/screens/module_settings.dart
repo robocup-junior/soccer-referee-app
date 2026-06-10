@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/foundation.dart';
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -38,7 +40,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
   bool setLabelFromModule = true;
 
   bool bleIsScanning = false;
-
+  StreamSubscription<List<ScanResult>>? _scanSubscription;
 
   @override
   void initState() {
@@ -161,32 +163,40 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     setState(() {
       bleIsScanning = true;
     });
-    await FlutterBluePlus.startScan(
-      //withNames: ['RCJ-soccer_module'],
-      //withServices: [Guid('6E400002-B5A3-F393-E0A9-E50E24DCCA9E')],
-      withKeywords: ['RCJ'],
-      timeout: const Duration(seconds: 3),
-    );
-    FlutterBluePlus.scanResults.listen((results) {
-      for (ScanResult result in results) {
-        if (!devices.contains(result.device)) {
-          if (mounted) {
-            setState(() {
-              devices.add(result.device);
-            });
+    await _scanSubscription?.cancel();
+    _scanSubscription = null;
+
+    try {
+      await FlutterBluePlus.startScan(
+        //withNames: ['RCJ-soccer_module'],
+        //withServices: [Guid('6E400002-B5A3-F393-E0A9-E50E24DCCA9E')],
+        withKeywords: ['RCJ', 'soccer', 'module'],
+        timeout: const Duration(seconds: 3),
+      );
+      // Subscribe AFTER startScan to avoid replaying stale cached results
+      _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
+        for (ScanResult result in results) {
+          if (!devices.contains(result.device)) {
+            if (mounted) {
+              setState(() {
+                devices.add(result.device);
+              });
+            }
           }
         }
-      }
-    });
-
-    // Wait for scanning to stop
-    await FlutterBluePlus.isScanning.where((val) => val == false).first;
-
-    // Your code to execute when scanning has finished
-    if (mounted) {
-      setState(() {
-        bleIsScanning = false;
       });
+
+      // Wait for scanning to stop
+      await FlutterBluePlus.isScanning.where((val) => val == false).first;
+    } finally {
+      await _scanSubscription?.cancel();
+      _scanSubscription = null;
+
+      if (mounted) {
+        setState(() {
+          bleIsScanning = false;
+        });
+      }
     }
 
   }
@@ -212,6 +222,8 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
   @override
   void dispose() {
     //SystemChannels.textInput.invokeMethod('TextInput.hide');
+    _scanSubscription?.cancel();
+    _scanSubscription = null;
     _controller.dispose();
     _labelController.dispose();
     FlutterBluePlus.stopScan();
@@ -254,12 +266,13 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
             style: const TextStyle(color: Colors.white)),
       ),
 
-
-        body: Padding(
-        padding: const EdgeInsets.all(10.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+      body: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.all(10.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
             //SizedBox(height: 10),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -364,7 +377,9 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
               child: ElevatedButton(
 
                 onPressed: () async {
-                  if (module.isConnected) {
+                  // Connected OR mid-connect → the button cancels/disconnects,
+                  // so a stuck "Connecting..." (dead module) can always be broken.
+                  if (module.isConnected || module.isConnecting) {
                     module.bleDisconnect();
                   } else {
                     module.setBleDevice(BluetoothDevice.fromId(_controller.text.toUpperCase()));
@@ -375,7 +390,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.grey[700],
                 ),
-                child: Text(module.isConnected ? 'Disconnect' : 'Connect', style: const TextStyle(color: Colors.white, fontSize: 16, ),),
+                child: Text(module.isConnected ? 'Disconnect' : module.isConnecting ? 'Cancel' : 'Connect', style: TextStyle(color: Colors.white, fontSize: 16, ),),
               ),
             ),
 
@@ -429,10 +444,11 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                 },
               ),
             ),
-          ],
+            ],
+          ),
         ),
-        )
-      );
+      ),
+    );
     }
 
 

@@ -25,9 +25,12 @@ class MyApp extends StatelessWidget {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: game),
+        ChangeNotifierProvider.value(value: game.bleBridgeService),
         ...game.teams.map((team) => ChangeNotifierProvider.value(value: team)),
-        ...game.teams[0].modules.map((module) => ChangeNotifierProvider.value(value: module)),
-        ...game.teams[1].modules.map((module) => ChangeNotifierProvider.value(value: module)),
+        ...game.teams[0].modules
+            .map((module) => ChangeNotifierProvider.value(value: module)),
+        ...game.teams[1].modules
+            .map((module) => ChangeNotifierProvider.value(value: module)),
       ],
       child: MaterialApp(
         debugShowCheckedModeBanner: false,

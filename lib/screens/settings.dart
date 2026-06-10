@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import '../models/game.dart';
+import '../services/ble_bridge_service.dart';
 import '../services/mqtt.dart';
 import '../services/preset_service.dart';
 import '../services/vibration_service.dart';
 import '../utils/colors.dart';
+import 'mac_qr_scanner.dart';
 
 class SettingsScreen extends StatefulWidget {
   final Game game;
@@ -84,329 +86,417 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: const Text('Settings'),
             backgroundColor: AppColors.primary,
           ),
-          body: Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Column(
-              children: [
-                Expanded(
-                  child: ListView(
-                    children: [
-                      ValueListenableBuilder<String>(
-                          valueListenable: widget.game.matchDataService.stateNotifier,
-                          builder: (context, matchStatus, child) {
-                            return SettingsSection(
-                              title: 'Match Data',
-                              locked: false,
-                              settings: [
-                                SettingStatus(
-                                  title: 'Status',
-                                  status: matchStatus,
-                                ),
-                                SettingInputField(
-                                  title: 'Data URL',
-                                  initialValue: widget.game.matchDataService.matchesUrl,
-                                  onChanged: (value) {
-                                    widget.game.matchDataService.matchesUrl = value;
-                                  },
-                                ),
-                                SettingInputField(
-                                  title: 'Match ID',
-                                  initialValue: widget.game.matchDataService.matchId,
-                                  onChanged: (value) {
-                                    widget.game.matchDataService.matchId = value;
-                                  },
-                                ),
-                                SettingButton(
-                                  title: 'Load match data',
-                                  buttonText: 'Load',
-                                  onPressed: () async {
-                                    widget.game.loadMatchData();
-                                  },
-                                ),
-                              ],
-                            );
-                          }),
-                      SettingsSection(
-                        title: 'Current Game',
-                        locked: false,
-                        settings: [
-                          SettingButton(
-                            title: 'Switch team order',
-                            buttonText: 'Switch',
-                            onPressed: () {
-                              setState(() {
-                                widget.game.toggleTeamOrder();
-                              });
-                            },
-                          ),
-                          SettingButton(
-                            title: 'Reset current game',
-                            buttonText: 'Reset',
-                            onPressed: () {
-                              setState(() {
-                                widget.game.setTeamToDefaultOrder();
-                                widget.game.gameInit();
-                                widget.game.resetModuleNames();
-                              });
-                            },
-                          ),
-                          SettingButton(
-                            title: 'Disconnect all robots',
-                            buttonText: 'Disconnect',
-                            onPressed: () {
-                              widget.game.disconnectAll();
-                            },
-                          ),
-                        ],
-                      ),
-                      ModulePresetsSection(game: widget.game),
-                      ValueListenableBuilder<MqttConnectionStateEx>(
-                          valueListenable: widget.game.mqttService.connectionStateNotifier,
-                          builder: (context, connectionState, child) {
-                            return SettingsSection(
-                              title: 'MQTT',
-                              locked: false,
-                              enabled: widget.game.mqttService.isEnabled,
-                              onToggle: (value) {
+          body: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Column(
+                children: [
+                  Expanded(
+                    child: ListView(
+                      children: [
+                        ValueListenableBuilder<String>(
+                            valueListenable:
+                                widget.game.matchDataService.stateNotifier,
+                            builder: (context, matchStatus, child) {
+                              return SettingsSection(
+                                title: 'Match Data',
+                                locked: false,
+                                settings: [
+                                  SettingStatus(
+                                    title: 'Status',
+                                    status: matchStatus,
+                                  ),
+                                  SettingInputField(
+                                    title: 'Data URL',
+                                    initialValue:
+                                        widget.game.matchDataService.matchesUrl,
+                                    onChanged: (value) {
+                                      widget.game.matchDataService.matchesUrl =
+                                          value;
+                                    },
+                                  ),
+                                  SettingInputField(
+                                    title: 'Match ID',
+                                    initialValue:
+                                        widget.game.matchDataService.matchId,
+                                    onChanged: (value) {
+                                      widget.game.matchDataService.matchId =
+                                          value;
+                                    },
+                                  ),
+                                  SettingButton(
+                                    title: 'Load match data',
+                                    buttonText: 'Load',
+                                    onPressed: () async {
+                                      widget.game.loadMatchData();
+                                    },
+                                  ),
+                                ],
+                              );
+                            }),
+                        SettingsSection(
+                          title: 'Current Game',
+                          locked: false,
+                          settings: [
+                            SettingButton(
+                              title: 'Switch team order',
+                              buttonText: 'Switch',
+                              onPressed: () {
                                 setState(() {
-                                  widget.game.mqttService.isEnabled = value;
+                                  widget.game.toggleTeamOrder();
                                 });
                               },
-                              settings: [
-                                SettingStatus(
-                                  title: 'MQTT status',
-                                  status: connectionState == MqttConnectionStateEx.connected
-                                      ? 'Connected'
-                                      : connectionState == MqttConnectionStateEx.connecting
-                                          ? 'Connecting'
-                                          : connectionState == MqttConnectionStateEx.error
-                                              ? (widget.game.mqttService.lastErrorMessage.isNotEmpty
-                                                  ? widget.game.mqttService.lastErrorMessage
-                                                  : 'Connection error')
-                                              : 'Disconnected',
-                                ),
-                                // SettingSwitch(
-                                //   title: 'Auto connect',
-                                //   value: widget.game.mqttService.autoConnect,
-                                //   onChanged: (value) {
-                                //     setState(() {
-                                //       widget.game.mqttService.autoConnect = value;
-                                //     });
-                                //   },
-                                // ),
+                            ),
+                            SettingButton(
+                              title: 'Reset current game',
+                              buttonText: 'Reset',
+                              onPressed: () {
+                                setState(() {
+                                  widget.game.setTeamToDefaultOrder();
+                                  widget.game.gameInit();
+                                });
+                              },
+                            ),
+                            SettingButton(
+                              title: 'Disconnect all robots',
+                              buttonText: 'Disconnect',
+                              onPressed: () {
+                                widget.game.disconnectAll();
+                              },
+                            ),
+                          ],
+                        ),
+                        ValueListenableBuilder<BridgeConnectionState>(
+                            valueListenable: widget
+                                .game.bleBridgeService.connectionStateNotifier,
+                            builder: (context, bridgeState, child) {
+                              return SettingsSection(
+                                title: 'BLE Bridge',
+                                locked: false,
+                                enabled: widget.game.bleBridgeService.isEnabled,
+                                onToggle: (value) {
+                                  setState(() {
+                                    widget.game.bleBridgeService.isEnabled =
+                                        value;
+                                  });
+                                },
+                                settings: [
+                                  SettingStatus(
+                                    title: 'Bridge status',
+                                    status: bridgeState ==
+                                            BridgeConnectionState.connected
+                                        ? 'Connected'
+                                        : bridgeState ==
+                                                BridgeConnectionState.connecting
+                                            ? 'Connecting...'
+                                            : bridgeState ==
+                                                    BridgeConnectionState.error
+                                                ? 'Error'
+                                                : 'Disconnected',
+                                  ),
+                                  SettingInputField(
+                                    title: 'Bridge MAC',
+                                    initialValue: widget
+                                        .game.bleBridgeService.bridgeMacAddress,
+                                    onChanged: (value) {
+                                      widget.game.bleBridgeService
+                                          .bridgeMacAddress = value;
+                                    },
+                                  ),
+                                  SettingButton(
+                                    title: 'Scan QR code',
+                                    buttonText: 'Scan QR',
+                                    onPressed: () async {
+                                      final result = await Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (context) =>
+                                              const BarcodeScannerSimple(),
+                                        ),
+                                      );
+                                      if (!context.mounted) return;
+                                      if (result is String) {
+                                        setState(() {
+                                          widget.game.bleBridgeService
+                                              .bridgeMacAddress = result;
+                                        });
+                                      }
+                                    },
+                                  ),
+                                  SettingButton(
+                                    title: 'Bridge connection',
+                                    buttonText: bridgeState ==
+                                            BridgeConnectionState.connected
+                                        ? 'Disconnect'
+                                        : 'Connect',
+                                    onPressed: () async {
+                                      if (bridgeState ==
+                                          BridgeConnectionState.connected) {
+                                        await widget.game.bleBridgeService
+                                            .disconnect();
+                                      } else {
+                                        await widget.game.bleBridgeService
+                                            .connect();
+                                      }
+                                      setState(() {});
+                                    },
+                                  ),
+                                ],
+                              );
+                            }),
+                        ValueListenableBuilder<MqttConnectionStateEx>(
+                            valueListenable:
+                                widget.game.mqttService.connectionStateNotifier,
+                            builder: (context, connectionState, child) {
+                              return SettingsSection(
+                                title: 'MQTT',
+                                locked: false,
+                                enabled: widget.game.mqttService.isEnabled,
+                                onToggle: (value) {
+                                  setState(() {
+                                    widget.game.mqttService.isEnabled = value;
+                                  });
+                                },
+                                settings: [
+                                  SettingStatus(
+                                    title: 'MQTT status',
+                                    status: connectionState ==
+                                            MqttConnectionStateEx.connected
+                                        ? 'Connected'
+                                        : connectionState ==
+                                                MqttConnectionStateEx.connecting
+                                            ? 'Connecting...'
+                                            : connectionState ==
+                                                    MqttConnectionStateEx.error
+                                                ? (widget
+                                                        .game
+                                                        .mqttService
+                                                        .lastErrorMessage
+                                                        .isNotEmpty
+                                                    ? widget.game.mqttService
+                                                        .lastErrorMessage
+                                                    : 'Connection error')
+                                                : 'Disconnected',
+                                  ),
+                                  // SettingSwitch(
+                                  //   title: 'Auto connect',
+                                  //   value: widget.game.mqttService.autoConnect,
+                                  //   onChanged: (value) {
+                                  //     setState(() {
+                                  //       widget.game.mqttService.autoConnect = value;
+                                  //     });
+                                  //   },
+                                  // ),
 
-                                SettingInputField(
-                                    title: 'Server IP',
-                                    initialValue: widget.game.mqttService.server ?? '',
+                                  SettingInputField(
+                                      title: 'Server IP',
+                                      initialValue:
+                                          widget.game.mqttService.server ?? '',
+                                      onChanged: (value) {
+                                        widget.game.mqttService.server = value;
+                                      }),
+                                  SettingInputField(
+                                      title: 'Port',
+                                      initialValue: widget.game.mqttService.port
+                                              ?.toString() ??
+                                          '',
+                                      onChanged: (value) {
+                                        widget.game.mqttService.port =
+                                            int.tryParse(value);
+                                      }),
+                                  SettingInputField(
+                                      title: 'Username',
+                                      initialValue:
+                                          widget.game.mqttService.username ??
+                                              '',
+                                      onChanged: (value) {
+                                        widget.game.mqttService.username =
+                                            value;
+                                      }),
+                                  SettingInputField(
+                                      title: 'Password',
+                                      isPassword: true,
+                                      initialValue:
+                                          widget.game.mqttService.password ??
+                                              '',
+                                      onChanged: (value) {
+                                        widget.game.mqttService.password =
+                                            value;
+                                      }),
+                                  SettingSwitch(
+                                    title: 'Secure Connection',
+                                    value: widget
+                                        .game.mqttService.secureConnection,
                                     onChanged: (value) {
-                                      widget.game.mqttService.server = value;
-                                    }),
-                                SettingInputField(
-                                    title: 'Port',
-                                    initialValue: widget.game.mqttService.port?.toString() ?? '',
-                                    onChanged: (value) {
-                                      widget.game.mqttService.port = int.tryParse(value);
-                                    }),
-                                SettingInputField(
-                                    title: 'Username',
-                                    initialValue: widget.game.mqttService.username ?? '',
-                                    onChanged: (value) {
-                                      widget.game.mqttService.username = value;
-                                    }),
-                                SettingInputField(
-                                    title: 'Password',
-                                    isPassword: true,
-                                    initialValue: widget.game.mqttService.password ?? '',
-                                    onChanged: (value) {
-                                      widget.game.mqttService.password = value;
-                                    }),
-                                SettingSwitch(
-                                  title: 'Secure Connection',
-                                  value: widget.game.mqttService.secureConnection,
-                                  onChanged: (value) {
-                                    setState(() {
-                                      widget.game.mqttService.secureConnection = value;
-                                    });
-                                  },
-                                ),
-                                SettingInputField(
-                                    title: 'Field Number',
-                                    initialValue: widget.game.mqttService.fieldNumber,
-                                    onChanged: (value) {
-                                      widget.game.mqttService.topicField = value;
-                                    }),
-                                SettingButton(
-                                  title: 'Connect to MQTT',
-                                  buttonText: (connectionState == MqttConnectionStateEx.connected ||
-                                          connectionState == MqttConnectionStateEx.connecting)
-                                      ? 'Disconnect'
-                                      : 'Connect',
-                                  onPressed: () async {
-                                    if (connectionState == MqttConnectionStateEx.connected ||
-                                        connectionState == MqttConnectionStateEx.connecting) {
-                                      widget.game.mqttService.disconnect();
-                                    } else {
-                                      await widget.game.mqttService.connect();
-                                    }
-                                    setState(() {});
-                                  },
-                                ),
-                              ],
-                            );
-                          }),
-                      SettingsSection(
-                        title: 'Game',
-                        locked: widget.game.inGame,
-                        settings: [
-                          SettingDropdownButton(
-                            title: 'Game Duration',
-                            value: _selectedGameDuration,
-                            options: _gameDurations,
-                            onChanged: (value) {
-                              setState(() {
-                                _selectedGameDuration = value!;
-                                widget.game.periodTime = value.values;
-                              });
-                            },
-                          ),
-                          SettingDropdownButton(
-                            title: 'Halftime Break Duration',
-                            value: _selectedHalftimeBreak,
-                            options: _halftimeBreaks,
-                            onChanged: (value) {
-                              setState(() {
-                                _selectedHalftimeBreak = value!;
-                                widget.game.halfTimeDuration = value.values;
-                              });
-                            },
-                          ),
-                        ],
-                      ),
-                      SettingsSection(
-                        title: 'Player',
-                        locked: widget.game.inGame,
-                        settings: [
-                          SettingDropdownButton(
-                            title: 'Number of Players',
-                            value: _selectedNumberOfPlayers,
-                            options: _numberOfPlayersList,
-                            onChanged: (value) {
-                              setState(() {
-                                _selectedNumberOfPlayers = value!;
-                                widget.game.numberOfPLayers = value.values;
-                              });
-                            },
-                          ),
-                          SettingDropdownButton(
-                            title: 'Penalty Time',
-                            value: _selectedPenaltyTime,
-                            options: _penaltyTimes,
-                            onChanged: (value) {
-                              setState(() {
-                                _selectedPenaltyTime = value!;
-                                widget.game.penaltyTime = value.values;
-                              });
-                            },
-                          ),
-                        ],
-                      ),
-                      AnimatedBuilder(
-                        animation: widget.game.vibrationService,
-                        builder: (context, child) {
-                          final vs = widget.game.vibrationService;
-                          return SettingsSection(
-                            title: 'Vibration',
-                            locked: false,
-                            settings: [
-                              SettingSwitch(
-                                title: 'Game Timer Vibration',
-                                value: vs.gameTimerEnabled,
-                                onChanged: (value) {
-                                  vs.gameTimerEnabled = value;
-                                },
-                              ),
-                              if (vs.gameTimerEnabled)
-                                SettingAlertChips(
-                                  label: 'Alert at (sec remaining)',
-                                  options: kVibrationAlertOptions,
-                                  selected: vs.gameTimerAlerts,
-                                  onToggle: (sec) {
-                                    vs.toggleGameTimerAlert(sec);
-                                  },
-                                ),
-                              SettingSwitch(
-                                title: 'Damage Timer Vibration',
-                                value: vs.damageTimerEnabled,
-                                onChanged: (value) {
-                                  vs.damageTimerEnabled = value;
-                                },
-                              ),
-                              if (vs.damageTimerEnabled)
-                                SettingAlertChips(
-                                  label: 'Alert at (sec remaining)',
-                                  options: kVibrationAlertOptions,
-                                  selected: vs.damageTimerAlerts,
-                                  onToggle: (sec) {
-                                    vs.toggleDamageTimerAlert(sec);
-                                  },
-                                ),
-                            ],
-                          );
-                        },
-                      ),
-                      AnimatedBuilder(
-                        animation: widget.game.wakelockService,
-                        builder: (context, child) {
-                          final ws = widget.game.wakelockService;
-                          return SettingsSection(
-                            title: 'Display',
-                            locked: false,
-                            settings: [
-                              SettingSwitch(
-                                title: 'Keep Screen Awake',
-                                value: ws.enabled,
-                                onChanged: (value) {
-                                  ws.enabled = value;
-                                },
-                              ),
-                            ],
-                          );
-                        },
-                      ),
-                      const SettingsSection(
-                        title: 'About',
-                        locked: false,
-                        settings: [
-                          Padding(
-                            padding: EdgeInsets.symmetric(vertical: 4.0),
-                            child: Text('Created for RoboFuze.com', style: TextStyle(fontSize: 14)),
-                          ),
-                          Padding(
-                            padding: EdgeInsets.symmetric(vertical: 4.0),
-                            child: Text('Author: Martin Faltus', style: TextStyle(fontSize: 14)),
-                          ),
-                          Padding(
-                            padding: EdgeInsets.symmetric(vertical: 4.0),
-                            child: Text('iOS adaption: Fabian Weller', style: TextStyle(fontSize: 14)),
-                          ),
-                          Padding(
-                            padding: EdgeInsets.symmetric(vertical: 4.0),
-                            child: Text('Version: 0.10.2', style: TextStyle(fontSize: 14)),
-                          ),
-                          Padding(
-                            padding: EdgeInsets.symmetric(vertical: 4.0),
-                            child: Text('Year: 2025', style: TextStyle(fontSize: 14)),
-                          ),
-                          Padding(
-                            padding: EdgeInsets.symmetric(vertical: 4.0),
-                            child: Text('License: Apache 2.0', style: TextStyle(fontSize: 14)),
-                          ),
-                        ],
-                      ),
-                    ],
+                                      setState(() {
+                                        widget.game.mqttService
+                                            .secureConnection = value;
+                                      });
+                                    },
+                                  ),
+                                  SettingInputField(
+                                      title: 'Field Number',
+                                      initialValue:
+                                          widget.game.mqttService.field_number,
+                                      onChanged: (value) {
+                                        widget.game.mqttService.topic_field =
+                                            value;
+                                      }),
+                                  SettingButton(
+                                    title: 'Connect to MQTT',
+                                    buttonText: (connectionState ==
+                                                MqttConnectionStateEx
+                                                    .connected ||
+                                            connectionState ==
+                                                MqttConnectionStateEx
+                                                    .connecting)
+                                        ? 'Disconnect'
+                                        : 'Connect',
+                                    onPressed: () async {
+                                      if (connectionState ==
+                                              MqttConnectionStateEx.connected ||
+                                          connectionState ==
+                                              MqttConnectionStateEx
+                                                  .connecting) {
+                                        widget.game.mqttService.disconnect();
+                                      } else {
+                                        await widget.game.mqttService.connect();
+                                      }
+                                      setState(() {});
+                                    },
+                                  ),
+                                ],
+                              );
+                            }),
+                        SettingsSection(
+                          title: 'Game',
+                          locked: widget.game.inGame,
+                          settings: [
+                            SettingDropdownButton(
+                              title: 'Game Duration',
+                              value: _selectedGameDuration,
+                              options: _gameDurations,
+                              onChanged: (value) {
+                                setState(() {
+                                  _selectedGameDuration = value!;
+                                  widget.game.periodTime = value.values;
+                                });
+                              },
+                            ),
+                            SettingDropdownButton(
+                              title: 'Halftime Break Duration',
+                              value: _selectedHalftimeBreak,
+                              options: _halftimeBreaks,
+                              onChanged: (value) {
+                                setState(() {
+                                  _selectedHalftimeBreak = value!;
+                                  widget.game.halfTimeDuration = value.values;
+                                });
+                              },
+                            ),
+                          ],
+                        ),
+                        SettingsSection(
+                          title: 'Player',
+                          locked: widget.game.inGame,
+                          settings: [
+                            SettingDropdownButton(
+                              title: 'Number of Players',
+                              value: _selectedNumberOfPlayers,
+                              options: _numberOfPlayersList,
+                              onChanged: (value) {
+                                setState(() {
+                                  _selectedNumberOfPlayers = value!;
+                                  widget.game.numberOfPLayers = value.values;
+                                });
+                                if (value!.values >= 4) {
+                                  showDialog(
+                                    context: context,
+                                    builder: (ctx) => AlertDialog(
+                                      title: const Text('Bluetooth Warning'),
+                                      content: Text(
+                                        'You selected ${value.values * 2} players. '
+                                        'This requires ${value.values * 2} simultaneous Bluetooth connections. '
+                                        'Some phones cannot support this many connections at once — '
+                                        'on those devices, some robots may fail to connect.',
+                                      ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () =>
+                                              Navigator.of(ctx).pop(),
+                                          child: const Text('OK'),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                }
+                              },
+                            ),
+                            SettingDropdownButton(
+                              title: 'Penalty Time',
+                              value: _selectedPenaltyTime,
+                              options: _penaltyTimes,
+                              onChanged: (value) {
+                                setState(() {
+                                  _selectedPenaltyTime = value!;
+                                  widget.game.penaltyTime = value.values;
+                                });
+                              },
+                            ),
+                          ],
+                        ),
+                        SettingsSection(
+                          title: 'About',
+                          locked: false,
+                          settings: const [
+                            Padding(
+                              padding: EdgeInsets.symmetric(vertical: 4.0),
+                              child: Text('Created for RoboFuze.com',
+                                  style: TextStyle(fontSize: 14)),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.symmetric(vertical: 4.0),
+                              child: Text('Author: Martin Faltus',
+                                  style: TextStyle(fontSize: 14)),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.symmetric(vertical: 4.0),
+                              child: Text('AI co-authors: Claude (Anthropic) '
+                                  '& Codex (OpenAI)',
+                                  style: TextStyle(fontSize: 14)),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.symmetric(vertical: 4.0),
+                              child: Text('Version: 0.9.8',
+                                  style: TextStyle(fontSize: 14)),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.symmetric(vertical: 4.0),
+                              child: Text('Year: 2026',
+                                  style: TextStyle(fontSize: 14)),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.symmetric(vertical: 4.0),
+                              child: Text('License: Apache 2.0',
+                                  style: TextStyle(fontSize: 14)),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                  // const Row(
+                  //   mainAxisAlignment: MainAxisAlignment.center,
+                  //   children: [
+                  //     Text(
+                  //         'Created for RoboFuze.com by Martin Faltus 2025 \nVersion 0.9.2',
+                  //         textAlign: TextAlign.center,
+                  //         style: TextStyle(fontSize: 12)),
+                  //   ],
+                  // ),
+                ],
+              ),
             ),
           ),
         ),
@@ -423,7 +513,12 @@ class SettingsSection extends StatelessWidget {
   final bool? enabled;
   final ValueChanged<bool>? onToggle;
 
-  const SettingsSection({super.key, required this.title, required this.settings, this.locked = false, this.enabled, this.onToggle});
+  SettingsSection(
+      {required this.title,
+      required this.settings,
+      this.locked = false,
+      this.enabled,
+      this.onToggle});
 
   @override
   Widget build(BuildContext context) {
@@ -793,6 +888,39 @@ class SettingAlertChips extends StatelessWidget {
     );
   }
 }
+// class SettingStatus extends StatelessWidget {
+//   final String title;
+//   final String status;
+//
+//   SettingStatus({required this.title, required this.status});
+//
+//   @override
+//   Widget build(BuildContext context) {
+//     return Padding(
+//       padding: const EdgeInsets.symmetric(vertical: 8.0),
+//       child: Row(
+//         mainAxisAlignment: MainAxisAlignment.spaceBetween,
+//         children: [
+//           Expanded(
+//             flex: 3,
+//             child: Text(title)
+//           ),
+//           Expanded(
+//             flex: 2,
+//             child: Align(
+//               alignment: Alignment.centerRight,
+//               child: Text(
+//                 status,
+//                 style: const TextStyle(color: Colors.white),
+//                 textAlign: TextAlign.right,
+//               ),
+//             ),
+//           ),
+//         ],
+//       ),
+//     );
+//   }
+// }
 
 class SetItem {
   final int values;

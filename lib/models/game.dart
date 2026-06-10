@@ -1,13 +1,17 @@
 import 'package:flutter/widgets.dart';
+import 'package:flutter/foundation.dart';
+import 'package:rcj_scoreboard/models/bridge_message.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'dart:async';
 import 'package:rcj_scoreboard/models/team.dart';
+import 'package:rcj_scoreboard/services/ble_bridge_service.dart';
 import 'package:rcj_scoreboard/services/mqtt.dart';
 import 'package:rcj_scoreboard/services/match_data.dart';
 import 'package:rcj_scoreboard/services/notification_service.dart';
 import 'package:rcj_scoreboard/services/vibration_service.dart';
 import 'package:rcj_scoreboard/services/wakelock_service.dart';
 import 'package:rcj_scoreboard/services/preset_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 enum MatchStage {
   firstHalf,
@@ -17,14 +21,19 @@ enum MatchStage {
 }
 
 class Game with ChangeNotifier, WidgetsBindingObserver {
+  static const String _periodTimeKey = 'game_period_time';
+  static const String _halfTimeDurationKey = 'game_halftime_duration';
+  static const String _numberOfPlayersKey = 'game_num_players';
+  static const String _penaltyTimeKey = 'game_penalty_time';
+
   String timerButtonText = 'START';
   final int _maxPlayer = 5;
   List<Team> teams = [];
-  int numberOfPLayers = 2;
+  int _numberOfPLayers = 2;
   int _remainingTime = 0;
-  int penaltyTime = 60;
-  int periodTime = 600;
-  int halfTimeDuration = 300;
+  int _penaltyTime = 60;
+  int _periodTime = 600;
+  int _halfTimeDuration = 300;
   bool _isGameRunning = false;
   bool inGame = false;
   bool isTimeRunning = false;
@@ -33,12 +42,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   Timer? _timer;
   DateTime? _runClockStartedAt;
   int? _runClockStartRemainingTime;
+  SharedPreferences? _prefs;
   //MQTT
   MqttService mqttService = MqttService();
+  BleBridgeService bleBridgeService = BleBridgeService();
   MatchDataService matchDataService = MatchDataService();
   VibrationService vibrationService = VibrationService();
   WakelockService wakelockService = WakelockService();
-
 
   // Callback to request showing the dialog
   void Function()? onRequestSwitchTeamOrderDialog;
@@ -68,6 +78,21 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
 
     gameInit();
+    unawaited(_loadPrefs());
+  }
+
+  Future<void> _loadPrefs() async {
+    _prefs = await SharedPreferences.getInstance();
+    _periodTime = _prefs!.getInt(_periodTimeKey) ?? 600;
+    _halfTimeDuration = _prefs!.getInt(_halfTimeDurationKey) ?? 300;
+    _numberOfPLayers =
+        (_prefs!.getInt(_numberOfPlayersKey) ?? 2).clamp(1, _maxPlayer).toInt();
+    _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? 60;
+
+    if (!inGame) {
+      gameInit();
+    }
+    notifyListeners();
   }
 
   void gameInit() {
@@ -80,43 +105,34 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
     stopTimer();
 
-
     // enable or disable players based on player number;
     for (var team in teams) {
       team.score = 0;
       for (var i = 0; i < _maxPlayer; i++) {
-        i < numberOfPLayers ? team.modules[i].enable() : team.modules[i].disable();
+        i < numberOfPLayers
+            ? team.modules[i].enable()
+            : team.modules[i].disable();
         team.modules[i].init();
       }
     }
     notifyListeners();
 
-    // mqtt publish default values
-    mqttService.publishGameState(currentStage);
-    mqttService.publishTime(_remainingTime);
-    mqttService.publishTeamNames(teams);
-    mqttService.publishTeam(teams);
-    mqttService.publishScore(teams);
+    // publish default values to every sink (mqtt + bridge)
+    _broadcastFullState();
   }
 
   void gameRefresh() {
-
-
-    // refresh all mqtt values
-    mqttService.publishGameState(currentStage);
-    mqttService.publishTime(_remainingTime);
-    mqttService.publishTeamNames(teams);
-    mqttService.publishTeam(teams);
-    mqttService.publishScore(teams);
+    // refresh all values on every sink (mqtt + bridge)
+    _broadcastFullState();
   }
-
 
   // Timer
 
   void startTimer() {
     _timer?.cancel();
     inGame = true;
-    if (currentStage == MatchStage.firstHalf || currentStage == MatchStage.secondHalf) {
+    if (currentStage == MatchStage.firstHalf ||
+        currentStage == MatchStage.secondHalf) {
       _isGameRunning = true;
     }
     isTimeRunning = true;
@@ -196,7 +212,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   void toggleTimer() {
-    if (currentStage == MatchStage.firstHalf || currentStage == MatchStage.secondHalf) {
+    if (currentStage == MatchStage.firstHalf ||
+        currentStage == MatchStage.secondHalf) {
       if (_isGameRunning) {
         stopTimer();
         timerButtonText = 'START';
@@ -217,9 +234,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       _remainingTime = periodTime;
       stopAll(true, force: true);
       timerButtonText = 'START';
-      
-      mqttService.publishGameState(currentStage);
-      mqttService.publishTime(_remainingTime);
+
+      _broadcastStageAndTime();
 
       notifyListeners();
     } else {
@@ -231,15 +247,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
   }
 
-
   void toggleTeamOrder() {
     teams = teams.reversed.toList();
 
     notifyListeners();
 
-    mqttService.publishTeamNames(teams);
-    mqttService.publishTeam(teams);
-    mqttService.publishScore(teams);
+    // Push swapped names/team/score+color to every sink immediately, otherwise
+    // the bridge only reflects the new sides on the next goal.
+    _broadcastTeamInfo();
+    _broadcastScore();
   }
 
   /// Toggles all modules based on the current game stage.
@@ -249,7 +265,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     } else if (_numberOfPlaying > 0) {
       stopAll(true);
     } else {
-      if (!_isGameRunning && (currentStage == MatchStage.firstHalf || currentStage == MatchStage.secondHalf)) {
+      if (!_isGameRunning &&
+          (currentStage == MatchStage.firstHalf ||
+              currentStage == MatchStage.secondHalf)) {
         startTimer();
         timerButtonText = 'STOP';
       }
@@ -404,7 +422,6 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         } else {
           module.playOrDamageAll();
         }
-
       }
     }
     notifyListeners();
@@ -421,7 +438,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   void disconnectAll() {
     for (var team in teams) {
-      for (var module in team.modules.where((module) => module.isEnabled && module.isConnected)) {
+      for (var module in team.modules
+          .where((module) => module.isEnabled && module.isConnected)) {
         module.bleDisconnect();
       }
     }
@@ -453,38 +471,77 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   void halfTimeSyncTimeAll() {
     for (var team in teams) {
-      for (var module in team.modules.where((module) => module.isEnabled && module.isConnected)) {
+      for (var module in team.modules
+          .where((module) => module.isEnabled && module.isConnected)) {
         module.halfTimeSyncTime();
       }
     }
   }
 
-int getScore(String team, {bool oppositeTeam = false}) {
-  final foundTeam = teams.firstWhere(
-    (t) => oppositeTeam ? t.id != team : t.id == team,
-    orElse: () => throw Exception('Team not found'),
-  );
-  return foundTeam.score;
-}
+  int getScore(String team, {bool oppositeTeam = false}) {
+    final foundTeam = teams.firstWhere(
+      (t) => oppositeTeam ? t.id != team : t.id == team,
+      orElse: () => throw Exception('Team not found'),
+    );
+    return foundTeam.score;
+  }
 
   void notifyModulesScore() {
     for (var team in teams) {
-      for (var module in team.modules.where((module) => module.isEnabled && module.isConnected)) {
+      for (var module in team.modules
+          .where((module) => module.isEnabled && module.isConnected)) {
         module.bleSendScore();
         debugPrint('score sent');
       }
     }
-    // mqtt publish team scores
-    // mqtt publish default values
-    mqttService.publishScore(teams);
+    _broadcastScore();
   }
 
+  String _teamColorHex(Team team) => team.id == 'A' ? '77FF00' : 'FF00FF';
+
+  void _publishScoreToBridge() {
+    bleBridgeService.publishTopic(
+        BridgeTopics.team1Score, teams[0].score.toString());
+    bleBridgeService.publishTopic(
+        BridgeTopics.team2Score, teams[1].score.toString());
+    bleBridgeService.publishTopic(
+        BridgeTopics.team1Color, _teamColorHex(teams[0]));
+    bleBridgeService.publishTopic(
+        BridgeTopics.team2Color, _teamColorHex(teams[1]));
+  }
+
+  // ---- Publish fan-out helpers ----
+  // Group every sink (MQTT + BLE bridge) per event so a sink can't be forgotten
+  // at one call site (which is exactly how the team-swap-to-bridge bug slipped in).
+
+  void _broadcastTeamInfo() {
+    mqttService.publishTeamNames(teams);
+    mqttService.publishTeam(teams);
+  }
+
+  void _broadcastScore() {
+    mqttService.publishScore(teams);
+    _publishScoreToBridge();
+  }
+
+  void _broadcastStageAndTime() {
+    mqttService.publishGameState(currentStage);
+    mqttService.publishTime(_remainingTime);
+  }
+
+  void _broadcastFullState() {
+    _broadcastStageAndTime();
+    _broadcastTeamInfo();
+    _broadcastScore();
+  }
 
   void changeNumberOfPlaying(int add) {
     _numberOfPlaying += add;
 
     if (_numberOfPlaying < 0) _numberOfPlaying = 0;
-    if (_numberOfPlaying > numberOfPLayers*2) _numberOfPlaying = numberOfPLayers*2;
+    if (_numberOfPlaying > numberOfPLayers * 2) {
+      _numberOfPlaying = numberOfPLayers * 2;
+    }
 
     if (_numberOfPlaying < 2) notifyListeners();
   }
@@ -521,6 +578,30 @@ int getScore(String team, {bool oppositeTeam = false}) {
     // teams[1].name = 'Team B';
   }
 
+  int get periodTime => _periodTime;
+  set periodTime(int value) {
+    _periodTime = value;
+    _prefs?.setInt(_periodTimeKey, value);
+  }
+
+  int get halfTimeDuration => _halfTimeDuration;
+  set halfTimeDuration(int value) {
+    _halfTimeDuration = value;
+    _prefs?.setInt(_halfTimeDurationKey, value);
+  }
+
+  int get numberOfPLayers => _numberOfPLayers;
+  set numberOfPLayers(int value) {
+    _numberOfPLayers = value;
+    _prefs?.setInt(_numberOfPlayersKey, value);
+  }
+
+  int get penaltyTime => _penaltyTime;
+  set penaltyTime(int value) {
+    _penaltyTime = value;
+    _prefs?.setInt(_penaltyTimeKey, value);
+  }
+
   int get remainingTime => _remainingTime;
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;
   bool get isTimerRunning => isTimeRunning;
@@ -539,16 +620,16 @@ int getScore(String team, {bool oppositeTeam = false}) {
   }
 
   void loadMatchData() async {
-   var match = await matchDataService.loadMatch();
+    var match = await matchDataService.loadMatch();
     notifyListeners();
 
     if (match != null) {
       teams[0].name = match.team1;
       teams[1].name = match.team2;
+      
       mqttService.topicField = match.field;
-      mqttService.publishTeamNames(teams);
-      mqttService.publishTeam(teams);
-
+      
+      _broadcastTeamInfo();
     }
   }
 
