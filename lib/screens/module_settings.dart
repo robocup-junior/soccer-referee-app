@@ -153,9 +153,9 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
       _controller.text = selected.macAddress;
       _labelController.text = selected.label;
     });
-    module.setLabel(selected.label);
-    module.setBleDevice(BluetoothDevice.fromId(selected.macAddress.toUpperCase()));
-    module.bleConnect();
+    // Single apply path shared with presets: sets the label (empty -> default)
+    // and connects only when the module is enabled.
+    module.applyPresetConfig(selected.macAddress, selected.label);
     FlutterBluePlus.stopScan();
   }
 

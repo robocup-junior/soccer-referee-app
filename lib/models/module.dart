@@ -571,12 +571,17 @@ class Module with ChangeNotifier {
   void setLabel(String label) {
     _label = label.trim();
     notifyListeners();
+    // Push the new name to the robot display immediately when connected;
+    // bleSendName() self-guards on connection, so this is a no-op otherwise.
+    // (Not in the START/STOP critical path — fire-and-forget is fine.)
+    unawaited(bleSendName());
   }
 
   void applyPresetConfig(String macAddress, String label) {
-    if (label.isNotEmpty) {
-      setLabel(label);
-    }
+    // Always apply the label: an empty label resolves to the default name via
+    // the `name` getter, so reloading a preset whose module used the default
+    // name correctly clears any custom label left over from a previous preset.
+    setLabel(label);
     if (macAddress.isNotEmpty) {
       setBleDevice(BluetoothDevice.fromId(macAddress.toUpperCase()));
       if (_isEnabled) {
