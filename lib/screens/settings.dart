@@ -3,6 +3,7 @@ import '../models/game.dart';
 import '../services/ble_bridge_service.dart';
 import '../services/mqtt.dart';
 import '../services/preset_service.dart';
+import '../services/vibration_service.dart';
 import '../utils/colors.dart';
 import 'mac_qr_scanner.dart';
 
@@ -154,6 +155,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 setState(() {
                                   widget.game.setTeamToDefaultOrder();
                                   widget.game.gameInit();
+                                  widget.game.resetModuleNames();
                                 });
                               },
                             ),
@@ -445,6 +447,70 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                           ],
                         ),
+                        ModulePresetsSection(game: widget.game),
+                        AnimatedBuilder(
+                          animation: widget.game.vibrationService,
+                          builder: (context, child) {
+                            final vs = widget.game.vibrationService;
+                            return SettingsSection(
+                              title: 'Vibration',
+                              locked: false,
+                              settings: [
+                                SettingSwitch(
+                                  title: 'Game Timer Vibration',
+                                  value: vs.gameTimerEnabled,
+                                  onChanged: (value) {
+                                    vs.gameTimerEnabled = value;
+                                  },
+                                ),
+                                if (vs.gameTimerEnabled)
+                                  SettingAlertChips(
+                                    label: 'Alert at (sec remaining)',
+                                    options: kVibrationAlertOptions,
+                                    selected: vs.gameTimerAlerts,
+                                    onToggle: (sec) {
+                                      vs.toggleGameTimerAlert(sec);
+                                    },
+                                  ),
+                                SettingSwitch(
+                                  title: 'Damage Timer Vibration',
+                                  value: vs.damageTimerEnabled,
+                                  onChanged: (value) {
+                                    vs.damageTimerEnabled = value;
+                                  },
+                                ),
+                                if (vs.damageTimerEnabled)
+                                  SettingAlertChips(
+                                    label: 'Alert at (sec remaining)',
+                                    options: kVibrationAlertOptions,
+                                    selected: vs.damageTimerAlerts,
+                                    onToggle: (sec) {
+                                      vs.toggleDamageTimerAlert(sec);
+                                    },
+                                  ),
+                              ],
+                            );
+                          },
+                        ),
+                        AnimatedBuilder(
+                          animation: widget.game.wakelockService,
+                          builder: (context, child) {
+                            final ws = widget.game.wakelockService;
+                            return SettingsSection(
+                              title: 'Display',
+                              locked: false,
+                              settings: [
+                                SettingSwitch(
+                                  title: 'Keep Screen Awake',
+                                  value: ws.enabled,
+                                  onChanged: (value) {
+                                    ws.enabled = value;
+                                  },
+                                ),
+                              ],
+                            );
+                          },
+                        ),
                         const SettingsSection(
                           title: 'About',
                           locked: false,
@@ -461,8 +527,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
+                              child: Text('iOS adaption: Fabian Weller',
+                                  style: TextStyle(fontSize: 14)),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.symmetric(vertical: 4.0),
                               child: Text('AI co-authors: Claude (Anthropic) '
-                                  '& Codex (OpenAI)',
+                                  '& Codex (OpenAI) '
+                                  '& GitHub Copilot (Microsoft)',
                                   style: TextStyle(fontSize: 14)),
                             ),
                             Padding(
