@@ -257,6 +257,11 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
 
     return Scaffold(
       backgroundColor: Colors.black,
+      // The body has an Expanded devices list, so it can't go in a scroll view.
+      // Don't shrink the viewport for the keyboard (which overflowed the fixed
+      // rows by a few px); the bot-label field is near the top and stays visible
+      // while the keyboard overlays the lower (scrollable) part.
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         iconTheme: const IconThemeData(
           color: Colors.white,
