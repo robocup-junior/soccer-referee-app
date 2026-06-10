@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:rcj_scoreboard/screens/home.dart';
@@ -5,9 +7,11 @@ import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/services/notification_service.dart';
 import 'package:flutter/services.dart';
 
-void main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  await NotificationService.initialize();
+  // Initialise notifications without blocking the first frame; the permission
+  // prompt is deferred until the user enables a timer alert (see settings).
+  unawaited(NotificationService.initialize());
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
   Game game = Game();

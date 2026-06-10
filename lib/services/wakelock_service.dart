@@ -34,7 +34,9 @@ class WakelockService with ChangeNotifier {
     if (kIsWeb) return;
     try {
       WakelockPlus.toggle(enable: _enabled);
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('WakelockService: toggle(enable: $_enabled) failed: $e');
+    }
   }
 
   @override
@@ -42,7 +44,9 @@ class WakelockService with ChangeNotifier {
     if (!kIsWeb) {
       try {
         WakelockPlus.disable();
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('WakelockService: disable() on dispose failed: $e');
+      }
     }
     super.dispose();
   }

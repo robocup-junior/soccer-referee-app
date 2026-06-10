@@ -23,7 +23,9 @@ class VibrationService with ChangeNotifier {
     if (kIsWeb) return;
     try {
       _hasVibrator = await Vibration.hasVibrator();
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('VibrationService: hasVibrator() failed: $e');
+    }
   }
 
   Future<void> _loadPreferences() async {
@@ -103,7 +105,9 @@ class VibrationService with ChangeNotifier {
     if (!_gameTimerEnabled || kIsWeb || !_hasVibrator) return;
     try {
       await Vibration.vibrate();
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('VibrationService: game-timer vibrate failed: $e');
+    }
   }
 
   /// Triggers a vibration for the damage timer alert.
@@ -111,6 +115,8 @@ class VibrationService with ChangeNotifier {
     if (!_damageTimerEnabled || kIsWeb || !_hasVibrator) return;
     try {
       await Vibration.vibrate();
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('VibrationService: damage-timer vibrate failed: $e');
+    }
   }
 }

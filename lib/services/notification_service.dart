@@ -29,26 +29,44 @@ class NotificationService {
 
   static const _iosDetails = DarwinNotificationDetails(presentSound: true);
 
-  /// One-time initialisation – call from main() after ensureInitialized().
+  /// One-time initialisation – call from main(). Does NOT request permission:
+  /// init must not block the first frame on an OS dialog, and we don't want to
+  /// prompt before the user has enabled a timer alert. Permission is requested
+  /// lazily via [requestPermission].
   static Future<void> initialize() async {
     if (kIsWeb) return;
     try {
       tz_data.initializeTimeZones();
       const android = AndroidInitializationSettings('@mipmap/ic_launcher');
       const ios = DarwinInitializationSettings(
-        requestAlertPermission: true,
+        requestAlertPermission: false,
         requestBadgePermission: false,
-        requestSoundPermission: true,
+        requestSoundPermission: false,
       );
       await _plugin.initialize(
         const InitializationSettings(android: android, iOS: ios),
       );
-      // Request POST_NOTIFICATIONS permission on Android 13+.
+    } catch (e) {
+      debugPrint('NotificationService: initialize() failed: $e');
+    }
+  }
+
+  /// Request notification permission. Call the moment the user enables a timer
+  /// alert, so the OS prompt has context instead of firing on first launch.
+  static Future<void> requestPermission() async {
+    if (kIsWeb) return;
+    try {
       await _plugin
           .resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin>()
           ?.requestNotificationsPermission();
-    } catch (_) {}
+      await _plugin
+          .resolvePlatformSpecificImplementation<
+              IOSFlutterLocalNotificationsPlugin>()
+          ?.requestPermissions(alert: true, badge: false, sound: true);
+    } catch (e) {
+      debugPrint('NotificationService: requestPermission() failed: $e');
+    }
   }
 
   /// Schedule a notification for each [threshold] still in the future.
@@ -73,7 +91,9 @@ class NotificationService {
           ),
           androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
         );
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('NotificationService: scheduleGameAlerts failed: $e');
+      }
     }
   }
 
@@ -99,7 +119,9 @@ class NotificationService {
           ),
           androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
         );
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('NotificationService: scheduleBreakAlerts failed: $e');
+      }
     }
   }
 
@@ -130,7 +152,9 @@ class NotificationService {
           ),
           androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
         );
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('NotificationService: scheduleDamageAlerts failed: $e');
+      }
     }
   }
 
@@ -139,6 +163,8 @@ class NotificationService {
     if (kIsWeb) return;
     try {
       await _plugin.cancelAll();
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('NotificationService: cancelAll() failed: $e');
+    }
   }
 }

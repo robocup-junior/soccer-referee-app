@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../models/game.dart';
 import '../services/ble_bridge_service.dart';
 import '../services/mqtt.dart';
+import '../services/notification_service.dart';
 import '../services/preset_service.dart';
 import '../services/vibration_service.dart';
 import '../utils/colors.dart';
@@ -461,6 +462,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   value: vs.gameTimerEnabled,
                                   onChanged: (value) {
                                     vs.gameTimerEnabled = value;
+                                    // Ask for notification permission only now,
+                                    // when the user opts into timer alerts.
+                                    if (value) {
+                                      NotificationService.requestPermission();
+                                    }
                                   },
                                 ),
                                 if (vs.gameTimerEnabled)
@@ -477,6 +483,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   value: vs.damageTimerEnabled,
                                   onChanged: (value) {
                                     vs.damageTimerEnabled = value;
+                                    if (value) {
+                                      NotificationService.requestPermission();
+                                    }
                                   },
                                 ),
                                 if (vs.damageTimerEnabled)
