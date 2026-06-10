@@ -88,7 +88,7 @@ class Home extends StatelessWidget {
                                 '${(game.remainingTime ~/ 60).toString().padLeft(2, '0')}:${(game.remainingTime % 60).toString().padLeft(2, '0')}',
                                 style: const TextStyle(fontSize: 40.0)),
                             Text(game.gameStageString),
-                            Container(
+                            SizedBox(
                               width: double.infinity,
                               child: GestureDetector(
                                 onDoubleTap: () {
@@ -105,7 +105,7 @@ class Home extends StatelessWidget {
                                         : AppColors.green),
                                   ),
                                   child: Text(game.timerButtonText,
-                                      style: TextStyle(color: Colors.white)),
+                                      style: const TextStyle(color: Colors.white)),
                                 ),
                               ),
                             )
@@ -171,17 +171,9 @@ class Home extends StatelessWidget {
                                 : (game.isSomeonePlaying
                                     ? 'STOP ALL ROBOTS'
                                     : 'START ALL ROBOTS'),
-                            style: TextStyle(color: Colors.white)),
+                            style: const TextStyle(color: Colors.white)),
                         onPressed: () {},
                       ),
-                      child: Text(
-                          game.currentStage == MatchStage.fullTime
-                              ? 'DISCONNECT ALL ROBOTS'
-                              : (game.isSomeonePlaying
-                                  ? 'STOP ALL ROBOTS'
-                                  : 'START ALL ROBOTS'),
-                          style: const TextStyle(color: Colors.white)),
-                      onPressed: () {},
                     ),
                   ),
                 ),

@@ -3,7 +3,6 @@ import '../models/game.dart';
 import '../services/ble_bridge_service.dart';
 import '../services/mqtt.dart';
 import '../services/preset_service.dart';
-import '../services/vibration_service.dart';
 import '../utils/colors.dart';
 import 'mac_qr_scanner.dart';
 
@@ -338,9 +337,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   SettingInputField(
                                       title: 'Field Number',
                                       initialValue:
-                                          widget.game.mqttService.field_number,
+                                          widget.game.mqttService.fieldNumber,
                                       onChanged: (value) {
-                                        widget.game.mqttService.topic_field =
+                                        widget.game.mqttService.topicField =
                                             value;
                                       }),
                                   SettingButton(
@@ -446,10 +445,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                           ],
                         ),
-                        SettingsSection(
+                        const SettingsSection(
                           title: 'About',
                           locked: false,
-                          settings: const [
+                          settings: [
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
                               child: Text('Created for RoboFuze.com',
@@ -513,8 +512,8 @@ class SettingsSection extends StatelessWidget {
   final bool? enabled;
   final ValueChanged<bool>? onToggle;
 
-  SettingsSection(
-      {required this.title,
+  const SettingsSection(
+      {super.key, required this.title,
       required this.settings,
       this.locked = false,
       this.enabled,

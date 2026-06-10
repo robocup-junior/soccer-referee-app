@@ -390,7 +390,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.grey[700],
                 ),
-                child: Text(module.isConnected ? 'Disconnect' : module.isConnecting ? 'Cancel' : 'Connect', style: TextStyle(color: Colors.white, fontSize: 16, ),),
+                child: Text(module.isConnected ? 'Disconnect' : module.isConnecting ? 'Cancel' : 'Connect', style: const TextStyle(color: Colors.white, fontSize: 16, ),),
               ),
             ),
 
