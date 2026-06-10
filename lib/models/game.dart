@@ -186,8 +186,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           debugPrint('unknown match stage');
       }
 
-      mqttService.publishGameState(currentStage);
-      mqttService.publishTime(_remainingTime);
+      _broadcastStageAndTime();
     }
 
     if (currentStage == MatchStage.halfTime && _remainingTime % 30 == 0) {
@@ -197,12 +196,18 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     notifyListeners();
   }
 
+  // Upper bound on background catch-up ticks: only the window the timer runs
+  // *automatically*. The second-half timer is referee-started (the halfTime ->
+  // secondHalf transition does NOT call startTimer()), so catch-up must stop at
+  // that manual gate and never auto-run the second half. From the first half we
+  // catch up through the first half + the half-time break; from the break, only
+  // through the rest of the break.
   int _maxResumeCatchUpTicks() {
     switch (currentStage) {
       case MatchStage.firstHalf:
-        return _remainingTime + halfTimeDuration + periodTime;
+        return _remainingTime + halfTimeDuration;
       case MatchStage.halfTime:
-        return _remainingTime + periodTime;
+        return _remainingTime;
       case MatchStage.secondHalf:
         return _remainingTime;
       case MatchStage.fullTime:
@@ -344,28 +349,32 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       NotificationService.cancelAll();
 
       if (_runClockStartedAt != null && _runClockStartRemainingTime != null) {
-        final elapsedSeconds = DateTime.now().difference(_runClockStartedAt!).inSeconds;
-        final expectedRemaining = (_runClockStartRemainingTime! - elapsedSeconds)
+        // Wall-clock seconds since the run clock was last anchored. Unclamped on
+        // purpose: it may exceed the anchored stage's remaining time and is then
+        // carried across the first-half -> half-time transition during catch-up.
+        final elapsedSeconds =
+            DateTime.now().difference(_runClockStartedAt!).inSeconds;
+        // Ticks the live (foreground) timer already applied within the anchored
+        // stage before the app was backgrounded.
+        final alreadyApplied = (_runClockStartRemainingTime! - _remainingTime)
             .clamp(0, _runClockStartRemainingTime!)
             .toInt();
-
-        if (_remainingTime < expectedRemaining) {
-          _remainingTime = expectedRemaining;
-          mqttService.publishTime(_remainingTime);
-          notifyListeners();
-          return;
-        }
-
-        // If remaining time is higher than expected, the local timer lagged behind.
-        final ticksBehind = _remainingTime > expectedRemaining
-            ? _remainingTime - expectedRemaining
-            : 0;
-        final maxResumeCatchUpTicks = _maxResumeCatchUpTicks();
-        final ticksToProcess = ticksBehind < maxResumeCatchUpTicks
-            ? ticksBehind
-            : maxResumeCatchUpTicks;
-        for (var tickIndex = 0; tickIndex < ticksToProcess && isTimeRunning; tickIndex++) {
+        // Outstanding ticks to replay, bounded by the auto-run window so we
+        // never add time back (clamp floor 0) and never auto-start the
+        // referee-controlled second half (_maxResumeCatchUpTicks halts at the
+        // half-time -> second-half manual gate, reinforced by the isTimeRunning
+        // guard below since that transition sets isTimeRunning = false).
+        final ticksToProcess = (elapsedSeconds - alreadyApplied)
+            .clamp(0, _maxResumeCatchUpTicks())
+            .toInt();
+        for (var i = 0; i < ticksToProcess && isTimeRunning; i++) {
           _tickTimer();
+        }
+        // Nothing replayed (local timer was at/ahead of wall clock): just
+        // re-publish the authoritative state so every sink stays consistent.
+        if (ticksToProcess == 0) {
+          _broadcastStageAndTime();
+          notifyListeners();
         }
       }
     }
