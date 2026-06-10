@@ -57,6 +57,17 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- flutter_local_notifications: the scheduled-notification receiver is
+             NOT in the plugin's own manifest (only its example app), so we must
+             declare it here or zonedSchedule() alerts never display while the
+             app is backgrounded. We use AndroidScheduleMode.inexactAllowWhileIdle,
+             so no SCHEDULE_EXACT_ALARM/USE_EXACT_ALARM permission is needed; the
+             boot receiver is omitted on purpose (match alerts need not survive a
+             reboot). -->
+        <receiver
+            android:exported="false"
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
