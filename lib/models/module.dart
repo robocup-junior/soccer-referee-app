@@ -81,14 +81,19 @@ class Module with ChangeNotifier {
     switch (_state) {
       case ModuleState.play:
         await bleSendPlay();
+        break;
       case ModuleState.stop:
         await bleSendStop();
+        break;
       case ModuleState.damage:
         await bleSendDamage(_penaltyTime);
+        break;
       case ModuleState.halfTime:
         await bleSendHalfTime();
+        break;
       case ModuleState.fullTime:
         await bleSendGameOver();
+        break;
       }
   }
 

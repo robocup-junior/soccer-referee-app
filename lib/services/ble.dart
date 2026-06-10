@@ -2,11 +2,6 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
-
-
-
-
-
 class BLEServices {
 
   BLEServices();
@@ -25,7 +20,7 @@ class BLEServices {
     // note: if you have permissions issues you will get stuck at BluetoothAdapterState.unauthorized
     BluetoothAdapterState state = await FlutterBluePlus.adapterState.first;
     debugPrint('test');
-    debugPrint(state as String?);
+    debugPrint(state.toString());
     if (state == BluetoothAdapterState.on) {
       // usually start scanning, connecting, etc
       status = 'OK';

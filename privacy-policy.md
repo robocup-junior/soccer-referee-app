@@ -2,7 +2,7 @@
 
 **Last updated:** 2025-11-13
 
-This Privacy Policy describes how the RoboCup Junior Soccer Refferee App (“we”, “us”, “our”) collect, use, share and protect information in the mobile application *RCJ Soccer RefMate* (the “App”), available for iOS.
+This Privacy Policy describes how the RoboCup Junior Soccer Referee App (“we”, “us”, “our”) collect, use, share and protect information in the mobile application *RCJ Soccer RefMate* (the “App”), available for iOS.
 
 ## 1. Information We Collect
 

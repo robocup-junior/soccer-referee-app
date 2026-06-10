@@ -154,16 +154,19 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           if (onRequestSwitchTeamOrderDialog != null) {
             onRequestSwitchTeamOrderDialog!();
           }
+          break;
         case MatchStage.halfTime:
           currentStage = MatchStage.secondHalf;
           _remainingTime = periodTime;
           stopAll(true, force: true);
           timerButtonText = 'START';
+          break;
         case MatchStage.secondHalf:
           currentStage = MatchStage.fullTime;
           stopAll(true);
           timerButtonText = 'REPEAT';
           gameOverAll();
+          break;
         default:
           debugPrint('unknown match stage');
       }
@@ -358,12 +361,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         case MatchStage.firstHalf:
           NotificationService.scheduleGameAlerts(
               _remainingTime, vibrationService.gameTimerAlerts);
+          break;
         case MatchStage.halfTime:
           NotificationService.scheduleBreakAlerts(
               _remainingTime, vibrationService.gameTimerAlerts);
+          break;
         case MatchStage.secondHalf:
         NotificationService.scheduleGameAlerts(
             _remainingTime, vibrationService.gameTimerAlerts);
+        break;
         default:
           debugPrint('unknown match stage');
       }
