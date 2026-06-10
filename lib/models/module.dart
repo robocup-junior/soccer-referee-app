@@ -582,11 +582,17 @@ class Module with ChangeNotifier {
     // the `name` getter, so reloading a preset whose module used the default
     // name correctly clears any custom label left over from a previous preset.
     setLabel(label);
-    if (macAddress.isNotEmpty) {
-      setBleDevice(BluetoothDevice.fromId(macAddress.toUpperCase()));
-      if (_isEnabled) {
-        bleConnect();
-      }
+    if (macAddress.isEmpty) return;
+    final newMac = macAddress.toUpperCase();
+    // Already connected to this exact module: just (re)label it. Re-running
+    // setBleDevice()+bleConnect() would disconnect the live link and then race
+    // bleConnect()'s isConnected guard, leaving it stuck on "Connecting...".
+    if (_isConnected && this.macAddress.toUpperCase() == newMac) {
+      return;
+    }
+    setBleDevice(BluetoothDevice.fromId(newMac));
+    if (_isEnabled) {
+      bleConnect();
     }
   }
 
