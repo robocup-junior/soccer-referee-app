@@ -2,17 +2,18 @@ import 'package:flutter/material.dart';
 import '../models/game.dart';
 import '../services/ble_bridge_service.dart';
 import '../services/mqtt.dart';
+import '../services/preset_service.dart';
+import '../services/vibration_service.dart';
 import '../utils/colors.dart';
 import 'mac_qr_scanner.dart';
 
 class SettingsScreen extends StatefulWidget {
   final Game game;
 
-  SettingsScreen({required this.game});
+  const SettingsScreen({super.key, required this.game});
 
   @override
-  _SettingsScreenState createState() => _SettingsScreenState();
-}
+  State<SettingsScreen> createState() => _SettingsScreenState();}
 
 class _SettingsScreenState extends State<SettingsScreen> {
   late SetItem _selectedGameDuration;
@@ -52,18 +53,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _selectedGameDuration = _gameDurations.firstWhere(
-        (item) => item.values == widget.game.periodTime,
-        orElse: () => _gameDurations[4]);
-    _selectedHalftimeBreak = _halftimeBreaks.firstWhere(
-        (item) => item.values == widget.game.halfTimeDuration,
+    _selectedGameDuration =
+        _gameDurations.firstWhere((item) => item.values == widget.game.periodTime, orElse: () => _gameDurations[4]);
+    _selectedHalftimeBreak = _halftimeBreaks.firstWhere((item) => item.values == widget.game.halfTimeDuration,
         orElse: () => _halftimeBreaks[2]);
-    _selectedNumberOfPlayers = _numberOfPlayersList.firstWhere(
-        (item) => item.values == widget.game.numberOfPLayers,
+    _selectedNumberOfPlayers = _numberOfPlayersList.firstWhere((item) => item.values == widget.game.numberOfPLayers,
         orElse: () => _numberOfPlayersList[1]);
-    _selectedPenaltyTime = _penaltyTimes.firstWhere(
-        (item) => item.values == widget.game.penaltyTime,
-        orElse: () => _penaltyTimes[1]);
+    _selectedPenaltyTime =
+        _penaltyTimes.firstWhere((item) => item.values == widget.game.penaltyTime, orElse: () => _penaltyTimes[1]);
   }
 
   @override
@@ -75,10 +72,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Widget build(BuildContext context) {
     return PopScope(
       canPop: true,
-      onPopInvoked: (didPop) {},
+      onPopInvokedWithResult: (didPop, result) {},
       child: PopScope(
         canPop: false,
-        onPopInvoked: (didPop) {
+        onPopInvokedWithResult: (didPop, result) {
           if (didPop) {
             return;
           }
@@ -158,6 +155,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 setState(() {
                                   widget.game.setTeamToDefaultOrder();
                                   widget.game.gameInit();
+                                  widget.game.resetModuleNames();
                                 });
                               },
                             ),
@@ -341,9 +339,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   SettingInputField(
                                       title: 'Field Number',
                                       initialValue:
-                                          widget.game.mqttService.field_number,
+                                          widget.game.mqttService.fieldNumber,
                                       onChanged: (value) {
-                                        widget.game.mqttService.topic_field =
+                                        widget.game.mqttService.topicField =
                                             value;
                                       }),
                                   SettingButton(
@@ -449,10 +447,74 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                           ],
                         ),
-                        SettingsSection(
+                        ModulePresetsSection(game: widget.game),
+                        AnimatedBuilder(
+                          animation: widget.game.vibrationService,
+                          builder: (context, child) {
+                            final vs = widget.game.vibrationService;
+                            return SettingsSection(
+                              title: 'Vibration',
+                              locked: false,
+                              settings: [
+                                SettingSwitch(
+                                  title: 'Game Timer Vibration',
+                                  value: vs.gameTimerEnabled,
+                                  onChanged: (value) {
+                                    vs.gameTimerEnabled = value;
+                                  },
+                                ),
+                                if (vs.gameTimerEnabled)
+                                  SettingAlertChips(
+                                    label: 'Alert at (sec remaining)',
+                                    options: kVibrationAlertOptions,
+                                    selected: vs.gameTimerAlerts,
+                                    onToggle: (sec) {
+                                      vs.toggleGameTimerAlert(sec);
+                                    },
+                                  ),
+                                SettingSwitch(
+                                  title: 'Damage Timer Vibration',
+                                  value: vs.damageTimerEnabled,
+                                  onChanged: (value) {
+                                    vs.damageTimerEnabled = value;
+                                  },
+                                ),
+                                if (vs.damageTimerEnabled)
+                                  SettingAlertChips(
+                                    label: 'Alert at (sec remaining)',
+                                    options: kVibrationAlertOptions,
+                                    selected: vs.damageTimerAlerts,
+                                    onToggle: (sec) {
+                                      vs.toggleDamageTimerAlert(sec);
+                                    },
+                                  ),
+                              ],
+                            );
+                          },
+                        ),
+                        AnimatedBuilder(
+                          animation: widget.game.wakelockService,
+                          builder: (context, child) {
+                            final ws = widget.game.wakelockService;
+                            return SettingsSection(
+                              title: 'Display',
+                              locked: false,
+                              settings: [
+                                SettingSwitch(
+                                  title: 'Keep Screen Awake',
+                                  value: ws.enabled,
+                                  onChanged: (value) {
+                                    ws.enabled = value;
+                                  },
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                        const SettingsSection(
                           title: 'About',
                           locked: false,
-                          settings: const [
+                          settings: [
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
                               child: Text('Created for RoboFuze.com',
@@ -465,8 +527,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
+                              child: Text('iOS adaption: Fabian Weller',
+                                  style: TextStyle(fontSize: 14)),
+                            ),
+                            Padding(
+                              padding: EdgeInsets.symmetric(vertical: 4.0),
                               child: Text('AI co-authors: Claude (Anthropic) '
-                                  '& Codex (OpenAI)',
+                                  '& Codex (OpenAI) '
+                                  '& GitHub Copilot (Microsoft)',
                                   style: TextStyle(fontSize: 14)),
                             ),
                             Padding(
@@ -516,8 +584,8 @@ class SettingsSection extends StatelessWidget {
   final bool? enabled;
   final ValueChanged<bool>? onToggle;
 
-  SettingsSection(
-      {required this.title,
+  const SettingsSection(
+      {super.key, required this.title,
       required this.settings,
       this.locked = false,
       this.enabled,
@@ -537,14 +605,13 @@ class SettingsSection extends StatelessWidget {
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 Text(
                   title,
-                  style: const TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.bold),
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 if (enabled != null && onToggle != null)
                   Switch(
                     value: enabled!,
                     onChanged: onToggle,
-                    activeColor: Colors.blue,
+                    activeThumbColor: Colors.blue,
                   ),
                 if (locked) const Icon(Icons.lock, color: Colors.white),
               ]),
@@ -564,7 +631,7 @@ class SettingDropdownButton extends StatelessWidget {
   final List<SetItem> options;
   final ValueChanged<SetItem?> onChanged;
 
-  SettingDropdownButton({
+  const SettingDropdownButton({super.key,
     required this.title,
     required this.value,
     required this.options,
@@ -604,7 +671,7 @@ class SettingButton extends StatelessWidget {
   final String buttonText;
   final Function()? onPressed;
 
-  SettingButton({
+  const SettingButton({super.key,
     required this.title,
     required this.buttonText,
     required this.onPressed,
@@ -622,11 +689,10 @@ class SettingButton extends StatelessWidget {
             flex: 2,
             child: ElevatedButton(
               onPressed: onPressed,
-              child:
-                  Text(buttonText, style: const TextStyle(color: Colors.white)),
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.grey[700],
               ),
+              child: Text(buttonText, style: const TextStyle(color: Colors.white)),
             ),
           )
         ],
@@ -683,7 +749,7 @@ class SettingInputField extends StatefulWidget {
   final ValueChanged<String> onChanged;
   final bool isPassword;
 
-  SettingInputField({
+  const SettingInputField({super.key,
     required this.title,
     required this.initialValue,
     required this.onChanged,
@@ -691,7 +757,7 @@ class SettingInputField extends StatefulWidget {
   });
 
   @override
-  _SettingInputFieldState createState() => _SettingInputFieldState();
+  State <SettingInputField> createState() => _SettingInputFieldState();
 }
 
 class _SettingInputFieldState extends State<SettingInputField> {
@@ -746,7 +812,7 @@ class _SettingInputFieldState extends State<SettingInputField> {
               obscureText: _obscure,
               style: const TextStyle(color: Colors.white),
               decoration: InputDecoration(
-                border: OutlineInputBorder(),
+                border: const OutlineInputBorder(),
                 filled: true,
                 fillColor: Colors.grey[800],
               ),
@@ -763,10 +829,10 @@ class SettingStatus extends StatefulWidget {
   final String title;
   final String status;
 
-  SettingStatus({required this.title, required this.status});
+  const SettingStatus({super.key, required this.title, required this.status});
 
   @override
-  _SettingStatusState createState() => _SettingStatusState();
+  State <SettingStatus> createState() => _SettingStatusState();
 }
 
 class _SettingStatusState extends State<SettingStatus> {
@@ -823,8 +889,8 @@ class SettingSwitch extends StatelessWidget {
     required this.title,
     required this.value,
     required this.onChanged,
-    Key? key,
-  }) : super(key: key);
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -839,7 +905,7 @@ class SettingSwitch extends StatelessWidget {
             child: Switch(
               value: value,
               onChanged: onChanged,
-              activeColor: Colors.blue,
+              activeThumbColor: Colors.blue,
             ),
           ),
         ],
@@ -848,6 +914,51 @@ class SettingSwitch extends StatelessWidget {
   }
 }
 
+// SettingAlertChips widget for multi-select vibration alert thresholds
+class SettingAlertChips extends StatelessWidget {
+  final String label;
+  final List<int> options;
+  final Set<int> selected;
+  final void Function(int) onToggle;
+
+  const SettingAlertChips({
+    required this.label,
+    required this.options,
+    required this.selected,
+    required this.onToggle,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: const TextStyle(fontSize: 14)),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 8,
+            children: options.map((sec) {
+              final isSelected = selected.contains(sec);
+              return FilterChip(
+                label: Text(sec == 0 ? '0 (end)' : '${sec}s'),
+                selected: isSelected,
+                onSelected: (_) => onToggle(sec),
+                selectedColor: Colors.blue,
+                checkmarkColor: Colors.white,
+                labelStyle: TextStyle(
+                  color: isSelected ? Colors.white : null,
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+}
 // class SettingStatus extends StatelessWidget {
 //   final String title;
 //   final String status;
@@ -891,11 +1002,172 @@ class SetItem {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is SetItem &&
-          runtimeType == other.runtimeType &&
-          values == other.values &&
-          name == other.name;
+      other is SetItem && runtimeType == other.runtimeType && values == other.values && name == other.name;
 
   @override
   int get hashCode => values.hashCode ^ name.hashCode;
+}
+
+class ModulePresetsSection extends StatefulWidget {
+  final Game game;
+
+  const ModulePresetsSection({super.key, required this.game});
+
+  @override
+  State<ModulePresetsSection> createState() => _ModulePresetsSectionState();
+}
+
+class _ModulePresetsSectionState extends State<ModulePresetsSection> {
+  final PresetService _presetService = PresetService();
+  List<GamePreset>? _presets;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPresets();
+  }
+
+  Future<void> _loadPresets() async {
+    final presets = await _presetService.loadAll();
+    if (mounted) {
+      setState(() {
+        _presets = presets;
+      });
+    }
+  }
+
+  Future<void> _saveCurrentPreset() async {
+    final name = await _showNameDialog();
+    if (name == null || name.trim().isEmpty) return;
+
+    final preset = widget.game.createPreset(name.trim());
+    await _presetService.save(preset);
+    await _loadPresets();
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Preset "${preset.name}" saved')),
+      );
+    }
+  }
+
+  Future<String?> _showNameDialog() async {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Save Preset'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Preset name',
+            hintText: 'e.g. My team robots',
+          ),
+          onSubmitted: (v) => Navigator.pop(context, v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, null),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _loadPreset(GamePreset preset) async {
+    widget.game.applyPreset(preset);
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Loaded "${preset.name}" – connecting robots...')),
+      );
+    }
+  }
+
+  Future<void> _deletePreset(GamePreset preset) async {
+    await _presetService.delete(preset.id);
+    await _loadPresets();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final presets = _presets;
+
+    final settingItems = <Widget>[
+      SettingButton(
+        title: 'Save current robot configuration',
+        buttonText: 'Save',
+        onPressed: _saveCurrentPreset,
+      ),
+      if (presets == null)
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 8.0),
+          child: Center(child: CircularProgressIndicator()),
+        )
+      else if (presets.isEmpty)
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 4.0),
+          child: Text(
+            'No presets saved yet.',
+            style: TextStyle(color: Colors.grey, fontSize: 14),
+          ),
+        )
+      else
+        ...presets.map((preset) => _PresetTile(
+              preset: preset,
+              onLoad: () => _loadPreset(preset),
+              onDelete: () => _deletePreset(preset),
+            )),
+    ];
+
+    return SettingsSection(
+      title: 'Module Presets',
+      locked: false,
+      settings: settingItems,
+    );
+  }
+}
+
+class _PresetTile extends StatelessWidget {
+  final GamePreset preset;
+  final VoidCallback onLoad;
+  final VoidCallback onDelete;
+
+  const _PresetTile({
+    required this.preset,
+    required this.onLoad,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              preset.name,
+              style: const TextStyle(fontSize: 14),
+            ),
+          ),
+          TextButton(
+            onPressed: onLoad,
+            child: const Text('Load'),
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline, color: Colors.red),
+            onPressed: onDelete,
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+          ),
+        ],
+      ),
+    );
+  }
 }

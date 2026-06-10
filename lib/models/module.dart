@@ -32,8 +32,10 @@ enum BleMsgId {
 
 class Module with ChangeNotifier {
   final String _name;
-  final String _team_id;
+  String? _label;
+  final String _teamId;
   final Game _game;
+  final int moduleId;
   final String _serviceUUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
   final String _characteristicUUIDTX = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E";
   final String _characteristicUUIDRX = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E";
@@ -60,7 +62,7 @@ class Module with ChangeNotifier {
   BluetoothCharacteristic? bleRX;
 
 
-  Module(this._game, this._team_id, this._name);
+  Module(this._game, this._teamId, this._name, this.moduleId);
 
   void init() {
     _stop();
@@ -83,23 +85,26 @@ class Module with ChangeNotifier {
     switch (_state) {
       case ModuleState.play:
         await bleSendPlay();
+        break;
       case ModuleState.stop:
         await bleSendStop();
+        break;
       case ModuleState.damage:
         await bleSendDamage(_penaltyTime);
+        break;
       case ModuleState.halfTime:
         await bleSendHalfTime();
+        break;
       case ModuleState.fullTime:
         await bleSendGameOver();
-      default:
-        print('unknown module state');
-    }
+        break;
+      }
   }
 
   void  bleConnect() async {
-    //print('BLE connect...........................');
+    //debugPrint('BLE connect...........................');
     if (bleDevice == null || bleDevice!.isConnected) return;
-    //print('BLE connect222...........................');
+    //debugPrint('BLE connect222...........................');
 
 
     // don't know why but without this delay sometimes it cannot connect more than 5 modules
@@ -122,7 +127,7 @@ class Module with ChangeNotifier {
       // event can never flip "Connection error" back to "Connecting...".
       _connectIntent = false;
       bleStatus = 'Connection error';
-      print('BLE connect error');
+      debugPrint('BLE connect error');
       subscription?.cancel();
     }
     notifyListeners();
@@ -134,14 +139,14 @@ class Module with ChangeNotifier {
 
     var service = services.where((element) => element.uuid == Guid.fromString(_serviceUUID));
     if (service.isEmpty) {
-      print('Required service not found');
+      debugPrint('Required service not found');
       bleDisconnect();
       return false;
     }
 
     var characteristic = service.firstOrNull?.characteristics.where((element) => element.uuid == Guid.fromString(_characteristicUUIDTX) || element.uuid == Guid.fromString(_characteristicUUIDRX));
     if (characteristic == null || characteristic.isEmpty) {
-      print('Required characteristics not found');
+      debugPrint('Required characteristics not found');
       bleDisconnect();
       return false;
     }
@@ -160,7 +165,7 @@ class Module with ChangeNotifier {
           handleReceivedData(data);
         });
       } catch (e) {
-        print('Error enabling RX notifications: $e');
+        debugPrint('Error enabling RX notifications: $e');
       }
     }
   }
@@ -168,14 +173,14 @@ class Module with ChangeNotifier {
   void handleReceivedData(List<int> data) {
     // Example: Convert data to a string
     // String receivedString = utf8.decode(data);
-    // print('Received data: $receivedString');
+    // debugPrint('Received data: $receivedString');
     switch (BleMsgId.values[data[0]]) {
       case BleMsgId.bleMsgAskForPenalty:
-        print('Ask for penalty');
+        debugPrint('Ask for penalty');
         _askForPenalty();
         break;
       default:
-        print('Unknown message ID: ${data[0]}');
+        debugPrint('Unknown message ID: ${data[0]}');
     }
     // Add further processing logic here
   }
@@ -202,7 +207,7 @@ class Module with ChangeNotifier {
             seconds & 0xFF]);
       return true;
     } catch (e) {
-      print('Send HalfTime error');
+      debugPrint('Send HalfTime error');
       return false;
     }
   }
@@ -210,10 +215,10 @@ class Module with ChangeNotifier {
   Future<bool> bleSendGameOver() async {
     if (!_isConnected) return false;
     try {
-      await bleTX?.write([BleMsgId.bleMsgGameOver.index, _game.getScore(_team_id), _game.getScore(_team_id, oppositeTeam: true)]);
+      await bleTX?.write([BleMsgId.bleMsgGameOver.index, _game.getScore(_teamId), _game.getScore(_teamId, oppositeTeam: true)]);
       return true;
     } catch (e) {
-      print('Send GameOver error');
+      debugPrint('Send GameOver error');
       return false;
     }
   }
@@ -222,10 +227,11 @@ class Module with ChangeNotifier {
   Future<bool> bleSendName() async {
     if (!_isConnected) return false;
     try {
-      await bleTX?.write([BleMsgId.bleMsgSetName.index] + _name.substring(0,2).codeUnits);
+      final displayName = name.padRight(2).substring(0, 2);
+      await bleTX?.write([BleMsgId.bleMsgSetName.index] + displayName.codeUnits);
       return true;
     } catch (e) {
-      print('Send name error');
+      debugPrint('Send name error');
       return false;
     }
   }
@@ -234,10 +240,10 @@ class Module with ChangeNotifier {
     if (!_isConnected) return false;
     try {
       await Future.delayed(const Duration(milliseconds: 200));
-      await bleTX?.write([BleMsgId.bleMsgSetScore.index, _game.getScore(_team_id), _game.getScore(_team_id, oppositeTeam: true)]);
+      await bleTX?.write([BleMsgId.bleMsgSetScore.index, _game.getScore(_teamId), _game.getScore(_teamId, oppositeTeam: true)]);
       return true;
     } catch (e) {
-      print('Send score error $e');
+      debugPrint('Send score error $e');
       return false;
     }
   }
@@ -248,7 +254,7 @@ class Module with ChangeNotifier {
       await bleTX?.write([BleMsgId.bleMsgStop.index]);
       return true;
     } catch (e) {
-      print('Send stop error $e');
+      debugPrint('Send stop error $e');
       return false;
     }
   }
@@ -259,7 +265,7 @@ class Module with ChangeNotifier {
       await bleTX?.write([BleMsgId.bleMsgStop.index], timeout:0);
       return true;
     } catch (e) {
-      //print('Send stop all error $e');
+      //debugPrint('Send stop all error $e');
       return false;
     }
   }
@@ -270,7 +276,7 @@ class Module with ChangeNotifier {
       await bleTX?.write([BleMsgId.bleMsgPlay.index], timeout:0);
       return true;
     } catch (e) {
-      //print('Send play all error $e');
+      //debugPrint('Send play all error $e');
       return false;
     }
   }
@@ -282,7 +288,7 @@ class Module with ChangeNotifier {
       await bleTX?.write([BleMsgId.bleMsgPlay.index]);
       return true;
     } catch (e) {
-      print('Send play error');
+      debugPrint('Send play error');
       return false;
     }
   }
@@ -298,7 +304,7 @@ class Module with ChangeNotifier {
         seconds & 0xFF]);
       return true;
     } catch (e) {
-      print('Send play error');
+      debugPrint('Send play error');
       return false;
     }
   }
@@ -430,7 +436,7 @@ class Module with ChangeNotifier {
       case ModuleState.fullTime:
         gameOver();
       default:
-        print('Wrong last ModuleState');
+        debugPrint('Wrong last ModuleState');
     }
   }
 
@@ -457,7 +463,7 @@ class Module with ChangeNotifier {
     if (_game.isGameRunning && _state == ModuleState.play) {
       penalty(_game.penaltyTime);
     } else {
-      print('Penalty not allowed in current state: $_state');
+      debugPrint('Penalty not allowed in current state: $_state');
     }
   }
 
@@ -503,7 +509,7 @@ class Module with ChangeNotifier {
   void setBleDevice(BluetoothDevice? device) {
     // check if there is currently some device saved in devices if so try to call proper disconnect to it
     if (bleDevice != null) {
-      print('try disconect previos one');
+      debugPrint('try disconect previos one');
       bleDevice?.disconnect();
     }
     
@@ -516,7 +522,7 @@ class Module with ChangeNotifier {
 
   void _registerBleSubscriber(BluetoothDevice device) {
     subscription = device.connectionState.listen((BluetoothConnectionState state) async {
-      print('BLE device status: $state');
+      debugPrint('BLE device status: $state');
       if (state == BluetoothConnectionState.disconnected) {
         _isConnected = false;
         // 1. typically, start a periodic timer that tries to
@@ -527,11 +533,11 @@ class Module with ChangeNotifier {
         // also covers the initial disconnected event right after connect().
         bleStatus = _connectIntent ? 'Connecting...' : 'Disconnected';
         notifyListeners();
-        print("disconnect");
+        debugPrint("disconnect");
       } else if (state == BluetoothConnectionState.connected) {
         //bleCheckServicesAndGetCharacteristics();
         _isConnected = true;
-        print("Connect");
+        debugPrint("Connect");
         bleStatus = 'Connected';
         //bleSendTest();
         notifyListeners();
@@ -556,9 +562,28 @@ class Module with ChangeNotifier {
   // offer a Cancel action to break out of an endless "Connecting..." loop.
   bool get isConnecting => _connectIntent && !_isConnected;
   bool get isPlaying => _isPlaying;
-  String get name => _name;
+  String get name => (_label != null && _label!.isNotEmpty) ? _label! : _name;
+  String get defaultName => _name;
+  bool get hasCustomLabel => _label != null && _label!.isNotEmpty;
   int get penaltyTime => _penaltyTime;
   ModuleState get state => _state;
+
+  void setLabel(String label) {
+    _label = label.trim();
+    notifyListeners();
+  }
+
+  void applyPresetConfig(String macAddress, String label) {
+    if (label.isNotEmpty) {
+      setLabel(label);
+    }
+    if (macAddress.isNotEmpty) {
+      setBleDevice(BluetoothDevice.fromId(macAddress.toUpperCase()));
+      if (_isEnabled) {
+        bleConnect();
+      }
+    }
+  }
 
 }
 
@@ -575,14 +600,14 @@ class Module with ChangeNotifier {
 //
 //   void _registerSubscriber() {
 //     subscription = device.connectionState.listen((BluetoothConnectionState state) async {
-//       print('BLE device status: $state');
+//       debugPrint('BLE device status: $state');
 //       if (state == BluetoothConnectionState.disconnected) {
 //         // 1. typically, start a periodic timer that tries to
 //         //    reconnect, or just call connect() again right now
 //         // 2. you must always re-discover services after disconnection!
 //         String bleStatus = 'Disconnected';
 //         notifyListeners();
-//         print("disconnect");
+//         debugPrint("disconnect");
 //       } else if (state == BluetoothConnectionState.connected) {
 //         String bleStatus = 'Connect';
 //       }
@@ -597,7 +622,7 @@ class Module with ChangeNotifier {
 //     try {
 //       await device.connect();
 //     } catch (e) {
-//       print('BLE connect error');
+//       debugPrint('BLE connect error');
 //     }
 //
 //

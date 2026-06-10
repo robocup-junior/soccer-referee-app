@@ -2,7 +2,6 @@
 android/key.properties
 android/app/*.jks
 
-
 # Miscellaneous
 *.class
 *.log
@@ -10,9 +9,11 @@ android/app/*.jks
 *.swp
 .DS_Store
 .atom/
+.build/
 .buildlog/
 .history
 .svn/
+.swiftpm/
 migrate_working_dir/
 
 # IntelliJ related
@@ -20,11 +21,6 @@ migrate_working_dir/
 *.ipr
 *.iws
 .idea/
-
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
-#.vscode/
 
 # Flutter/Dart/Pub related
 **/doc/api/
@@ -47,37 +43,20 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-
-
-
-
 # Flutter/Dart/Pub related
-.dart_tool/
 .packages
-.pub-cache/
 build/
-.flutter-plugins
-.flutter-plugins-dependencies
 .melos_tool/
 
 # Obsolete files
-*.pyc
 *.pyo
 *.pyd
-*.swp
 *.tmp
 *.bak
-
-# IntelliJ related
-.idea/
-*.iml
 
 # VS Code related
 .vscode/
 .history/
-
-# macOS related
-.DS_Store
 
 # iOS related
 ios/Pods/
@@ -95,9 +74,6 @@ android/.idea/
 android/local.properties
 android/app/build/
 android/build/
-/android/app/debug
-/android/app/profile
-/android/app/release
 
 # Web related
 web/.dart_tool/
@@ -121,12 +97,86 @@ windows/build/
 coverage/
 *.lcov
 
-# Obfuscation related
-app.*.map.json
-
-# Symbolication and debugging
-app.*.symbols
-
 # Firebase (optional - ignore if you use Firebase CLI)
 .firebase/
 
+# ==========================================
+# Xcode / iOS .gitignore (safe public version)
+# ==========================================
+
+# Build products
+DerivedData/
+
+# User-specific data
+*.mode1v3
+*.mode2v3
+*.perspectivev3
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# Personal schemes (only keep shared schemes)
+*.xcodeproj/project.xcworkspace/
+!*.xcodeproj/project.xcworkspace/xcshareddata/
+*.xcodeproj/xcuserdata/
+!*.xcodeproj/xcshareddata/
+
+# CocoaPods
+Pods/
+Podfile.lock
+
+# Carthage
+Carthage/Build/
+
+# Fastlane (contains API keys / certificates)
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/
+fastlane/test_output/
+fastlane/.env
+fastlane/.env.*
+fastlane/credentials.json
+fastlane/Appfile
+fastlane/Matchfile
+fastlane/Deliverfile
+fastlane/Gymfile
+fastlane/Scanfile
+
+# Provisioning profiles, signing, keys
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.cer
+*.crt
+*.pem
+*.key
+
+# Environment and config files that may contain secrets
+*.env
+*.xcconfig
+Config.xcconfig
+Secrets.xcconfig
+
+# Dependency manager artifacts
+Carthage/Checkouts/
+Carthage/DerivedData/
+
+# Swift Playground files
+timeline.xctimeline
+playground.xcworkspace
+
+# macOS system files
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Temporary or backup files
+*.swo
+*.orig
+
+# Archive and distribution artifacts
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.xcarchive
