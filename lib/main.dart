@@ -6,12 +6,14 @@ import 'package:rcj_scoreboard/screens/home.dart';
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/services/notification_service.dart';
 import 'package:flutter/services.dart';
+import 'package:rcj_scoreboard/services/live_activity_update_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   // Initialise notifications without blocking the first frame; the permission
   // prompt is deferred until the user enables a timer alert (see settings).
   unawaited(NotificationService.initialize());
+  unawaited(LiveActivityUpdateService().initialize());
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
 
   Game game = Game();
