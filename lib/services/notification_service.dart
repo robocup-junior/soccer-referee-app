@@ -32,11 +32,17 @@ class NotificationService {
 
   static const _iosDetails = DarwinNotificationDetails(presentSound: true);
 
+  // Cached init future so [initialize] is idempotent and [requestPermission]
+  // can await it (the plugin must be initialised before resolving the platform
+  // implementation, otherwise the request silently no-ops).
+  static Future<void>? _initFuture;
+
   /// One-time initialisation – call from main(). Does NOT request permission:
-  /// init must not block the first frame on an OS dialog, and we don't want to
-  /// prompt before the user has enabled a timer alert. Permission is requested
-  /// lazily via [requestPermission].
-  static Future<void> initialize() async {
+  /// init must not block the first frame on an OS dialog. Permission is
+  /// requested via [requestPermission] (which awaits this).
+  static Future<void> initialize() => _initFuture ??= _doInitialize();
+
+  static Future<void> _doInitialize() async {
     if (kIsWeb) return;
     try {
       tz_data.initializeTimeZones();
@@ -54,11 +60,12 @@ class NotificationService {
     }
   }
 
-  /// Request notification permission. Call the moment the user enables a timer
-  /// alert, so the OS prompt has context instead of firing on first launch.
+  /// Request notification permission. Awaits [initialize] first so it works
+  /// regardless of init/request ordering at startup.
   static Future<void> requestPermission() async {
     if (kIsWeb) return;
     try {
+      await initialize();
       await _plugin
           .resolvePlatformSpecificImplementation<
               AndroidFlutterLocalNotificationsPlugin>()

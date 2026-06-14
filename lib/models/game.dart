@@ -98,6 +98,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (!inGame) {
       gameInit();
     }
+    // Prompt for notification permission once on first launch (one-shot), now
+    // that _prefs is available — keeps the OS dialog off the match-start path.
+    _maybeRequestNotificationPermission();
     notifyListeners();
   }
 
@@ -134,12 +137,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   // Timer
 
-  // Request OS notification permission the first time a match starts, so the
-  // default-on timer alerts (see [VibrationService]) can actually fire when the
-  // app is backgrounded. The settings switches request permission lazily on an
-  // off->on toggle, but those default to true, so a referee who never opens
+  // Request OS notification permission once on first launch (called from
+  // _loadPrefs), so the default-on timer alerts (see [VibrationService]) can
+  // fire when the app is backgrounded, without popping the OS dialog over the
+  // screen at kickoff. The settings switches also request permission lazily on
+  // an off->on toggle, but those default to true, so a referee who never opens
   // settings would otherwise never be prompted. Guarded by a persisted one-shot
-  // flag and fired unawaited to keep the START path off any blocking work.
+  // flag and fired unawaited so it never blocks.
   void _maybeRequestNotificationPermission() {
     final prefs = _prefs;
     if (prefs == null) return;
@@ -155,7 +159,6 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void startTimer() {
     _timer?.cancel();
     inGame = true;
-    _maybeRequestNotificationPermission();
     if (currentStage == MatchStage.firstHalf ||
         currentStage == MatchStage.secondHalf) {
       _isGameRunning = true;
