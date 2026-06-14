@@ -4,6 +4,12 @@ import 'package:vibration/vibration.dart';
 
 const List<int> kVibrationAlertOptions = [10, 5, 3, 0];
 
+/// Holds the timer-alert preferences. Despite the name, the
+/// [gameTimerEnabled]/[damageTimerEnabled] flags and the alert-threshold sets
+/// govern BOTH in-app vibration AND the background local notifications
+/// scheduled by `Game._scheduleBackgroundNotifications()` — there is no
+/// separate notification toggle. The settings UI surfaces this as a single
+/// "Vibration & Notifications" section.
 class VibrationService with ChangeNotifier {
   bool _gameTimerEnabled = true;
   bool _damageTimerEnabled = true;

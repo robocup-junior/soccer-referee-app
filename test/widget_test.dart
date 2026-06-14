@@ -1,32 +1,29 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
+// Smoke test: builds the full app under the test binding and asserts the Home
+// screen renders. This exercises the Game constructor — which registers a
+// WidgetsBindingObserver and stands up the notification/vibration/wakelock/
+// MQTT/bridge services — so the app startup path stays covered by `flutter test`.
 
-// import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-// import 'package:rcj_scoreboard/main.dart';
-// import 'package:rcj_scoreboard/models/game.dart';
+import 'package:rcj_scoreboard/main.dart';
+import 'package:rcj_scoreboard/models/game.dart';
+import 'package:rcj_scoreboard/screens/home.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    // Game game = Game();
-    // await tester.pumpWidget(MyApp(game: game,));
+  testWidgets('App builds and shows the Home screen', (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues({});
 
-    // Verify that our counter starts at 0.
-    // expect(find.text('0'), findsOneWidget);
-    // expect(find.text('1'), findsNothing);
+    // The app is portrait-only; use a phone-shaped surface so the Home layout
+    // lays out without spurious overflow on the default 800x600 test window.
+    await tester.binding.setSurfaceSize(const Size(480, 1024));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
 
-    // Tap the '+' icon and trigger a frame.
-    // await tester.tap(find.byIcon(Icons.add));
-    // await tester.pump();
+    final game = Game();
+    await tester.pumpWidget(MyApp(game: game));
+    await tester.pump();
 
-    // Verify that our counter has incremented.
-    // expect(find.text('0'), findsNothing);
-    // expect(find.text('1'), findsOneWidget);
+    expect(find.byType(Home), findsOneWidget);
   });
 }

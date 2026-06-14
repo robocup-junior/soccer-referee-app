@@ -24,6 +24,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   static const String _halfTimeDurationKey = 'game_halftime_duration';
   static const String _numberOfPlayersKey = 'game_num_players';
   static const String _penaltyTimeKey = 'game_penalty_time';
+  static const String _notifPermissionRequestedKey =
+      'notif_permission_requested';
 
   String timerButtonText = 'START';
   final int _maxPlayer = 5;
@@ -41,6 +43,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   Timer? _timer;
   DateTime? _runClockStartedAt;
   int? _runClockStartRemainingTime;
+  // True only while the resume catch-up loop is replaying missed ticks in one
+  // synchronous burst, so per-tick vibrations are suppressed (otherwise every
+  // threshold crossed while backgrounded buzzes at once on return). State, MQTT
+  // and module updates still run during replay.
+  bool _replaying = false;
   SharedPreferences? _prefs;
   //MQTT
   MqttService mqttService = MqttService();
@@ -127,9 +134,28 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   // Timer
 
+  // Request OS notification permission the first time a match starts, so the
+  // default-on timer alerts (see [VibrationService]) can actually fire when the
+  // app is backgrounded. The settings switches request permission lazily on an
+  // off->on toggle, but those default to true, so a referee who never opens
+  // settings would otherwise never be prompted. Guarded by a persisted one-shot
+  // flag and fired unawaited to keep the START path off any blocking work.
+  void _maybeRequestNotificationPermission() {
+    final prefs = _prefs;
+    if (prefs == null) return;
+    if (prefs.getBool(_notifPermissionRequestedKey) ?? false) return;
+    if (!vibrationService.gameTimerEnabled &&
+        !vibrationService.damageTimerEnabled) {
+      return;
+    }
+    prefs.setBool(_notifPermissionRequestedKey, true);
+    unawaited(NotificationService.requestPermission());
+  }
+
   void startTimer() {
     _timer?.cancel();
     inGame = true;
+    _maybeRequestNotificationPermission();
     if (currentStage == MatchStage.firstHalf ||
         currentStage == MatchStage.secondHalf) {
       _isGameRunning = true;
@@ -297,7 +323,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         final penaltyBefore = module.penaltyTime;
         module.notifyTimer();
 
-        if (!vibrateTriggered && vibrationService.damageTimerEnabled && penaltyBefore > 0) {
+        if (!_replaying && !vibrateTriggered && vibrationService.damageTimerEnabled && penaltyBefore > 0) {
           final penaltyAfter = module.penaltyTime;
           if (vibrationService.damageTimerAlerts.contains(penaltyAfter)) {
             vibrateTriggered = true;
@@ -309,6 +335,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   void _checkGameTimerVibration() {
+    if (_replaying) return;
     if (!vibrationService.gameTimerEnabled) return;
     if (currentStage != MatchStage.firstHalf &&
         currentStage != MatchStage.halfTime &&
@@ -367,9 +394,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         final ticksToProcess = (elapsedSeconds - alreadyApplied)
             .clamp(0, _maxResumeCatchUpTicks())
             .toInt();
+        _replaying = true;
         for (var i = 0; i < ticksToProcess && isTimeRunning; i++) {
           _tickTimer();
         }
+        _replaying = false;
         // Nothing replayed (local timer was at/ahead of wall clock): just
         // re-publish the authoritative state so every sink stays consistent.
         if (ticksToProcess == 0) {
@@ -380,6 +409,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
   }
 
+  // NOTE: background notifications are gated on the same enable flags as
+  // vibration (see [VibrationService]) — a single user-facing "Vibration &
+  // Notifications" setting controls both alert mechanisms.
   void _scheduleBackgroundNotifications() {
     // Game timer
     if (vibrationService.gameTimerEnabled) {
@@ -387,15 +419,25 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         case MatchStage.firstHalf:
           NotificationService.scheduleGameAlerts(
               _remainingTime, vibrationService.gameTimerAlerts);
+          // The first half + half-time break auto-run as one window on resume
+          // (see _maxResumeCatchUpTicks), so also schedule the break alerts now,
+          // offset past the remaining first half, otherwise a referee who stays
+          // backgrounded across the break never gets the "start second half"
+          // alert. Distinct notification IDs keep these from clobbering the
+          // first-half game alerts.
+          NotificationService.scheduleBreakAlerts(
+              _remainingTime + halfTimeDuration,
+              vibrationService.gameTimerAlerts);
           break;
         case MatchStage.halfTime:
           NotificationService.scheduleBreakAlerts(
               _remainingTime, vibrationService.gameTimerAlerts);
           break;
         case MatchStage.secondHalf:
-        NotificationService.scheduleGameAlerts(
-            _remainingTime, vibrationService.gameTimerAlerts);
-        break;
+          NotificationService.scheduleGameAlerts(
+              _remainingTime, vibrationService.gameTimerAlerts,
+              isFinalPeriod: true);
+          break;
         default:
           debugPrint('unknown match stage');
       }
@@ -456,6 +498,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void halfTimeAll() async {
     stopAll(true);
     await Future.delayed(const Duration(seconds: 1));
+    // The resume catch-up loop replays missed ticks synchronously, so it can
+    // advance past half-time into the second half during this 1s delay. Skip
+    // the now-stale half-time fan-out if the game already moved on, otherwise
+    // we'd shove the robots back into a half-time countdown.
+    if (currentStage != MatchStage.halfTime) return;
 
     for (var team in teams) {
       for (var module in team.modules.where((module) => module.isEnabled)) {
@@ -468,6 +515,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void gameOverAll() async {
     stopAll(true);
     await Future.delayed(const Duration(seconds: 1));
+    // See halfTimeAll: bail out if the stage advanced during the delay so a
+    // stale game-over fan-out can't fire against a new match.
+    if (currentStage != MatchStage.fullTime) return;
 
     for (var team in teams) {
       for (var module in team.modules.where((module) => module.isEnabled)) {

@@ -6,7 +6,10 @@ import 'package:timezone/timezone.dart' as tz;
 /// Notification IDs:
 ///   Game timer:    10000 + threshold value
 ///   Damage timer:  20000 + (moduleId * 100) + threshold value
+///   Break timer:   30000 + threshold value
 /// (threshold values from kVibrationAlertOptions are small integers, e.g. 0,3,5,10)
+/// Game and break alerts use distinct bases so they can be co-scheduled (e.g.
+/// pausing in the first half schedules both) without overwriting each other.
 
 class NotificationService {
   static final _plugin = FlutterLocalNotificationsPlugin();
@@ -72,8 +75,11 @@ class NotificationService {
   /// Schedule a notification for each [threshold] still in the future.
   ///
   /// [remainingSeconds] is how many seconds are left on the game timer right now.
+  /// When [isFinalPeriod] is true (the second half) the 0-second alert reads as
+  /// match-over instead of prompting to start the next timer.
   static Future<void> scheduleGameAlerts(
-      int remainingSeconds, Set<int> thresholds) async {
+      int remainingSeconds, Set<int> thresholds,
+      {bool isFinalPeriod = false}) async {
     if (kIsWeb) return;
     final now = tz.TZDateTime.now(tz.local);
     for (final threshold in thresholds) {
@@ -83,7 +89,11 @@ class NotificationService {
         await _plugin.zonedSchedule(
           10000 + threshold,
           'Game Timer',
-          threshold == 0 ? 'Time is up! Open the app to start the next timer' : '$threshold seconds remaining',
+          threshold == 0
+              ? (isFinalPeriod
+                  ? 'Full time — match over'
+                  : 'Time is up! Open the app to start the next timer')
+              : '$threshold seconds remaining',
           now.add(Duration(seconds: delay)),
           const NotificationDetails(
             android: _androidGameChannel,
@@ -109,7 +119,7 @@ class NotificationService {
       if (delay <= 0) continue;
       try {
         await _plugin.zonedSchedule(
-          10000 + threshold,
+          30000 + threshold,
           'Break Timer',
           threshold == 0 ? 'Time is up! Open the app to start the second half timer' : '$threshold seconds remaining',
           now.add(Duration(seconds: delay)),

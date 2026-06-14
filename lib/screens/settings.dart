@@ -454,7 +454,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           builder: (context, child) {
                             final vs = widget.game.vibrationService;
                             return SettingsSection(
-                              title: 'Vibration',
+                              title: 'Vibration & Notifications',
                               locked: false,
                               settings: [
                                 SettingSwitch(
