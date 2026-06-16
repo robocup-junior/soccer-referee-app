@@ -548,7 +548,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('Version: 0.9.8',
+                              child: Text('Version: 0.10.2',
                                   style: TextStyle(fontSize: 14)),
                             ),
                             Padding(
