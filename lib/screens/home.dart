@@ -11,7 +11,7 @@ import 'package:rcj_scoreboard/screens/settings.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
 
 class Home extends StatelessWidget {
-  Home({super.key});
+  const Home({super.key});
 
   void _navigateToSettings(context, Game game) async {
     final updatedGame = await Navigator.push<Game>(
@@ -37,7 +37,7 @@ class Home extends StatelessWidget {
 
     return PopScope(
       canPop: false,
-      onPopInvoked: (didPop) async {
+      onPopInvokedWithResult: (didPop, result) async {
         debugPrint("didPop1: $didPop");
         if (didPop) {
           return;
@@ -56,7 +56,7 @@ class Home extends StatelessWidget {
               style: TextStyle(color: Colors.white)),
           actions: [
             IconButton(
-              icon: Icon(Icons.settings),
+              icon: const Icon(Icons.settings),
               color: Colors.white,
               onPressed: () {
                 _navigateToSettings(context, game);
@@ -88,7 +88,7 @@ class Home extends StatelessWidget {
                                 '${(game.remainingTime ~/ 60).toString().padLeft(2, '0')}:${(game.remainingTime % 60).toString().padLeft(2, '0')}',
                                 style: const TextStyle(fontSize: 40.0)),
                             Text(game.gameStageString),
-                            Container(
+                            SizedBox(
                               width: double.infinity,
                               child: GestureDetector(
                                 onDoubleTap: () {
@@ -105,7 +105,7 @@ class Home extends StatelessWidget {
                                         : AppColors.green),
                                   ),
                                   child: Text(game.timerButtonText,
-                                      style: TextStyle(color: Colors.white)),
+                                      style: const TextStyle(color: Colors.white)),
                                 ),
                               ),
                             )
@@ -171,7 +171,7 @@ class Home extends StatelessWidget {
                                 : (game.isSomeonePlaying
                                     ? 'STOP ALL ROBOTS'
                                     : 'START ALL ROBOTS'),
-                            style: TextStyle(color: Colors.white)),
+                            style: const TextStyle(color: Colors.white)),
                         onPressed: () {},
                       ),
                     ),
@@ -209,7 +209,7 @@ Widget buildModuleButton(Module module, Game game) {
               MaterialPageRoute(
                 builder: (context) => ChangeNotifierProvider.value(
                   value: module,
-                  child: ModuleSettingsScreen(),
+                  child: const ModuleSettingsScreen(),
                 ),
               ),
             ),
@@ -275,7 +275,7 @@ Widget buildTeamContainer(Team team, Game game) {
                     heightFactor: 0.7,
                     child: Container(
                       color: Colors.grey[800],
-                      padding: EdgeInsets.symmetric(vertical: 20.0, horizontal: 20.0),
+                      padding: const EdgeInsets.symmetric(vertical: 20.0, horizontal: 20.0),
                       child: TeamSettingsWidget(team: team, game: game),
                     ),
                   );
@@ -405,10 +405,10 @@ class TeamSettingsWidget extends StatefulWidget {
   final Team team;
   final Game game;
 
-  const TeamSettingsWidget({Key? key, required this.team, required this.game}) : super(key: key);
+  const TeamSettingsWidget({required this.team, required this.game, super.key});
 
   @override
-  _TeamSettingsWidgetState createState() => _TeamSettingsWidgetState();
+  State<TeamSettingsWidget> createState() => _TeamSettingsWidgetState();
 }
 
 class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
@@ -443,10 +443,10 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
           ),
         ),
         const Divider(),
-        SizedBox(height: 20.0),
+        const SizedBox(height: 20.0),
         Row(
           children: [
-            Expanded(
+            const Expanded(
               flex: 2,
               child: Text('Team Name', style: TextStyle(fontSize: 16.0)),
             ),
@@ -455,9 +455,9 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
               child: TextField(
                 controller: _nameController,
                 focusNode: _focusNode,
-                style: TextStyle(color: Colors.white),
+                style: const TextStyle(color: Colors.white),
                 decoration: InputDecoration(
-                  border: OutlineInputBorder(),
+                  border: const OutlineInputBorder(),
                   filled: true,
                   fillColor: Colors.grey[800],
                 ),
@@ -469,11 +469,11 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
             ),
           ],
         ),
-        SizedBox(height: 20.0),
+        const SizedBox(height: 20.0),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
           children: [
-            Text('Score', style: TextStyle(fontSize: 16.0)),
+            const Text('Score', style: TextStyle(fontSize: 16.0)),
             ElevatedButton.icon(
               onPressed: () {
                 team.addScore(-1);
@@ -482,15 +482,15 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blue,
               ),
-              icon: Icon(Icons.remove, color: Colors.white),
-              label: Text('Sub', style: TextStyle(color: Colors.white)),
+              icon: const Icon(Icons.remove, color: Colors.white),
+              label: const Text('Sub', style: TextStyle(color: Colors.white)),
             ),
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blue,
               ),
-              icon: Icon(Icons.add, color: Colors.white),
-              label: Text('Add', style: TextStyle(color: Colors.white)),
+              icon: const Icon(Icons.add, color: Colors.white),
+              label: const Text('Add', style: TextStyle(color: Colors.white)),
               onPressed: () {
                 team.addScore(1);
                 game.notifyModulesScore();
@@ -547,7 +547,7 @@ void setupGameCallbacks(Game game, BuildContext context) {
                 child: const Text("No", style: TextStyle(color: Colors.white)),
               ),
             ),
-            SizedBox(width: 16),
+            const SizedBox(width: 16),
             Expanded(
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(

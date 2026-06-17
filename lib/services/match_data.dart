@@ -37,11 +37,11 @@ class Match {
 class MatchDataService {
   String _url = 'https://catigoal.com/rest/v1/RCJI25/matches?format=json';
   String _matchId = '';
-  String _state = '';
+  final String _state = '';
   List<Match> _matches = [];
-  Match? _currentMatch = null;
+  Match? _currentMatch;
   final ValueNotifier<String> stateNotifier = ValueNotifier('');
-  late SharedPreferences prefs;
+  late final SharedPreferences prefs;
 
   MatchDataService() {
     loadPreferences();
@@ -58,10 +58,10 @@ class MatchDataService {
     final response = await http.get(Uri.parse(url));
 
     if (response.statusCode == 200) {
-      print('Matches loaded successfully');
+      debugPrint('Matches loaded successfully');
       final Map<String, dynamic> jsonResponse = json.decode(response.body);
       final List<dynamic> matchesList = jsonResponse['matches'];
-      print('Number of matches: ${matchesList.length}');
+      debugPrint('Number of matches: ${matchesList.length}');
       return matchesList.map((matchJson) => Match.fromJson(matchJson)).toList();
     } else {
       throw Exception('Failed to load matches');
@@ -90,7 +90,7 @@ class MatchDataService {
       // Save to preferences
       prefs.setString('matches_url', url);
     } else {
-      print('Error: Invalid matches URL.');
+      debugPrint('Error: Invalid matches URL.');
     }
   }
 
@@ -101,7 +101,7 @@ class MatchDataService {
       // Save to preferences
       // prefs.setString('match_id', id); // Uncomment if using shared preferences
     } else {
-      print('Error: Invalid match ID.');
+      debugPrint('Error: Invalid match ID.');
     }
   }
 
@@ -113,10 +113,10 @@ class MatchDataService {
     try {
       //print('Loading matches from: $_url');
       _matches = await fetchMatches(_url);
-      print('Matches loaded: ${_matches.length}');
+      debugPrint('Matches loaded: ${_matches.length}');
     } catch (e) {
       stateNotifier.value = 'Error loading matches';
-      print('Error loading matches: $e');
+      debugPrint('Error loading matches: $e');
       return null;
     }
 
@@ -124,17 +124,17 @@ class MatchDataService {
     try {
       _currentMatch = findMatchById(_matches, _matchId);
       if (_currentMatch != null) {
-        print('Current match found: ${_currentMatch!.id}');
+        debugPrint('Current match found: ${_currentMatch!.id}');
         stateNotifier.value = 'Match ID $_matchId loaded';
         return _currentMatch;
       } else {
         stateNotifier.value = 'Match not found';
-        print('Match not found for ID: $_matchId');
+        debugPrint('Match not found for ID: $_matchId');
         return null;
       }
     } catch (e) {
       stateNotifier.value = 'Error finding match';
-      print('Error finding match: $e');
+      debugPrint('Error finding match: $e');
       return null;
     }
   }

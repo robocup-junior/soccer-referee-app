@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -10,13 +13,14 @@ import 'package:mask_text_input_formatter/mask_text_input_formatter.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
 
 import 'mac_qr_scanner.dart';
+import 'package:rcj_scoreboard/services/preset_service.dart';
 
 class ModuleSettingsScreen extends StatefulWidget {
 
   const ModuleSettingsScreen({super.key});
 
   @override
-  _ModuleSettingsScreen createState() => _ModuleSettingsScreen();
+  State<ModuleSettingsScreen> createState() => _ModuleSettingsScreen();
 }
 
 class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
@@ -30,8 +34,10 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
   int? selectedIndex;
 
   final TextEditingController _controller = TextEditingController();
+  final TextEditingController _labelController = TextEditingController();
 
   bool setMacFromModule = true;
+  bool setLabelFromModule = true;
 
   bool bleIsScanning = false;
   StreamSubscription<List<ScanResult>>? _scanSubscription;
@@ -71,6 +77,87 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     // });
   }
 
+
+  Future<void> _saveCurrentDevice() async {
+    final mac = _controller.text.trim();
+    if (mac.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Enter a MAC address first')),
+      );
+      return;
+    }
+
+    final nameController = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Save Device'),
+        content: TextField(
+          controller: nameController,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Device name',
+            hintText: 'e.g. Red robot #3',
+          ),
+          onSubmitted: (v) => Navigator.pop(context, v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, null),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, nameController.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (name == null || name.trim().isEmpty) return;
+
+    final device = SavedDevice.create(
+      name: name.trim(),
+      macAddress: mac,
+      label: _labelController.text.trim(),
+    );
+    await PresetService().saveDevice(device);
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('"${device.name}" saved')),
+      );
+    }
+  }
+
+  Future<void> _loadSavedDevice() async {
+    final devices = await PresetService().loadAllDevices();
+    if (!mounted) return;
+
+    if (devices.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No saved devices yet')),
+      );
+      return;
+    }
+
+    final selected = await showDialog<SavedDevice>(
+      context: context,
+      builder: (context) => _SavedDevicesDialog(devices: devices),
+    );
+
+    if (selected == null || !mounted) return;
+
+    final module = Provider.of<Module>(context, listen: false);
+    setState(() {
+      _controller.text = selected.macAddress;
+      _labelController.text = selected.label;
+    });
+    // Single apply path shared with presets: sets the label (empty -> default)
+    // and connects only when the module is enabled.
+    module.applyPresetConfig(selected.macAddress, selected.label);
+    FlutterBluePlus.stopScan();
+  }
 
   void startScanning() async {
     setState(() {
@@ -138,21 +225,19 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     _scanSubscription?.cancel();
     _scanSubscription = null;
     _controller.dispose();
+    _labelController.dispose();
     FlutterBluePlus.stopScan();
     super.dispose();
   }
 
-  var maskFormatter =  MaskTextInputFormatter(
-    mask: '##:##:##:##:##:##',
-    filter: {"#" : RegExp('[0-9A-Fa-f:]')},
-    //type: MaskAutoCompletionType.lazy,
+  var maskFormatter = MaskTextInputFormatter(
+    mask: (!kIsWeb && Platform.isIOS)
+        ? '########-####-####-####-############'
+        : '##:##:##:##:##:##',
+    filter: (!kIsWeb && Platform.isIOS)
+        ? {"#": RegExp('[0-9A-Fa-f-]')}
+        : {"#": RegExp('[0-9A-Fa-f:]')},
   );
-
-
-
-
-
-
 
   @override
   Widget build(BuildContext context) {
@@ -164,9 +249,19 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
       _controller.text = module.macAddress;
     }
 
+    if (setLabelFromModule) {
+      setLabelFromModule = false;
+      _labelController.text = module.hasCustomLabel ? module.name : '';
+    }
+
 
     return Scaffold(
       backgroundColor: Colors.black,
+      // The body has an Expanded devices list, so it can't go in a scroll view.
+      // Don't shrink the viewport for the keyboard (which overflowed the fixed
+      // rows by a few px); the bot-label field is near the top and stays visible
+      // while the keyboard overlays the lower (scrollable) part.
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(
         iconTheme: const IconThemeData(
           color: Colors.white,
@@ -187,37 +282,99 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text(
+                const Text(
                   'Module status:',
                   style: TextStyle(fontSize: 18),
                 ),
                 Text(
                   deviceStatus == 'OK' ? module.bleStatus : deviceStatus,
-                  style: TextStyle(fontSize: 18),
+                  style: const TextStyle(fontSize: 18),
                 ),
               ],
             ),
 
-            SizedBox(height: 10),
-            Divider(),
-            SizedBox(height: 10),
+            const SizedBox(height: 10),
+            const Divider(),
+            const SizedBox(height: 10),
+
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _labelController,
+                    decoration: InputDecoration(
+                      labelText: 'Bot label (default: ${module.defaultName})',
+                      labelStyle: const TextStyle(color: Colors.grey),
+                      hintText: module.defaultName,
+                      hintStyle: const TextStyle(color: Colors.grey),
+                      helperText: 'First 2 characters shown on robot display',
+                      helperStyle: const TextStyle(color: Colors.grey),
+                      border: const OutlineInputBorder(),
+                    ),
+                    style: const TextStyle(color: Colors.white),
+                    maxLength: 10,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey[700],
+                  ),
+                  onPressed: () {
+                    module.setLabel(_labelController.text);
+                  },
+                  child: const Text('Save', style: TextStyle(color: Colors.white)),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 10),
+            const Divider(),
+            const SizedBox(height: 10),
 
             TextField(
 
               controller: _controller,
               inputFormatters: [maskFormatter],
               decoration: InputDecoration(
-                labelText: 'Enter MAC Address',
-                labelStyle: TextStyle(color: Colors.grey),
-                hintText: 'xx:xx:xx:xx:xx:xx',
-                hintStyle: TextStyle(color: Colors.grey),
-                border: OutlineInputBorder(),
+                labelText: (!kIsWeb && Platform.isIOS) ? 'Enter device UUID' : 'Enter MAC Address',
+                labelStyle: const TextStyle(color: Colors.grey),
+                hintText: (!kIsWeb && Platform.isIOS) ? 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' :'xx:xx:xx:xx:xx:xx',
+                hintStyle: const TextStyle(color: Colors.grey),
+                border: const OutlineInputBorder(),
 
               ),
-              style: TextStyle(color: Colors.white),
-              maxLength: 17,
+              style: const TextStyle(color: Colors.white),
+              maxLength: (!kIsWeb && Platform.isIOS) ? 36 : 17,
             ),
-            SizedBox(height: 5),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.grey[700],
+                    ),
+                    icon: const Icon(Icons.bookmark_add_outlined, color: Colors.white),
+                    label: const Text('Save device', style: TextStyle(color: Colors.white)),
+                    onPressed: _saveCurrentDevice,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.grey[700],
+                    ),
+                    icon: const Icon(Icons.bookmark_outlined, color: Colors.white),
+                    label: const Text('Load device', style: TextStyle(color: Colors.white)),
+                    onPressed: _loadSavedDevice,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 5),
             Container(
               height: 50,
               margin: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 5.0),
@@ -238,11 +395,11 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.grey[700],
                 ),
-                child: Text(module.isConnected ? 'Disconnect' : module.isConnecting ? 'Cancel' : 'Connect', style: TextStyle(color: Colors.white, fontSize: 16, ),),
+                child: Text(module.isConnected ? 'Disconnect' : module.isConnecting ? 'Cancel' : 'Connect', style: const TextStyle(color: Colors.white, fontSize: 16, ),),
               ),
             ),
 
-            SizedBox(height: 20),
+            const SizedBox(height: 20),
             Row(
               //mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
@@ -252,22 +409,22 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Colors.grey[700],
                     ),
-                    icon: Icon(Icons.bluetooth, color: Colors.white),
-                    label: Text(bleIsScanning ? 'Stop scanning' : 'Scan Bluetooth', style: TextStyle(color: Colors.white),overflow: TextOverflow.fade,),
+                    icon: const Icon(Icons.bluetooth, color: Colors.white),
+                    label: Text(bleIsScanning ? 'Stop scanning' : 'Scan Bluetooth', style: const TextStyle(color: Colors.white),overflow: TextOverflow.fade,),
                     onPressed: () {
                       bleIsScanning ? FlutterBluePlus.stopScan() : startScanning();
                     },
                   ),
                 ),
-                SizedBox(width: 4,),
+                const SizedBox(width: 4,),
                 Expanded(
                   flex: 1,
                   child: buildQRButton(),
                 ),
               ],
             ),
-            SizedBox(height: 16),
-            Text(
+            const SizedBox(height: 16),
+            const Text(
               'Devices list:',
               style: TextStyle(fontSize: 16),
             ),
@@ -276,20 +433,18 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                 itemCount: devices.length,
 
                 itemBuilder: (context, index) {
-                  return Container(
-                    child: ListTile(
-                      tileColor: selectedIndex == index ? Colors.grey[700] : null,
-                      title: Text(devices[index].platformName, style: TextStyle(color: Colors.white)),
-                      subtitle: Text(devices[index].remoteId.toString(), style: TextStyle(color: Colors.white)),
-                      onTap: () {
-                        if (mounted) {
-                          setState(() {
-                          selectedIndex = index;
-                          _controller.text = devices[index].remoteId.toString();
-                          });
-                        }
-                      },
-                    ),
+                  return ListTile(
+                    tileColor: selectedIndex == index ? Colors.grey[700] : null,
+                    title: Text(devices[index].platformName, style: const TextStyle(color: Colors.white)),
+                    subtitle: Text(devices[index].remoteId.toString(), style: const TextStyle(color: Colors.white)),
+                    onTap: () {
+                      if (mounted) {
+                        setState(() {
+                        selectedIndex = index;
+                        _controller.text = devices[index].remoteId.toString();
+                        });
+                      }
+                    },
                   );
                 },
               ),
@@ -307,18 +462,73 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
         style: ElevatedButton.styleFrom(
           backgroundColor: Colors.grey[700],
         ),
-        icon: Icon(Icons.qr_code_2, color: Colors.white),
-        label: Text('Scan QR code', style: TextStyle(color: Colors.white)),
+        icon: const Icon(Icons.qr_code_2, color: Colors.white),
+        label: const Text('Scan QR code', style: TextStyle(color: Colors.white)),
         onPressed: () async {
           final result = await Navigator.push(context,
-            MaterialPageRoute(builder: (context) => BarcodeScannerSimple()),
+            MaterialPageRoute(builder: (context) => const BarcodeScannerSimple()),
           );
           if (!context.mounted) return;
           if (result != null) {
-            _controller.text = result;
+            //result = 'RCJ-soccer_module-XX:XX:XX:XX:XX:XX'
+            // --> map result (ble device name) to uuid
+            if(!kIsWeb && Platform.isIOS){
+              handleIosResult(result);
+            } else {
+              _controller.text = result;
+            }
           }
         },
       );
+    }
+
+    Future<void> handleIosResult(dynamic pResult) async {
+      bool validResult = false;
+      String? bleDeviceName = 'RCJs-m_$pResult';
+      debugPrint(bleDeviceName);
+
+      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 3));
+
+      await for (final results in FlutterBluePlus.scanResults.timeout(
+        const Duration(seconds: 3),
+        onTimeout: (sink) => sink.close(),
+      )) {
+        for (ScanResult r in results) {
+          if (r.device.platformName == bleDeviceName) {
+            //debugPrint('App-specific UUID: ${r.device.remoteId}');
+            _controller.text = r.device.remoteId.toString();
+            validResult = true;
+            await FlutterBluePlus.stopScan();
+            break;
+          }
+        }
+
+        if (validResult) break;
+      }
+
+      await FlutterBluePlus.stopScan();
+
+      //Error handling if no device to mac was found
+      if (!validResult && mounted) {
+        await showCupertinoDialog(
+          context: context,
+          builder: (BuildContext context) {
+            return CupertinoAlertDialog(
+              title: const Text('No device found'),
+              content: const Text('No device was found matching the MAC address you scanned'),
+              actions: [
+                CupertinoDialogAction(
+                  isDefaultAction: true,
+                  onPressed: () {
+                    Navigator.of(context).pop(); // 👈 closes the dialog
+                  },
+                  child: const Text('OK'),
+                ),
+              ],
+            );
+          },
+        );
+      }
     }
 
 
@@ -354,7 +564,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
   //
   //               ElevatedButton(
   //                   onPressed: () {
-  //                     print(_controller.text);
+  //                     debugPrint(_controller.text);
   //                     widget.module.setDevice(BluetoothDevice.fromId(_controller.text.toUpperCase()));
   //                   },
   //                   child: Text('Connect')
@@ -370,3 +580,66 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
   //   );
   // }
  }
+
+class _SavedDevicesDialog extends StatefulWidget {
+  final List<SavedDevice> devices;
+
+  const _SavedDevicesDialog({required this.devices});
+
+  @override
+  State<_SavedDevicesDialog> createState() => _SavedDevicesDialogState();
+}
+
+class _SavedDevicesDialogState extends State<_SavedDevicesDialog> {
+  late List<SavedDevice> _devices;
+
+  @override
+  void initState() {
+    super.initState();
+    _devices = List.from(widget.devices);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Load Saved Device'),
+      content: SizedBox(
+        width: double.maxFinite,
+        child: ListView.builder(
+          shrinkWrap: true,
+          itemCount: _devices.length,
+          itemBuilder: (context, index) {
+            final device = _devices[index];
+            return ListTile(
+              title: Text(device.name),
+              subtitle: Text(
+                device.macAddress,
+                style: const TextStyle(fontSize: 12, color: Colors.grey),
+              ),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete_outline, color: Colors.red),
+                onPressed: () async {
+                  await PresetService().deleteDevice(device.id);
+                  setState(() => _devices.removeAt(index));
+                  if (_devices.isEmpty && context.mounted) {
+                    Navigator.pop(context, null);
+                  }
+                },
+              ),
+              onTap: () => Navigator.pop(context, device),
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, null),
+          child: const Text('Cancel'),
+        ),
+      ],
+    );
+  }
+}
+
+
+

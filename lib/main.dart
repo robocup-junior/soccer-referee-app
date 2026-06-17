@@ -1,33 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:rcj_scoreboard/screens/home.dart';
 import 'package:rcj_scoreboard/models/game.dart';
+import 'package:rcj_scoreboard/services/notification_service.dart';
 import 'package:flutter/services.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // Initialise notifications without blocking the first frame; the permission
+  // prompt is deferred until the user enables a timer alert (see settings).
+  unawaited(NotificationService.initialize());
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-
-  // // A team
-  // Module moduleA1 = Module('A1');
-  // Module moduleA2 = Module('A2');
-  // Module moduleA3 = Module('A3');
-  // Module moduleA4 = Module('A4');
-  // Module moduleA5 = Module('A5');
-  // Team teamA = Team('Team A', [moduleA1, moduleA2, moduleA3, moduleA4 ,moduleA5]);
-  //
-  // // B team
-  // Module moduleB1 = Module('B1');
-  // Module moduleB2 = Module('B2');
-  // Module moduleB3 = Module('B3');
-  // Module moduleB4 = Module('B4');
-  // Module moduleB5 = Module('B5');
-  // Team teamB = Team('Team B', [moduleB1, moduleB2, moduleB3, moduleB4 ,moduleB5]);
-  //
-  // // moduleA1.isEnabled = true;
-  // // moduleA2.isEnabled = true;
-  // // moduleB1.isEnabled = true;
-  // // moduleB2.isEnabled = true;
 
   Game game = Game();
 
@@ -37,7 +22,7 @@ void main() {
 class MyApp extends StatelessWidget {
   final Game game;
 
-  MyApp({required this.game});
+  const MyApp({required this.game, super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -57,13 +42,13 @@ class MyApp extends StatelessWidget {
         theme: ThemeData(
           brightness: Brightness.dark,
           primarySwatch: Colors.blue,
-          textTheme: TextTheme(
+          textTheme: const TextTheme(
             //bodySmall: TextStyle(color: Colors.white),
             bodyMedium: TextStyle(color: Colors.white),
             //bodyLarge: TextStyle(color: Colors.white),
           ),
         ),
-        home: Home(),
+        home: const Home(),
       ),
     );
   }
