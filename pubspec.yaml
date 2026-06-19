@@ -43,6 +43,7 @@ dependencies:
   wakelock_plus: ^1.4.0
   flutter_local_notifications: ^19.0.0
   timezone: ^0.10.0
+  app_links: ^6.4.1
 
 
   # The following adds the Cupertino Icons font to your application.

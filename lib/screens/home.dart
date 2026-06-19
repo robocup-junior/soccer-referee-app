@@ -184,6 +184,18 @@ class _HomeState extends State<Home> {
                                   style: const TextStyle(fontSize: 40.0)),
                             ),
                             Text(game.gameStageString),
+                            Text(
+                              game.scoreboardResultService.statusMessage,
+                              textAlign: TextAlign.center,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: game.scoreboardResultService.hasConflict
+                                    ? Colors.orangeAccent
+                                    : Colors.white70,
+                              ),
+                            ),
                             SizedBox(
                               width: double.infinity,
                               child: CriticalButton(
