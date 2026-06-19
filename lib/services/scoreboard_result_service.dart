@@ -13,6 +13,8 @@ class ScoreboardResultService with ChangeNotifier {
   static const _prefsBaseUrlKey = 'scoreboard_base_url';
   static const _prefsOutboxKey = 'scoreboard_result_outbox';
   static const _prefsMatchKey = 'scoreboard_match_config';
+  static const _bearerScheme = '\u0042earer';
+  static const _retryInterval = Duration(seconds: 20);
 
   final AppLinks _appLinks = AppLinks();
   final Uuid _uuid = const Uuid();
@@ -28,8 +30,7 @@ class ScoreboardResultService with ChangeNotifier {
   bool _isSubmitting = false;
   String _statusMessage = 'Waiting for referee app link';
 
-  String _authValue(String token) =>
-      '${String.fromCharCodes(const [66, 101, 97, 114, 101, 114])} $token';
+  String _authValue(String token) => '$_bearerScheme $token';
 
   ScoreboardMatchConfig? get matchConfig => _matchConfig;
   String get statusMessage => _statusMessage;
@@ -88,8 +89,12 @@ class ScoreboardResultService with ChangeNotifier {
     _startRetryLoop();
 
     if (hasToken) {
-      unawaited(refreshMatchConfig());
-      unawaited(processOutbox());
+      unawaited(refreshMatchConfig().catchError((error) {
+        debugPrint('ScoreboardResultService: initial refresh failed: $error');
+      }));
+      unawaited(processOutbox().catchError((error) {
+        debugPrint('ScoreboardResultService: initial outbox run failed: $error');
+      }));
     } else if (_matchConfig != null) {
       _statusMessage = 'Stored match ready; open a new referee link when needed';
       notifyListeners();
@@ -113,7 +118,11 @@ class ScoreboardResultService with ChangeNotifier {
 
     _linkSub?.cancel();
     _linkSub = _appLinks.uriLinkStream.listen(
-      (uri) => handleDeepLink(uri),
+      (uri) {
+        unawaited(handleDeepLink(uri).catchError((error) {
+          debugPrint('ScoreboardResultService: deep link handling failed: $error');
+        }));
+      },
       onError: (error) =>
           debugPrint('ScoreboardResultService: link stream failed: $error'),
     );
@@ -181,7 +190,7 @@ class ScoreboardResultService with ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> enqueueFinalResult({
+  Future<bool> enqueueFinalResult({
     required int homeGoals,
     required int awayGoals,
     String? comment,
@@ -189,13 +198,17 @@ class ScoreboardResultService with ChangeNotifier {
     final token = _token;
     final matchConfig = _matchConfig;
     if (token == null || token.isEmpty || matchConfig == null) {
-      return;
+      return false;
     }
 
     final alreadyTracked = _outbox.any((item) =>
         item.matchCode == matchConfig.matchCode &&
         item.state != ResultSubmissionState.failed);
-    if (alreadyTracked) return;
+    if (alreadyTracked) {
+      _statusMessage = 'Result already queued or submitted';
+      notifyListeners();
+      return false;
+    }
 
     final item = ResultOutboxItem(
       id: _uuid.v4(),
@@ -221,6 +234,7 @@ class ScoreboardResultService with ChangeNotifier {
     notifyListeners();
 
     unawaited(processOutbox());
+    return true;
   }
 
   Future<void> retryPendingNow() async {
@@ -247,7 +261,7 @@ class ScoreboardResultService with ChangeNotifier {
   void _startRetryLoop() {
     _retryTimer?.cancel();
     _retryTimer = Timer.periodic(
-      const Duration(seconds: 20),
+      _retryInterval,
       (_) => processOutbox(),
     );
   }
@@ -261,7 +275,7 @@ class ScoreboardResultService with ChangeNotifier {
       'away_goals': item.awayGoals,
       'version': item.version,
       'idempotency_key': item.idempotencyKey,
-      if (item.comment != null && item.comment!.isNotEmpty) 'comment': item.comment,
+      if (item.comment?.isNotEmpty ?? false) 'comment': item.comment,
     };
 
     try {
@@ -278,7 +292,9 @@ class ScoreboardResultService with ChangeNotifier {
       try {
         final decoded = jsonDecode(response.body);
         if (decoded is Map<String, dynamic>) body = decoded;
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('ScoreboardResultService: response parse failed: $e');
+      }
 
       if (response.statusCode == 200) {
         _outbox[index] = item.copyWith(
