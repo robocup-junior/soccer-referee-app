@@ -88,6 +88,18 @@ class Home extends StatelessWidget {
                                 '${(game.remainingTime ~/ 60).toString().padLeft(2, '0')}:${(game.remainingTime % 60).toString().padLeft(2, '0')}',
                                 style: const TextStyle(fontSize: 40.0)),
                             Text(game.gameStageString),
+                            Text(
+                              game.scoreboardResultService.statusMessage,
+                              textAlign: TextAlign.center,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: game.scoreboardResultService.hasConflict
+                                    ? Colors.orangeAccent
+                                    : Colors.white70,
+                              ),
+                            ),
                             SizedBox(
                               width: double.infinity,
                               child: GestureDetector(

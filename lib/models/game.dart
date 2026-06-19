@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:rcj_scoreboard/models/bridge_message.dart';
 import 'package:rcj_scoreboard/models/module.dart';
+import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'dart:async';
 import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/services/ble_bridge_service.dart';
@@ -10,6 +11,7 @@ import 'package:rcj_scoreboard/services/notification_service.dart';
 import 'package:rcj_scoreboard/services/vibration_service.dart';
 import 'package:rcj_scoreboard/services/wakelock_service.dart';
 import 'package:rcj_scoreboard/services/preset_service.dart';
+import 'package:rcj_scoreboard/services/scoreboard_result_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum MatchStage {
@@ -55,6 +57,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   MatchDataService matchDataService = MatchDataService();
   VibrationService vibrationService = VibrationService();
   WakelockService wakelockService = WakelockService();
+  ScoreboardResultService scoreboardResultService = ScoreboardResultService();
+  String? _lastAppliedScoreboardSignature;
 
   // Callback to request showing the dialog
   void Function()? onRequestSwitchTeamOrderDialog;
@@ -84,6 +88,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
 
     gameInit();
+    scoreboardResultService.addListener(_onScoreboardServiceUpdate);
+    unawaited(scoreboardResultService.initialize());
     unawaited(_loadPrefs());
   }
 
@@ -210,6 +216,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           stopAll(true);
           timerButtonText = 'REPEAT';
           gameOverAll();
+          _queueFinalResultSubmission();
           break;
         default:
           debugPrint('unknown match stage');
@@ -462,7 +469,50 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
+    scoreboardResultService.removeListener(_onScoreboardServiceUpdate);
+    scoreboardResultService.disposeService();
     super.dispose();
+  }
+
+  void _onScoreboardServiceUpdate() {
+    final config = scoreboardResultService.matchConfig;
+    if (config != null) {
+      _applyScoreboardMatchConfig(config);
+    }
+    notifyListeners();
+  }
+
+  void _applyScoreboardMatchConfig(ScoreboardMatchConfig config) {
+    final homeIsLeft = config.homeIsLeft ?? true;
+    final signature =
+        '${config.matchCode}:${config.version}:${config.durationSeconds}:${homeIsLeft ? 'L' : 'R'}';
+    if (_lastAppliedScoreboardSignature == signature) {
+      return;
+    }
+    _lastAppliedScoreboardSignature = signature;
+
+    teams[0].name = homeIsLeft ? config.homeTeamName : config.awayTeamName;
+    teams[1].name = homeIsLeft ? config.awayTeamName : config.homeTeamName;
+
+    if (!inGame || currentStage == MatchStage.fullTime) {
+      periodTime = config.durationSeconds;
+      gameInit();
+    }
+  }
+
+  void _queueFinalResultSubmission() {
+    final config = scoreboardResultService.matchConfig;
+    if (config == null) return;
+
+    final homeIsLeft = config.homeIsLeft ?? true;
+    final homeGoals = homeIsLeft ? teams[0].score : teams[1].score;
+    final awayGoals = homeIsLeft ? teams[1].score : teams[0].score;
+
+    unawaited(scoreboardResultService.enqueueFinalResult(
+      homeGoals: homeGoals,
+      awayGoals: awayGoals,
+      comment: 'Submitted via RCJ Soccer RefMate',
+    ));
   }
 
 
