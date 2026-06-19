@@ -505,7 +505,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   void _applyScoreboardMatchConfig(ScoreboardMatchConfig config) {
-    final homeIsLeft = config.homeIsLeft ?? true;
+    final homeIsLeft = config.homeIsLeft;
     final signature =
         '${config.matchCode}:${config.version}:${config.durationSeconds}:${homeIsLeft ? 'L' : 'R'}';
     if (_lastAppliedScoreboardSignature == signature) {
@@ -517,6 +517,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     teams[1].name = homeIsLeft ? config.awayTeamName : config.homeTeamName;
 
     if (!inGame || currentStage == MatchStage.fullTime) {
+      // Only apply remote timing presets while no active period is running.
+      // Full-time is treated as safe because the match already ended.
       periodTime = config.durationSeconds;
       gameInit();
     }
@@ -526,7 +528,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     final config = scoreboardResultService.matchConfig;
     if (config == null) return;
 
-    final homeIsLeft = config.homeIsLeft ?? true;
+    final homeIsLeft = config.homeIsLeft;
     final homeGoals = homeIsLeft ? teams[0].score : teams[1].score;
     final awayGoals = homeIsLeft ? teams[1].score : teams[0].score;
 

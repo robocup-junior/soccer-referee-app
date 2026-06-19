@@ -6,7 +6,7 @@ class ScoreboardMatchConfig {
   final String matchCode;
   final String homeTeamName;
   final String awayTeamName;
-  final bool? homeIsLeft;
+  final bool homeIsLeft;
   final String venueShortName;
   final DateTime? scheduledStart;
   final int durationSeconds;
@@ -63,7 +63,7 @@ class ScoreboardMatchConfig {
       matchCode: (json['match_code']?.toString() ?? '').trim(),
       homeTeamName: teamName(json['home_team'], 'Home'),
       awayTeamName: teamName(json['away_team'], 'Away'),
-      homeIsLeft: homeIsLeft,
+      homeIsLeft: homeIsLeft ?? true,
       venueShortName: (json['venue']?.toString() ?? '').trim(),
       scheduledStart: scheduledStart,
       durationSeconds: durationSeconds <= 0 ? 600 : durationSeconds,
@@ -113,11 +113,11 @@ class ResultOutboxItem {
     required this.awayGoals,
     required this.version,
     required this.idempotencyKey,
-    required this.comment,
+    this.comment,
     required this.state,
-    required this.responseStatus,
-    required this.responseBody,
-    required this.errorMessage,
+    this.responseStatus,
+    this.responseBody,
+    this.errorMessage,
     required this.createdAt,
     required this.updatedAt,
   });
@@ -158,8 +158,12 @@ class ResultOutboxItem {
     Map<String, dynamic>? parseBody(dynamic value) {
       if (value is Map<String, dynamic>) return value;
       if (value is String && value.isNotEmpty) {
-        final decoded = jsonDecode(value);
-        if (decoded is Map<String, dynamic>) return decoded;
+        try {
+          final decoded = jsonDecode(value);
+          if (decoded is Map<String, dynamic>) return decoded;
+        } catch (_) {
+          return null;
+        }
       }
       return null;
     }

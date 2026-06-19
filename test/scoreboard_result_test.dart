@@ -28,8 +28,8 @@ void main() {
 
     test('falls back to side_order map and defaults', () {
       final config = ScoreboardMatchConfig.fromJson({
-        'home_team': 'Home',
-        'away_team': 'Away',
+        'home_team': {'name': 'Home'},
+        'away_team': {'name': 'Away'},
         'side_order': {'home': 'left'},
       });
 
