@@ -677,26 +677,6 @@ class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
   }
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 void setupGameCallbacks(Game game, BuildContext context) {
   game.onRequestSwitchTeamOrderDialog = () async {
     bool? switchOrder = await showDialog<bool>(
