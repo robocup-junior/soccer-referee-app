@@ -4,6 +4,7 @@ import 'dart:collection';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/models/bridge_message.dart';
+import 'package:rcj_scoreboard/services/error_messages.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum BridgeConnectionState {
@@ -28,6 +29,8 @@ class BleBridgeService extends ChangeNotifier {
   // Lets a device-level disconnect read as "Connecting..." (still retrying)
   // instead of "Disconnected", until disconnect() is called explicitly.
   bool _connectIntent = false;
+  String? _lastErrorMessage;
+  String? get lastErrorMessage => _lastErrorMessage;
 
   final ValueNotifier<BridgeConnectionState> connectionStateNotifier =
       ValueNotifier(BridgeConnectionState.disconnected);
@@ -80,7 +83,7 @@ class BleBridgeService extends ChangeNotifier {
       await _device!.connect(autoConnect: true, mtu: null);
     } catch (e) {
       debugPrint('BleBridge: connect error: $e');
-      await _setErrorAndDisconnect();
+      await _setErrorAndDisconnect(message: describeError(e).message);
     }
   }
 
@@ -172,7 +175,8 @@ class BleBridgeService extends ChangeNotifier {
 
       final ready = await _discoverBridgeCharacteristic();
       if (!ready) {
-        await _setErrorAndDisconnect();
+        await _setErrorAndDisconnect(
+            message: 'Scoreboard service not found on this device');
         return;
       }
 
@@ -181,11 +185,12 @@ class BleBridgeService extends ChangeNotifier {
       await _processQueue();
     } catch (e) {
       debugPrint('BleBridge: initialization error: $e');
-      await _setErrorAndDisconnect();
+      await _setErrorAndDisconnect(message: describeError(e).message);
     }
   }
 
-  Future<void> _setErrorAndDisconnect() async {
+  Future<void> _setErrorAndDisconnect({String? message}) async {
+    _lastErrorMessage = message ?? 'Connection error';
     // Gave up (setup/discovery error) — drop the connect intent so a stray
     // event can't flip the status back to "Connecting...".
     _connectIntent = false;
