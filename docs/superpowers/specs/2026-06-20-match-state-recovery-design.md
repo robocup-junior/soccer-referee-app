@@ -84,6 +84,7 @@ class TeamSnapshot { final String id; final String name; final int score; }
 class ModuleSnapshot {
   final int moduleId;            // stable index 0..9
   final bool isEnabled;
+  final String macAddress;       // REQUIRED for auto-reconnect after a cold kill
   final String? customLabel;     // null if default (_label)
   final String state;            // ModuleState.name (_state)
   final String lastState;        // ModuleState.name (_lastState) — drives transitions
@@ -156,6 +157,16 @@ class MatchStateStore {
    - If the loaded snapshot has `inGame == true` and stage != `fullTime`, do NOT
      mutate game state yet. Stash it in `_pendingResume` and fire a new callback
      `onRequestResumeMatch` (mirrors `onRequestSwitchTeamOrderDialog`).
+   - **Don't lose the prompt to a registration race (critical).** `main.dart`
+     constructs `Game()` before `runApp`, and `_loadPrefs()` is async; with
+     cached prefs (or in tests) `SharedPreferences.getInstance()` can resolve
+     *before* `Home.build` registers `onRequestResumeMatch`, so firing it
+     directly would no-op against a null callback and the snapshot would be
+     silently ignored. Make `onRequestResumeMatch` a **setter that drains**: on
+     assignment, if `_pendingResume != null` and the prompt hasn't been shown,
+     invoke the callback immediately. So whichever happens last —
+     snapshot-stashed or callback-registered — triggers the prompt. Guard with a
+     `_resumePrompted` flag so it fires exactly once.
    - If there is no usable snapshot, the bootstrap `gameInit()` defaults stand
      and no prompt fires.
    - **Resume** → `resumePendingMatch()`:
@@ -167,6 +178,19 @@ class MatchStateStore {
        `_lastState`, `_penaltyTime`, `_label`, and enabled/disabled — the model
        fields are private, so the setter lives on `Module` rather than poking
        fields from `Game`.
+     - **Re-establish the BLE device, or auto-reconnect is a no-op (critical).**
+       A cold kill constructs fresh `Module`s with `macAddress == ''` and
+       `bleDevice == null`; nothing on the startup path restores MACs (they are
+       only ever set via `applyPresetConfig`/`setBleDevice` from explicit user
+       actions — loading a preset or picking a device). So the snapshot **must**
+       carry each module's `macAddress`, and `restoreFromSnapshot` must call
+       `applyPresetConfig(macAddress, customLabel)` (which sets the label, builds
+       `BluetoothDevice.fromId`, and calls `bleConnect()` for enabled modules).
+       Set `_state`/`_lastState`/`_penaltyTime` **before** that call so the
+       reconnect's `bleNotify()` emits the restored (already play→stop
+       normalized) state — a `damage` module then resumes its countdown on
+       connect. Without the MAC the referee would have to reconnect every robot
+       by hand, defeating the recovery goal.
      - **Normalize `play` → `stop` on restore (critical).** The reconnect path
        `bleInitModule()` → `bleSendCurrentState()` → `bleNotify()` sends
        `bleSendPlay()` whenever `_state == ModuleState.play`
@@ -229,8 +253,9 @@ end of match     -> fullTime / GAME OVER -> _clearMatchState
 
 Unit tests (no Flutter toolchain on the dev box; rely on CI Quality Gate):
 
-- `match_state_store_test.dart`: round-trip save/load; `load()` null on missing
-  key, on corrupted JSON, and on version mismatch; `clear()` removes it.
+- `match_state_store_test.dart`: round-trip save/load (incl. per-module
+  `macAddress`); `load()` null on missing key, on corrupted JSON, and on version
+  mismatch; `clear()` removes it.
 - `game_recovery_test.dart`:
   - score change persists a snapshot with the right scores;
   - heartbeat updates `remainingTime` while the clock runs;
@@ -255,6 +280,15 @@ Unit tests (no Flutter toolchain on the dev box; rely on CI Quality Gate):
     `play` state restores as `stop`, so the reconnect `bleNotify()` path cannot
     emit `bleSendPlay()` (regression test for the auto-play-on-reconnect bug);
     a `damage` module is left as `damage`.
+  - **module MAC round-trips and drives reconnect** — `restoreFromSnapshot` on a
+    fresh module with a non-empty `macAddress` sets `macAddress` and (for an
+    enabled module) goes through the `applyPresetConfig` device-setup path
+    (regression test for the empty-MAC / no-auto-reconnect bug); `_state` is set
+    before the reconnect call.
+  - **resume-callback drain** — stashing `_pendingResume` *before*
+    `onRequestResumeMatch` is assigned still fires the prompt exactly once when
+    the callback is later registered (regression test for the registration
+    race); assigning the callback when there is no pending resume does nothing.
 
 ## Files touched
 
