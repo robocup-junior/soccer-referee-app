@@ -2,7 +2,7 @@
 
 Issue: #4 (Redundant score persistence), parts 1 & 2.
 Date: 2026-06-20
-Status: draft — @mato157's warm/cold analysis + full-state restore + codex & review-anvil R1–R2 hardening
+Status: draft — @mato157's warm/cold analysis + full-state restore + codex & review-anvil R1–R3 hardening (converged)
 
 ## Problem
 
@@ -125,8 +125,17 @@ class MatchStateStore {
   "latest pending" slot (coalescing) and a monotonic `generation` counter:
   `clear()` is enqueued in the same stream (not a side API), bumps the
   generation, and drops any pending `save`; a `save` completion whose generation
-  is stale is discarded. This makes Discard / GAME OVER durable against
-  in-flight writes.
+  is stale is discarded.
+  - **Honest scope:** this guarantees *eventual ordering while the process is
+    alive* — it can NOT undo a `setString` already in flight to disk before the
+    `clear` lands, so a kill in that narrow window could still leave a stale
+    snapshot. For the destructive UI paths (Discard / GAME OVER) **await the
+    `clear` completion** where feasible (these are not robot-command paths, so an
+    await is fine). For crash-window safety, persist a **separate tombstone
+    generation key**: `clear()` writes/bumps it, and `load()` **rejects any
+    snapshot whose generation predates the tombstone** — so even a late stale
+    save that beat the snapshot key to disk is ignored on next launch. Do not
+    claim crash-proof durability from the in-memory guard alone.
 - The store reuses the `SharedPreferences` instance `Game` already loads in
   `_loadPrefs`.
 - `ModuleSnapshot`'s `moduleId`/`macAddress`/`customLabel` overlap
@@ -166,8 +175,9 @@ class MatchStateStore {
      It is a no-op unless `_dirty`, and a no-op until `_stateStore` exists / while
      `_suppressPersist == true` (item 4a). **Never** put snapshot build or
      `jsonEncode` on the `bleSendPlayAll`/`bleSendStopAll` path.
-   - Discrete `_markDirty()` sources: `startTimer`/`stopTimer`/`toggleTimer` SKIP;
-     `_tickTimer` stage transitions; `notifyModulesScore` (every score change);
+   - Discrete `_markDirty()` sources: `startTimer`, `stopTimer`, and the SKIP
+     (halfTime) branch of `toggleTimer`; `_tickTimer` stage transitions;
+     `notifyModulesScore` (every score change);
      `toggleTeamOrder`; `loadMatchData()` (**real method name**, `game.dart:683`,
      not `loadMatch`); manual team-name edits via a new `Game.setTeamName(team,
      value)` (replacing direct `team.name =` + `notifyMQTT()` in
