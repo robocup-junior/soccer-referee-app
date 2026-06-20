@@ -132,16 +132,32 @@ class MatchStateStore {
    — no extra timer object, naturally stops when the clock stops, and skipped
    during `_replaying` catch-up bursts.
 
-4. **Clear on reset:** `gameInit()` calls `_stateStore?.clear()` (covers fresh
-   match and GAME OVER via `toggleTimer`'s `gameInit()`).
+4. **Clear on reset — NOT inside `gameInit()`.** `gameInit()` must *not* clear
+   the snapshot. `_loadPrefs()` already calls `gameInit()` on every cold launch
+   (it runs `gameInit()` whenever `inGame == false`, which is always true at
+   startup); clearing there would erase the persisted match before the resume
+   path ever reads it, so the prompt could never appear. Instead, clearing is
+   explicit and happens only at genuine end-of-match / fresh-start points:
+   - `discardPendingMatch()` (referee chose Discard)
+   - the `fullTime` transition / GAME OVER (`toggleTimer`'s reset) — match is
+     finished
+   - the start of a brand-new match initiated by the referee (not the bootstrap
+     `gameInit()` in `_loadPrefs`)
+   These call a dedicated `_clearMatchState()` rather than relying on
+   `gameInit()`.
 
 5. **Cold-resume flow** in `_loadPrefs()` (this runs only on a fresh process, so
    it *is* the cold path — warm resume goes through the lifecycle observer, not
    the constructor):
-   - After loading params, call `_stateStore!.load()`.
-   - If a snapshot exists with `inGame == true` and stage != `fullTime`, do NOT
+   - **Load the snapshot first**, *before* the existing `if (!inGame)
+     gameInit()` bootstrap reset, so the bootstrap can't clobber it. Capture
+     `_stateStore!.load()` into a local, then let `gameInit()` run to set
+     defaults (it no longer clears the snapshot — see item 4).
+   - If the loaded snapshot has `inGame == true` and stage != `fullTime`, do NOT
      mutate game state yet. Stash it in `_pendingResume` and fire a new callback
      `onRequestResumeMatch` (mirrors `onRequestSwitchTeamOrderDialog`).
+   - If there is no usable snapshot, the bootstrap `gameInit()` defaults stand
+     and no prompt fires.
    - **Resume** → `resumePendingMatch()`:
      - Restore `currentStage`, scores, team order/names, `inGame`, and
        **`_remainingTime` = the snapshot's freeze point** (no wall-clock
@@ -151,15 +167,27 @@ class MatchStateStore {
        `_lastState`, `_penaltyTime`, `_label`, and enabled/disabled — the model
        fields are private, so the setter lives on `Module` rather than poking
        fields from `Game`.
+     - **Normalize `play` → `stop` on restore (critical).** The reconnect path
+       `bleInitModule()` → `bleSendCurrentState()` → `bleNotify()` sends
+       `bleSendPlay()` whenever `_state == ModuleState.play`
+       (`module.dart:84-87`). Restoring a module that was actively playing as
+       `play` would therefore **auto-PLAY the robot on reconnect, with no
+       double-tap** — violating the STOPPED guarantee and the double-tap safety
+       invariant. So `restoreFromSnapshot` maps any persisted `play` (and
+       `halfTime`/`fullTime`, which we never resume into) to `stop`. `damage` is
+       preserved (a robot serving a penalty is out of play, not playing), so its
+       countdown resumes correctly. The referee's double-tap START re-plays all
+       non-damaged modules.
      - Set the clock **frozen**: `isTimeRunning = false`, `_isGameRunning =
        false`, `_runClockStartedAt = null`, `timerButtonText = 'START'` so the
        referee restarts play manually (or `'SKIP'` if stage is `halfTime`).
      - Robots are **not** played; modules auto-reconnect via the existing
-       autoConnect. On reconnect each module pushes its restored damage/penalty
-       and score (the existing `bleSendDamage`/`bleSendScore` paths), so a robot
-       that comes back mid-penalty resumes its damage countdown.
+       autoConnect. Because `play` was normalized to `stop`, `bleNotify()` sends
+       at most a stop/damage command on reconnect — never PLAY. A robot that
+       comes back mid-penalty resumes its damage countdown via the existing
+       `bleSendDamage` path; score is re-pushed via `bleSendScore`.
      - `_broadcastFullState()` + `notifyListeners()`.
-   - **Discard** → `discardPendingMatch()` → `gameInit()` (clears snapshot).
+   - **Discard** → `discardPendingMatch()` → `gameInit()` + `_clearMatchState()`.
 
 6. **No catch-up on cold resume.** The existing `didChangeAppLifecycleState`
    catch-up loop is unchanged and used **only** for warm resume. Cold resume
@@ -182,9 +210,10 @@ timer start/stop -> startTimer/stopTimer -> _persistMatchState -> save
 stage change     -> _tickTimer transition -> _persistMatchState -> save
 running clock     -> _tickTimer (every ~5s) -> heartbeat save (freeze point)
 warm resume      -> didChangeAppLifecycleState(resumed) -> catch-up (UNCHANGED)
-cold relaunch    -> _loadPrefs -> store.load -> (inGame) onRequestResumeMatch
-                    -> Resume  -> restore + FREEZE clock (no subtraction), robots STOPPED
-                    -> Discard -> gameInit -> store.clear
+cold relaunch    -> _loadPrefs -> store.load (BEFORE bootstrap gameInit) -> (inGame) onRequestResumeMatch
+                    -> Resume  -> restore (play->stop) + FREEZE clock (no subtraction), robots STOPPED
+                    -> Discard -> gameInit + _clearMatchState
+end of match     -> fullTime / GAME OVER -> _clearMatchState
 ```
 
 ## Error handling
@@ -205,7 +234,13 @@ Unit tests (no Flutter toolchain on the dev box; rely on CI Quality Gate):
 - `game_recovery_test.dart`:
   - score change persists a snapshot with the right scores;
   - heartbeat updates `remainingTime` while the clock runs;
-  - `startTimer`/`stopTimer` update the snapshot; `gameInit` clears it;
+  - `startTimer`/`stopTimer` update the snapshot;
+  - **`gameInit()` does NOT clear the snapshot** — after the bootstrap
+    `_loadPrefs()` → `gameInit()` runs, a persisted in-progress match survives
+    and `onRequestResumeMatch` still fires (regression test for the
+    load-before-clear bug);
+  - `_clearMatchState()` removes the snapshot; it fires on Discard and on the
+    `fullTime`/GAME OVER transition, not on bootstrap init;
   - a snapshot with `inGame==true` (stage != fullTime) triggers
     `onRequestResumeMatch`; a `fullTime` snapshot does not;
   - **`resumePendingMatch` freezes the clock at the persisted freeze point** —
@@ -215,7 +250,11 @@ Unit tests (no Flutter toolchain on the dev box; rely on CI Quality Gate):
     played.
   - **full per-module restore** — a snapshot with a module in `damage` state and
     `penaltyTime > 0`, plus a custom label and enabled flag, round-trips through
-    `restoreFromSnapshot` to the exact `state`/`lastState`/`penaltyTime`/label.
+    `restoreFromSnapshot` to the exact `state`/`lastState`/`penaltyTime`/label;
+  - **`play` is normalized to `stop` on restore** — a snapshot with a module in
+    `play` state restores as `stop`, so the reconnect `bleNotify()` path cannot
+    emit `bleSendPlay()` (regression test for the auto-play-on-reconnect bug);
+    a `damage` module is left as `damage`.
 
 ## Files touched
 
