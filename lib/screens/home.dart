@@ -30,6 +30,40 @@ class Home extends StatelessWidget {
     }
   }
 
+  // Long-press the remaining-time display to manually correct the clock
+  // (issue #21). Editing is only allowed while the clock is stopped and during
+  // an actual playing/break stage — this keeps the run-clock catch-up anchors
+  // out of the picture (see Game.setRemainingTime). The double-tap start/stop
+  // toggle lives on the button below and is intentionally left untouched.
+  void _editRemainingTime(BuildContext context, Game game) {
+    if (game.isTimerRunning) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Stop the clock to edit the time.')),
+      );
+      return;
+    }
+    if (game.currentStage != MatchStage.firstHalf &&
+        game.currentStage != MatchStage.secondHalf &&
+        game.currentStage != MatchStage.halfTime) {
+      return;
+    }
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) {
+        return FractionallySizedBox(
+          heightFactor: 0.7,
+          child: Container(
+            color: Colors.grey[800],
+            padding:
+                const EdgeInsets.symmetric(vertical: 20.0, horizontal: 20.0),
+            child: TimeSettingsWidget(game: game),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final game = Provider.of<Game>(context);
@@ -84,9 +118,12 @@ class Home extends StatelessWidget {
                         flex: 1,
                         child: Column(
                           children: [
-                            Text(
-                                '${(game.remainingTime ~/ 60).toString().padLeft(2, '0')}:${(game.remainingTime % 60).toString().padLeft(2, '0')}',
-                                style: const TextStyle(fontSize: 40.0)),
+                            GestureDetector(
+                              onLongPress: () => _editRemainingTime(context, game),
+                              child: Text(
+                                  '${(game.remainingTime ~/ 60).toString().padLeft(2, '0')}:${(game.remainingTime % 60).toString().padLeft(2, '0')}',
+                                  style: const TextStyle(fontSize: 40.0)),
+                            ),
                             Text(game.gameStageString),
                             SizedBox(
                               width: double.infinity,
@@ -503,6 +540,131 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
   }
 }
 
+// Bottom-sheet editor for the remaining match time (issue #21). Mirrors
+// TeamSettingsWidget: quick +/- nudges plus an mm:ss field for a precise jump.
+// Only shown while the clock is stopped (gated in Home._editRemainingTime), so
+// it never has to reconcile a running clock.
+class TimeSettingsWidget extends StatefulWidget {
+  final Game game;
+
+  const TimeSettingsWidget({required this.game, super.key});
+
+  @override
+  State<TimeSettingsWidget> createState() => _TimeSettingsWidgetState();
+}
+
+class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
+  late TextEditingController _timeController;
+
+  @override
+  void initState() {
+    super.initState();
+    _timeController = TextEditingController(text: _format(widget.game.remainingTime));
+  }
+
+  @override
+  void dispose() {
+    _timeController.dispose();
+    super.dispose();
+  }
+
+  String _format(int seconds) =>
+      '${(seconds ~/ 60).toString().padLeft(2, '0')}:${(seconds % 60).toString().padLeft(2, '0')}';
+
+  // Accept either "mm:ss" or a plain seconds integer. Returns null on anything
+  // unparseable so the caller can ignore the input.
+  int? _parse(String raw) {
+    final text = raw.trim();
+    if (text.isEmpty) return null;
+    if (text.contains(':')) {
+      final parts = text.split(':');
+      if (parts.length != 2) return null;
+      final minutes = int.tryParse(parts[0]);
+      final secs = int.tryParse(parts[1]);
+      if (minutes == null || secs == null) return null;
+      return minutes * 60 + secs;
+    }
+    return int.tryParse(text);
+  }
+
+  void _apply(int seconds) {
+    widget.game.setRemainingTime(seconds);
+    // Reflect the clamped, authoritative value back into the field.
+    _timeController.text = _format(widget.game.remainingTime);
+  }
+
+  void _nudge(int delta) => _apply(widget.game.remainingTime + delta);
+
+  void _applyFromField() {
+    final parsed = _parse(_timeController.text);
+    if (parsed != null) {
+      _apply(parsed);
+    } else {
+      // Restore the current value if the entry was invalid.
+      _timeController.text = _format(widget.game.remainingTime);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        const Text(
+          'Edit remaining time',
+          style: TextStyle(fontSize: 24.0, color: Colors.white),
+        ),
+        const Divider(),
+        const SizedBox(height: 20.0),
+        Row(
+          children: [
+            const Expanded(
+              flex: 2,
+              child: Text('Time (mm:ss)', style: TextStyle(fontSize: 16.0)),
+            ),
+            Expanded(
+              flex: 3,
+              child: TextField(
+                controller: _timeController,
+                keyboardType: TextInputType.datetime,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  border: const OutlineInputBorder(),
+                  filled: true,
+                  fillColor: Colors.grey[800],
+                ),
+                onSubmitted: (_) => _applyFromField(),
+              ),
+            ),
+            const SizedBox(width: 8.0),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+              onPressed: _applyFromField,
+              child: const Text('Set', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+        const SizedBox(height: 20.0),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            _nudgeButton('-1:00', () => _nudge(-60)),
+            _nudgeButton('-0:30', () => _nudge(-30)),
+            _nudgeButton('+0:30', () => _nudge(30)),
+            _nudgeButton('+1:00', () => _nudge(60)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _nudgeButton(String label, VoidCallback onPressed) {
+    return ElevatedButton(
+      style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+      onPressed: onPressed,
+      child: Text(label, style: const TextStyle(color: Colors.white)),
+    );
+  }
+}
 
 
 
