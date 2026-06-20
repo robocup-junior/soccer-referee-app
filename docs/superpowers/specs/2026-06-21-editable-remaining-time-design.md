@@ -61,8 +61,9 @@ Add a public setter next to the `remainingTime` getter:
 void setRemainingTime(int seconds) {
   // Editing is gated to a stopped clock in an active half by the UI, so
   // the run-clock catch-up anchors are already null — no reconciliation
-  // needed — and both editable stages cap at periodTime.
-  _remainingTime = seconds.clamp(0, periodTime);
+  // needed — and both editable stages cap at periodTime. Floor at 1 so an
+  // active half is never parked at 0:00 (see the clamp note below).
+  _remainingTime = seconds.clamp(1, periodTime);
   notifyListeners();
   _broadcastStageAndTime();
 }
@@ -113,7 +114,7 @@ Mirrors `TeamSettingsWidget`:
 ## Testing (manual, on device)
 
 - Long-press while stopped opens the editor.
-- Nudge buttons clamp at 0 and at the stage maximum.
+- Nudge buttons clamp at 1 second (0:01) and at the stage maximum.
 - `mm:ss` entry applies the exact time.
 - The MQTT scoreboard reflects the corrected time.
 - Long-press while running shows the SnackBar and does not open the
