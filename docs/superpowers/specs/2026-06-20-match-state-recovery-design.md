@@ -2,7 +2,47 @@
 
 Issue: #4 (Redundant score persistence), parts 1 & 2.
 Date: 2026-06-20
-Status: draft — @mato157's warm/cold analysis + full-state restore + codex & review-anvil R1–R3 hardening (converged)
+Status: **DECISIONS FINALIZED** — @mato157 review 2026-06-20 (warm/cold analysis +
+full-state restore incl. penalties + codex & review-anvil R1–R3 hardening).
+Ready to implement once PR #15 lands (see Coordination).
+
+## Decisions finalized (@mato157 review, 2026-06-20)
+
+All open questions in this spec are now resolved. Changes from the prior draft:
+
+1. **Full-state restore incl. penalties — confirmed.** Penalties are restored, not
+   reset (see Scope decision).
+2. **Cold-resume clock = pure freeze-and-give-back from the last heartbeat
+   snapshot — confirmed (option a).** The "backgrounded-then-killed" third case
+   (item 7) is **resolved to (a) with NO special handling**: every cold resume just
+   restores the last heartbeat value. The pause-time anchor snapshot is **dropped**
+   from v1 (anchor fields kept only as optional future-proofing). Rationale: the
+   robot-stop guarantee is the **module FW BLE supervision timeout, now 3 s**
+   (`BLE_CONN_TIMEOUT = 300`, fw v0.97, deployed on master — see the FW repo
+   `robocup-junior/soccer-communication-module`). It is *link-layer* supervision
+   (kept alive by the OS BT stack while backgrounded-but-alive), so only a real
+   kill drops the link; the residual over-credit edge (backgrounded-and-playing for
+   minutes, then killed) is accepted as rare and always errs toward giving time
+   back.
+3. **Penalty resume = store remaining `penaltyTime` (no timestamp).** It already
+   decrements only with the match clock, so it freezes-and-gives-back automatically;
+   a timestamp+elapsed approach is rejected (would subtract the dead time the robot
+   was stopped = under-serve). The robot FW counts its penalty independently, so on
+   restore we set the number but do **not** re-send `bleSendDamage` until the
+   referee STARTs (the per-module `_suppressNextRestoreNotify` one-shot).
+4. **Half-time break cold resume = resume the break running (option i) — confirmed.**
+5. **Write cadence = single snapshot blob.** Static fields written once at start
+   (+ on web-match load), 5 s heartbeat for the freeze point, discrete-event writes
+   for goals/penalties/state changes — all in ONE SharedPreferences key (do not
+   split static vs dynamic; on Android a prefs commit rewrites the whole file, so
+   splitting saves nothing and adds complexity).
+6. **Penalty-preserve fix — now a general fix, bundled in this PR.** The master
+   "ALL ROBOTS" START is made penalty-aware globally (not just post-resume); STOP
+   keeps clearing penalties (intended post-goal reset). See `toggleAllModules`
+   below.
+7. **PR #15 (scoreboard final-result) dependency.** This PR sequences AFTER PR #15;
+   the snapshot gains web-match binding fields. See the new "Coordination with PR
+   #15" section.
 
 ## Problem
 
@@ -17,7 +57,8 @@ Two cases, with **opposite** correct clock behavior (per @mato157):
   time. **Already handled** by `didChangeAppLifecycleState` (`paused`→`resumed`
   replays missed ticks from `_runClockStartedAt`). No change here.
 - **Cold resume** — process *killed* (OOM / swipe-away / crash). BLE links drop
-  and each module stops via firmware supervision (~4 s). No play happened during
+  and each module stops via firmware supervision (~3 s — `BLE_CONN_TIMEOUT = 300`,
+  fw v0.97, deployed). No play happened during
   the downtime, so subtracting the dead interval would **steal match time**
   (killed at 5:00, relaunched 4 min later → naive subtraction shows ~1:00). A
   mid-match kill is effectively a **stoppage**: the clock must **freeze where it
@@ -88,10 +129,18 @@ class MatchSnapshot {
   final List<TeamSnapshot> teams;     // order preserved (captures team swap)
   final List<ModuleSnapshot> modules; // per-module recovery (penalties etc.)
   final int savedAtMs;           // epoch ms, for staleness display
-  // Clock anchor — set when the clock is running (esp. on the paused snapshot);
-  // null when stopped. Needed for the backgrounded-then-killed policy (item 7);
-  // the freeze-default ignores them, but the schema MUST carry them or policy
-  // (b)/(c) become impossible later.
+  // Web-match binding (only when the match was loaded from the match-making web
+  // via PR #15). Lets a cold resume re-bind the restored match to the correct
+  // scoreboard match and keep the home<->away <-> left/right mapping correct for
+  // the eventual FullTime POST. The token/outbox themselves are persisted by
+  // PR #15's ScoreboardResultService — do NOT duplicate them here; store only the
+  // binding identity. See "Coordination with PR #15".
+  final bool loadedFromWeb;
+  final String? scoreboardMatchId;    // or token reference; null if not web-loaded
+  // OPTIONAL / future-proofing only — NOT used by v1. Item 7 is resolved to pure
+  // freeze-and-give-back (option a) with no special handling, so the pause-time
+  // anchor is dropped from v1. These nullable fields may be carried for a possible
+  // future policy (b)/(c) but nothing reads them today.
   final int? runClockStartedAtMs;
   final int? runClockStartRemainingTime;
 }
@@ -151,8 +200,19 @@ class MatchStateStore {
 > **Note on the freeze point:** `remainingTime` is maintained both on discrete
 > events *and* by a ~5 s heartbeat while the clock runs, because the last
 > goal/penalty event can be stale. Worst-case recovery error ≈ 5 s heartbeat +
-> ~4 s firmware stop latency, and it always errs toward *returning* time, never
+> ~3 s firmware stop latency, and it always errs toward *returning* time, never
 > removing it.
+>
+> **Single-blob write cadence (decided 2026-06-20):** the whole snapshot is one
+> JSON value under one key. Static fields (config, period, team names/sides, MACs,
+> web-match binding, version) are populated **once at start** (+ on web-match
+> load); dynamic fields are refreshed by the **5 s heartbeat** (freeze point =
+> remaining clock + remaining per-module `penaltyTime`) and by **discrete-event**
+> writes (goal, penalty *given*, start/stop, stage change, team-order swap,
+> team-name edit). Do **not** split static vs dynamic into separate keys — on
+> Android a `SharedPreferences` commit rewrites the whole backing file regardless,
+> so splitting saves zero bytes and only adds consistency/version complexity.
+> Penalty *counting-down* is never written per second; it rides the 5 s heartbeat.
 
 ### Changes in `lib/models/game.dart`
 
@@ -339,18 +399,27 @@ class MatchStateStore {
        reconnect enabled modules with non-empty MACs; surface per-module
        "Connecting…"/Cancel state (already supported); keep it entirely off the
        START/STOP command paths.
-     - **Both START controls must be penalty-aware after resume.** The central
-       timer START (`toggleTimer` → `playAll(false)` → `playOrDamageAll`)
-       preserves penalties, but the bottom "START ALL ROBOTS"
-       (`toggleAllModules` → `playAll(true)` when nobody is playing,
-       `game.dart:307`) calls `Module.playAll()`/`play()` which **zeroes
-       `_penaltyTime`** (`module.dart:368`) — it would erase restored penalties.
-       Fix: after a cold resume with any restored penalty, the first START from
-       *either* control must go through the penalty-aware path. Route
-       `toggleAllModules`' first post-resume start through `playAll(false)`
-       (penalty-aware), or gate the bottom START until the central timer START has
-       resumed the match. Pick one and state it.
-     - **Frozen clock — except a half-time break may keep counting.** For
+     - **Both START controls must be penalty-aware — DECIDED: fix it globally, not
+       just post-resume (2026-06-20).** The central timer START (`toggleTimer` →
+       `playAll(false)` → `playOrDamageAll`) preserves penalties, but the bottom
+       "START ALL ROBOTS" (`toggleAllModules` → `playAll(true)` when nobody is
+       playing, `game.dart:307`) calls `Module.playAll()`/`play()` which **zeroes
+       `_penaltyTime`** (`module.dart:368`/`398`) — it would erase restored
+       penalties (and also erases an active penalty in normal play if the referee
+       resumes mid-penalty via the master button). **Fix:** change
+       `toggleAllModules`' start from `playAll(true)` to **`playAll(false)`**
+       (penalty-aware, matching the timer toggle). This is a **general fix**, not
+       gated to post-resume. The master **STOP** keeps `stopAll(true)` (penalty
+       clear is *intended* there — e.g. a post-goal reset via STOP ALL ROBOTS). At
+       start-of-half `_penaltyTime` is already 0 so behavior is identical; the only
+       change is the master START stops wiping an *active* penalty. (Accepted
+       trade-off: a stray penalty left by single-robot test-toggling no longer
+       auto-clears on the next master START, but a STOP still clears it.) This fix
+       is small and **bundled in this same PR** since cold resume is unusable
+       without it. After the change `Game.playAll(true)`/`Module.playAll()` have no
+       caller — leave them in place (lower risk than deleting public methods).
+     - **Frozen clock — except the half-time break keeps counting (DECIDED:
+       resume running, option i, 2026-06-20).** For
        `firstHalf`/`secondHalf`, freeze: `isTimeRunning = false`, `_isGameRunning
        = false`, `_runClockStartedAt = null`, `timerButtonText = 'START'`; robots
        stopped. For a kill **during the half-time break** (`stage == halfTime`),
@@ -379,33 +448,21 @@ class MatchStateStore {
    catch-up loop is unchanged and used **only** for warm resume. Cold resume
    deliberately does not advance the clock.
 
-7. **Backgrounded-then-killed — a third case (needs a policy decision).**
-   @mato157's warm/cold split assumes a cold kill ≈ an immediate stoppage
-   (robots stop within ~4 s of the process dying). That holds for a kill while
-   the app is **foregrounded/active**. But if the app is **backgrounded** (the
-   process is still alive, BLE links up, robots **still playing**) and Android
-   then kills it later, the robots played for the whole background interval and
-   only stopped ~4 s after the eventual kill. Meanwhile the 1 Hz `_tickTimer`
-   (and thus the heartbeat) is suspended in the background — that is *why* the
-   warm catch-up exists — so the freeze point is stuck at the **last foreground**
-   value. Freeze-and-give-back would then credit back the entire background
-   playing interval, not just the post-kill dead time, handing the match minutes
-   it already used.
-   - **Minimum mitigation (in this design):** also persist a snapshot on
-     `AppLifecycleState.paused`, capturing `_runClockStartedAt` (the wall-clock
-     anchor) and `runClockStartRemainingTime` so a cold relaunch *can* tell how
-     long the clock had been anchored. This is cheap and keeps the data
-     available even though `didChangeAppLifecycleState`'s `paused` branch
-     currently only schedules notifications.
-   - **Open policy question for @mato157:** for a snapshot whose anchor shows the
-     clock was running when backgrounded, should cold resume (a) keep pure
-     freeze-and-give-back (simple, over-credits a background kill), (b) advance
-     by wall-clock elapsed since the anchor (correct for background-kill,
-     *under*-credits a foreground kill by counting dead time), or (c) show the
-     referee both values and let them pick? We cannot distinguish the two kill
-     modes from a single snapshot, so this is a genuine tradeoff, not an
-     implementation detail. Flagged in the issue thread; default to (a) unless
-     mato prefers otherwise.
+7. **Backgrounded-then-killed — RESOLVED to option (a), no special handling
+   (@mato157, 2026-06-20).** The theoretical edge: if the app is **backgrounded**
+   (process alive, BLE links up via the OS BT stack, robots **still playing**) and
+   Android kills it later, the robots played for the whole background interval but
+   the heartbeat was suspended, so the freeze point is stuck at the last foreground
+   value and pure freeze-and-give-back would over-credit that background interval.
+   **Decision: accept it.** Every cold resume simply restores the last heartbeat
+   snapshot — no pause-time anchor, no background-kill branch, no policy fork. This
+   keeps the implementation simple and the error only ever errs toward *giving time
+   back*, never stealing it. The case is rare (a referee would have to background
+   the live-match control app with robots playing, for minutes, then have it
+   killed). The **pause-time anchor snapshot is dropped from v1**; the
+   `runClockStartedAtMs`/`runClockStartRemainingTime` fields remain only as optional
+   future-proofing and are not read. (Robots are still stopped on the kill by the
+   3 s FW supervision timeout — see Problem.)
 
 ### UI: `lib/screens/home.dart`
 
@@ -459,7 +516,8 @@ end of match     -> fullTime / GAME OVER -> _clearMatchState
 
 ## Testing
 
-Unit tests (no Flutter toolchain on the dev box; rely on CI Quality Gate):
+Unit tests (`flutter test`; `flutter analyze` is available locally on the dev box
+and also gated by the CI Quality Gate):
 
 - `match_state_store_test.dart`: round-trip save/load (incl. per-module
   `macAddress` and the `runClockStartedAtMs`/`runClockStartRemainingTime` anchor
@@ -533,16 +591,20 @@ Unit tests (no Flutter toolchain on the dev box; rely on CI Quality Gate):
     `onRequestResumeMatch` is assigned still fires the prompt exactly once when
     the callback is later registered (regression test for the registration
     race); assigning the callback when there is no pending resume does nothing.
-  - **pause persists a snapshot** — `didChangeAppLifecycleState(paused)` while the
-    clock runs writes a snapshot carrying `runClockStartedAtMs` (data for the
-    backgrounded-then-killed case, item 7).
+  - **penalty-preserve fix** — after the `toggleAllModules` change, the master
+    "START ALL ROBOTS" path goes through `playAll(false)`/`playOrDamageAll` and
+    does NOT zero an active `_penaltyTime`; the master STOP (`stopAll(true)`) still
+    clears penalties.
+  - **web-match binding round-trips** — a snapshot saved with `loadedFromWeb ==
+    true` + `scoreboardMatchId` restores those fields so a cold resume can re-bind
+    to the correct scoreboard match (PR #15).
 
 ## Files touched
 
 | Path | Change |
 |---|---|
-| `lib/services/match_state_store.dart` | **new** — versioned snapshot model (incl. clock-anchor fields) + serialized save/clear stream with generation guard/coalescing |
-| `lib/models/game.dart` | store wiring, `_markDirty` + off-hot-path coalesced flush, `_suppressPersist` scope, heartbeat (decrement-branch only) + post-catch-up flush, pause-snapshot, cold-resume flow, `setTeamName`, restore-by-id, penalty-aware first START |
+| `lib/services/match_state_store.dart` | **new** — versioned snapshot model (incl. web-match binding fields; optional clock-anchor fields) + serialized save/clear stream with generation guard/coalescing |
+| `lib/models/game.dart` | store wiring, `_markDirty` + off-hot-path coalesced flush, `_suppressPersist` scope, heartbeat (decrement-branch only) + post-catch-up flush, cold-resume flow, `setTeamName`, restore-by-id, **`toggleAllModules` START → `playAll(false)` (penalty-preserve fix)**, web-match binding capture |
 | `lib/models/module.dart` | `toSnapshot()` / `restoreFromSnapshot()` (normalize `_state` **and** `_lastState`, enabled-first ordering), per-module one-shot `_suppressNextRestoreNotify` consumed by first post-restore `bleNotify` |
 | `lib/screens/home.dart` | register `onRequestResumeMatch`, resume/**confirm-discard** dialog, route team-name edits through `Game.setTeamName` |
 | `test/match_state_store_test.dart` | **new** |
@@ -555,6 +617,20 @@ entire match state — score, clock freeze point, stage, team order/names, and f
 per-module state (enabled, label, `state`/`lastState`, `penaltyTime`). Penalties
 are *not* reset on cold resume.
 
+- **Penalty representation:** the snapshot stores the **remaining `penaltyTime`**
+  per module (heartbeat-fresh), not a start timestamp — it decrements only with the
+  match clock, so it freezes-and-gives-back for free. On restore the number + state
+  are set but `bleSendDamage` is **not** re-sent until the referee STARTs (the FW
+  counts the penalty independently; the `_suppressNextRestoreNotify` one-shot
+  prevents a robot self-releasing mid-stoppage). On START, `playOrDamageAll` re-arms
+  damage so app + robot resume together.
+- **Penalty-preserve fix** (master START → `playAll(false)`; STOP unchanged) is
+  **bundled in this PR** — see `toggleAllModules`. It is a general correctness fix,
+  required for resume to be usable.
+- **Web-match binding** (`loadedFromWeb` + `scoreboardMatchId`) is added to the
+  snapshot **only after PR #15 lands**; this PR sequences after it. See Coordination
+  with PR #15.
+
 ## Coordination notes
 
 - **@f-wllr's fork** (issue #4 comment, 2026-06-08) claimed part 1 "already
@@ -563,15 +639,35 @@ are *not* reset on cold resume.
    `0f6d9fa`/`32a3cf0`). The real open work — **cold resume + full snapshot** —
    is not on `dev` and is not what that fork described, so overlap risk is low.
 - **@mato157 (MaTo)** is the active maintainer of the timer code on `dev`; this
-   spec adopts their warm/cold + freeze-and-give-back analysis. Worth a short
-   reply on #4 confirming full-state restore before/while implementing.
-- **Open policy question for @mato157 — backgrounded-then-killed** (see design
-   item 7). Pure freeze-and-give-back over-credits a match that was killed while
-   *backgrounded with robots still playing*. The design persists a pause-time
-   snapshot so the data exists; the policy (keep freeze / advance by wall-clock /
-   ask the referee) is mato's call. Defaulting to freeze until decided.
+   spec adopts their warm/cold + freeze-and-give-back analysis. All open questions
+   were reviewed and resolved with mato on 2026-06-20 (see "Decisions finalized"):
+   full-state restore incl. penalties, freeze-and-give-back from the last heartbeat
+   (item 7 → option a, no special handling), penalty-as-remaining-seconds, half-time
+   resume-running, single-blob writes, penalty-preserve fix bundled.
+
+### Coordination with PR #15 (scoreboard final-result integration)
+
+App **PR #15** (`copilot/issue-31-final-result-api`) adds `ScoreboardResultService`:
+it intakes the `/r/<token>` deep link, **persists the token + base-url**, fetches
+`GET /api/v1/soccer/match` (applying team names / home↔away side mapping / period),
+keeps a **persisted result outbox** + retry, and POSTs the FullTime result via
+`/api/v1/soccer/match/result` with a stable `idempotency_key` (mapping in-app
+left/right → API home/away).
+
+- **Do NOT duplicate PR #15's persistence.** The token, base-url, and result outbox
+  already survive a kill (PR #15 stores them). This snapshot stores only the
+  **binding identity** (`loadedFromWeb` + `scoreboardMatchId`/token reference) so a
+  cold resume can re-bind the restored match to the correct scoreboard match,
+  avoid clobbering web-sourced names/period, and keep the home↔away ↔ left/right
+  mapping correct for the eventual FullTime POST (critical if team order was
+  swapped). Adding these fields **bumps the snapshot version**.
+- **Sequence: PR #15 first, then this PR.** PR #15 also edits `game.dart`,
+  `home.dart`, and `settings.dart` — all touched here — so landing it first avoids
+  merge conflicts; the web-binding fields are then added on top.
 
 ## Branch / PR
 
-Branch `mrshu/match-recovery` off `dev`; one focused PR for parts 1 & 2 of #4.
-Logging (#16) is a separate follow-up.
+Branch `mrshu/match-recovery` off `dev`; one focused PR for parts 1 & 2 of #4,
+**including the penalty-preserve fix** (`toggleAllModules`). **Sequenced after
+PR #15** (shared edits to `game.dart`/`home.dart`/`settings.dart`); the web-match
+binding fields are added once PR #15 lands. Logging (#16) is a separate follow-up.
