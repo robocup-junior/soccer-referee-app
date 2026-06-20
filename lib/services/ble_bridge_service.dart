@@ -180,6 +180,7 @@ class BleBridgeService extends ChangeNotifier {
         return;
       }
 
+      _lastErrorMessage = null;
       connectionStateNotifier.value = BridgeConnectionState.connected;
       notifyListeners();
       await _processQueue();

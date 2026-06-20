@@ -45,7 +45,7 @@ class BLEServices {
 
     if (status == describeAdapterState(BluetoothAdapterState.off).message) {
       if (await enableBLE() == false) {
-        status = 'Bluetooth is disabled';
+        status = describeAdapterState(BluetoothAdapterState.off).message;
       } else {
         status = 'OK';
       }
