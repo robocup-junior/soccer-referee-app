@@ -9,6 +9,9 @@ import 'package:rcj_scoreboard/models/module.dart';
 import 'package:flutter/services.dart';
 import 'package:rcj_scoreboard/screens/settings.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:rcj_scoreboard/services/ble_adapter_monitor.dart';
+import 'package:rcj_scoreboard/screens/widgets/bluetooth_banner.dart';
 
 class Home extends StatelessWidget {
   const Home({super.key});
@@ -71,6 +74,16 @@ class Home extends StatelessWidget {
             padding: const EdgeInsets.all(8.0),
             child: Column(
               children: <Widget>[
+                Consumer<BleAdapterMonitor>(
+                  builder: (context, monitor, _) => BluetoothBanner(
+                    state: monitor.state,
+                    onOpenSettings: () {
+                      try {
+                        FlutterBluePlus.turnOn();
+                      } catch (_) {}
+                    },
+                  ),
+                ),
                 Expanded(
                   flex: 6,
                   child: Row(
