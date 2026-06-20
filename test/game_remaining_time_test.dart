@@ -71,11 +71,14 @@ void main() {
       expect(game.remainingTime, 123);
     });
 
-    testWidgets('clamps negative values to 0', (tester) async {
+    testWidgets('floors at 1 second (never parks an active half at 0:00)',
+        (tester) async {
       final game = makeGame();
       await tester.pump();
+      game.setRemainingTime(0);
+      expect(game.remainingTime, 1);
       game.setRemainingTime(-10);
-      expect(game.remainingTime, 0);
+      expect(game.remainingTime, 1);
     });
 
     testWidgets('clamps above periodTime to periodTime', (tester) async {

@@ -68,7 +68,12 @@ void setRemainingTime(int seconds) {
 }
 ```
 
-- Clamp to `periodTime` (the maximum of both editable stages), floor 0.
+- Clamp to `[1, periodTime]`. The floor is 1 second, not 0: the normal
+  expiry path never leaves an active half stopped at `0:00` (a tick at 0
+  transitions the stage), so a manual `0:00` would create a state where a
+  later START double-tap fires `playAll()` one tick before the transition
+  stops the robots again. Flooring at 1 keeps the manual path consistent
+  with the timer's own invariant.
 - Publishes stage+time via `_broadcastStageAndTime()`.
 - Does not touch the run-clock anchors and does not call
   `notifyAllModulesTimer()`.

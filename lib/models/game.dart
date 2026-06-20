@@ -675,8 +675,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   // (that decrements module damage timers) and does NOT trigger game-timer
   // vibration. Publishes stage+time to every sink like the other stopped-state
   // updates (_broadcastStageAndTime) — the BLE bridge carries no time topic.
+  //
+  // Floors at 1 second, not 0: the normal expiry path never leaves an active
+  // half stopped at 0:00 (a tick at 0 transitions the stage), so allowing a
+  // manual 0:00 would create a state where a later START double-tap fires
+  // playAll() one tick before the stage transition stops the robots again.
   void setRemainingTime(int seconds) {
-    _remainingTime = seconds.clamp(0, periodTime);
+    _remainingTime = seconds.clamp(1, periodTime);
     notifyListeners();
     _broadcastStageAndTime();
   }
