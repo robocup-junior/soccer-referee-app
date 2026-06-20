@@ -21,4 +21,15 @@ void main() {
     expect(find.text('Bluetooth is off'), findsNothing);
     expect(find.byType(MaterialBanner), findsNothing);
   });
+
+  testWidgets('renders nothing for unknown/turningOn (no cold-start flash)',
+      (tester) async {
+    for (final s in [
+      BluetoothAdapterState.unknown,
+      BluetoothAdapterState.turningOn,
+    ]) {
+      await tester.pumpWidget(wrap(BluetoothBanner(state: s)));
+      expect(find.byType(MaterialBanner), findsNothing);
+    }
+  });
 }

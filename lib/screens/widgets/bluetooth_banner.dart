@@ -14,7 +14,13 @@ class BluetoothBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (state == BluetoothAdapterState.on) {
+    const problemStates = {
+      BluetoothAdapterState.off,
+      BluetoothAdapterState.turningOff,
+      BluetoothAdapterState.unauthorized,
+      BluetoothAdapterState.unavailable,
+    };
+    if (!problemStates.contains(state)) {
       return const SizedBox.shrink();
     }
     final info = describeAdapterState(state);
