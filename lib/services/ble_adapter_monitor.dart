@@ -11,10 +11,16 @@ class BleAdapterMonitor extends ChangeNotifier {
   StreamSubscription<BluetoothAdapterState>? _sub;
 
   BleAdapterMonitor({Stream<BluetoothAdapterState>? stream}) {
-    _sub = (stream ?? FlutterBluePlus.adapterState).listen((s) {
-      _state = s;
-      notifyListeners();
-    });
+    _sub = (stream ?? FlutterBluePlus.adapterState).listen(
+      (s) {
+        _state = s;
+        notifyListeners();
+      },
+      // The adapter-state stream can error where the platform is unavailable
+      // (e.g. unit/widget tests, or a host without BLE). Stay at `unknown`
+      // (no banner) instead of letting an unhandled async error escape.
+      onError: (Object e) => debugPrint('BleAdapterMonitor: adapterState error: $e'),
+    );
   }
 
   BluetoothAdapterState get state => _state;
