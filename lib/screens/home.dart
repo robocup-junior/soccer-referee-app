@@ -545,6 +545,28 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
   }
 }
 
+// Parse a remaining-time entry, accepting either a plain nonnegative seconds
+// integer ("123") or "mm:ss" with a nonnegative minutes part and a seconds part
+// in 0..59. Returns null for anything else ("5:99", "1:2:3", ":30", "", "ab"),
+// so a referee typo is ignored rather than silently applied as a bad
+// correction. Top-level + pure so it is unit-testable without a widget.
+int? parseMmSs(String raw) {
+  final text = raw.trim();
+  if (text.isEmpty) return null;
+  if (text.contains(':')) {
+    final parts = text.split(':');
+    if (parts.length != 2 || parts[0].isEmpty || parts[1].isEmpty) return null;
+    final minutes = int.tryParse(parts[0]);
+    final secs = int.tryParse(parts[1]);
+    if (minutes == null || secs == null) return null;
+    if (minutes < 0 || secs < 0 || secs > 59) return null;
+    return minutes * 60 + secs;
+  }
+  final seconds = int.tryParse(text);
+  if (seconds == null || seconds < 0) return null;
+  return seconds;
+}
+
 // Bottom-sheet editor for the remaining match time (issue #21). Mirrors
 // TeamSettingsWidget: quick +/- nudges plus an mm:ss field for a precise jump.
 // Only shown while the clock is stopped (gated in Home._editRemainingTime), so
@@ -576,22 +598,6 @@ class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
   String _format(int seconds) =>
       '${(seconds ~/ 60).toString().padLeft(2, '0')}:${(seconds % 60).toString().padLeft(2, '0')}';
 
-  // Accept either "mm:ss" or a plain seconds integer. Returns null on anything
-  // unparseable so the caller can ignore the input.
-  int? _parse(String raw) {
-    final text = raw.trim();
-    if (text.isEmpty) return null;
-    if (text.contains(':')) {
-      final parts = text.split(':');
-      if (parts.length != 2) return null;
-      final minutes = int.tryParse(parts[0]);
-      final secs = int.tryParse(parts[1]);
-      if (minutes == null || secs == null) return null;
-      return minutes * 60 + secs;
-    }
-    return int.tryParse(text);
-  }
-
   void _apply(int seconds) {
     widget.game.setRemainingTime(seconds);
     // Reflect the clamped, authoritative value back into the field.
@@ -601,7 +607,7 @@ class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
   void _nudge(int delta) => _apply(widget.game.remainingTime + delta);
 
   void _applyFromField() {
-    final parsed = _parse(_timeController.text);
+    final parsed = parseMmSs(_timeController.text);
     if (parsed != null) {
       _apply(parsed);
     } else {
