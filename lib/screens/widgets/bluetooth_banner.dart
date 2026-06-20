@@ -7,10 +7,13 @@ import 'package:rcj_scoreboard/services/error_messages.dart';
 /// Renders an empty box when Bluetooth is on, so it can sit unconditionally in
 /// the widget tree.
 class BluetoothBanner extends StatelessWidget {
-  const BluetoothBanner({required this.state, this.onOpenSettings, super.key});
+  const BluetoothBanner({required this.state, this.onTurnOn, super.key});
 
   final BluetoothAdapterState state;
-  final VoidCallback? onOpenSettings;
+
+  /// Called when the user taps "Turn on". Only shown for the off/turningOff
+  /// states, where turning the adapter on is the action that actually helps.
+  final VoidCallback? onTurnOn;
 
   @override
   Widget build(BuildContext context) {
@@ -24,6 +27,12 @@ class BluetoothBanner extends StatelessWidget {
       return const SizedBox.shrink();
     }
     final info = describeAdapterState(state);
+    // Turning the adapter on only helps when it is simply off. For
+    // `unauthorized` (needs a permission grant) or `unavailable` (no BLE
+    // hardware) turnOn() does nothing, so we show no action button and let the
+    // hint guide the user rather than offer a button that does nothing.
+    final canTurnOn = state == BluetoothAdapterState.off ||
+        state == BluetoothAdapterState.turningOff;
     return MaterialBanner(
       backgroundColor: Colors.red.shade900,
       leading: const Icon(Icons.bluetooth_disabled, color: Colors.white),
@@ -38,12 +47,17 @@ class BluetoothBanner extends StatelessWidget {
             Text(info.hint!, style: const TextStyle(color: Colors.white70)),
         ],
       ),
+      // MaterialBanner requires a non-empty actions list, so the
+      // no-action states get a zero-size placeholder.
       actions: [
-        TextButton(
-          onPressed: onOpenSettings,
-          child: const Text('Open settings',
-              style: TextStyle(color: Colors.white)),
-        ),
+        if (canTurnOn)
+          TextButton(
+            onPressed: onTurnOn,
+            child:
+                const Text('Turn on', style: TextStyle(color: Colors.white)),
+          )
+        else
+          const SizedBox.shrink(),
       ],
     );
   }

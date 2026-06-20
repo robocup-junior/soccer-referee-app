@@ -77,7 +77,7 @@ class Home extends StatelessWidget {
                 Consumer<BleAdapterMonitor>(
                   builder: (context, monitor, _) => BluetoothBanner(
                     state: monitor.state,
-                    onOpenSettings: () {
+                    onTurnOn: () {
                       FlutterBluePlus.turnOn().catchError((_) {});
                     },
                   ),

@@ -32,4 +32,20 @@ void main() {
       expect(find.byType(MaterialBanner), findsNothing);
     }
   });
+
+  testWidgets('off shows a "Turn on" action', (tester) async {
+    await tester.pumpWidget(
+        wrap(BluetoothBanner(state: BluetoothAdapterState.off, onTurnOn: () {})));
+    expect(find.widgetWithText(TextButton, 'Turn on'), findsOneWidget);
+  });
+
+  testWidgets('unauthorized shows the message but no action button',
+      (tester) async {
+    await tester.pumpWidget(
+        wrap(const BluetoothBanner(state: BluetoothAdapterState.unauthorized)));
+    // The banner is shown (the condition is real)...
+    expect(find.text('Bluetooth permission denied'), findsOneWidget);
+    // ...but there is no actionable button, since turnOn() would do nothing.
+    expect(find.byType(TextButton), findsNothing);
+  });
 }
