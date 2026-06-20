@@ -2,7 +2,7 @@
 
 Issue: #4 (Redundant score persistence), parts 1 & 2.
 Date: 2026-06-20
-Status: draft — @mato157's warm/cold analysis + full-state restore + codex & review-anvil R1 hardening
+Status: draft — @mato157's warm/cold analysis + full-state restore + codex & review-anvil R1–R2 hardening
 
 ## Problem
 
@@ -88,6 +88,12 @@ class MatchSnapshot {
   final List<TeamSnapshot> teams;     // order preserved (captures team swap)
   final List<ModuleSnapshot> modules; // per-module recovery (penalties etc.)
   final int savedAtMs;           // epoch ms, for staleness display
+  // Clock anchor — set when the clock is running (esp. on the paused snapshot);
+  // null when stopped. Needed for the backgrounded-then-killed policy (item 7);
+  // the freeze-default ignores them, but the schema MUST carry them or policy
+  // (b)/(c) become impossible later.
+  final int? runClockStartedAtMs;
+  final int? runClockStartRemainingTime;
 }
 
 class TeamSnapshot { final String id; final String name; final int score; }
@@ -103,23 +109,35 @@ class ModuleSnapshot {
 }
 
 class MatchStateStore {
-  Future<void> save(MatchSnapshot s);   // jsonEncode -> setString
+  Future<void> save(MatchSnapshot s);   // enqueue: jsonEncode -> setString
   MatchSnapshot? load();                 // null on absent / parse-fail / version mismatch
-  Future<void> clear();
+  Future<void> clear();                  // enqueue a tombstone in the SAME stream
 }
 ```
 
 - `load()` returns `null` on a missing, unparseable, or version-mismatched value
   (defensive: a corrupt/old snapshot must never crash startup — treated as "no
   match").
+- **`save` and `clear` share one serialized op stream with a generation guard.**
+  `save` is async (`setString` returns a `Future`); without ordering, a slow
+  older `save` can land after a newer `save` — or after a `clear` — and resurrect
+  a discarded/finished match. So the store keeps a single in-flight op + a
+  "latest pending" slot (coalescing) and a monotonic `generation` counter:
+  `clear()` is enqueued in the same stream (not a side API), bumps the
+  generation, and drops any pending `save`; a `save` completion whose generation
+  is stale is discarded. This makes Discard / GAME OVER durable against
+  in-flight writes.
 - The store reuses the `SharedPreferences` instance `Game` already loads in
   `_loadPrefs`.
 - `ModuleSnapshot`'s `moduleId`/`macAddress`/`customLabel` overlap
-  `preset_service.dart`'s `ModuleConfig`; the recovery-only additions are
-  `isEnabled`/`state`/`lastState`/`penaltyTime`. To avoid two divergent
-  MAC/label encodings, **embed/compose a `ModuleConfig`** for the shared triple
-  and add only the volatile fields, keeping the serialization convention in one
-  place.
+  `preset_service.dart`'s `ModuleConfig`. **Keep `ModuleSnapshot` self-contained
+  (flat fields), not an embedded `ModuleConfig`.** `ModuleConfig.label` is a
+  non-null `String` with "empty == default name" semantics while
+  `customLabel` is nullable, so embedding needs `?? ''` glue anyway and would
+  couple the recovery schema's stored shape to the preset schema (a preset change
+  would silently rev the snapshot version). The minor duplication of two strings
+  + an int is the cheaper trade; share a tiny serializer helper only if it stays
+  decoupled.
 
 > **Note on the freeze point:** `remainingTime` is maintained both on discrete
 > events *and* by a ~5 s heartbeat while the clock runs, because the last
@@ -132,39 +150,46 @@ class MatchStateStore {
 1. **Hold the store:** add `MatchStateStore? _stateStore;`, constructed in
    `_loadPrefs()` once `_prefs` is available.
 
-2. **`_persistMatchState()`** — single private method that builds a
-   `MatchSnapshot` from current fields and calls `_stateStore?.save(...)`.
-   Guarded: no-op until `_stateStore` exists **and** while
-   `_suppressPersist == true` (see item 4a). Called from the mutation
-   chokepoints (discrete events):
-   - `startTimer()` / `stopTimer()` / `toggleTimer()` SKIP branch
-   - `_tickTimer()` on **stage transitions**
-   - `notifyModulesScore()` (every score change passes through here)
-   - `toggleTeamOrder()` (swapped order/names)
-   - `loadMatchData()` (applied team names — **the real method name is
-     `loadMatchData`**, `game.dart:683`, not `loadMatch`)
-   - **manual team-name edits** — `TeamSettingsWidget` sets `team.name` then
-     calls `game.notifyMQTT()` (`home.dart:464`), which bypasses the chokepoints
-     above. Route name edits through a new `Game.setTeamName(team, value)` that
-     updates, broadcasts, **and** persists in one place, and call that from the
-     widget instead of poking `team.name` directly.
-   - **module-state mutations** — recoverable module fields (`_state`,
-     `_lastState`, `_penaltyTime`, `_label`, MAC, enabled) are changed by many
-     private `Module` paths that never reach a `Game` chokepoint: `play`,
-     `playOrDamage`, `playAll`, `stop`/`_stop`, `stopAll`, `penalty`,
-     `notifyTimer` (penalty expiry), `halfTime`, `gameOver`, `setLabel`,
-     `applyPresetConfig`/`setBleDevice`. Define an explicit contract: a
-     `Module` calls back into `Game._persistMatchState()` after any recoverable
-     mutation (e.g. via a `Game.onModuleStateChanged()` hook the module already
-     has a `_game` reference for). Enumerate these call sites in the plan so none
-     is missed — the previous "exact hook identified during implementation" was
-     too vague and would drop penalties/labels saved between heartbeats.
+2. **`_markDirty()` / `_persistMatchState()` — persistence is OFF the robot
+   command path (critical for the START/STOP latency invariant).** Several
+   chokepoints (`startTimer`/`stopTimer`, and the module fan-outs `playAll`/
+   `playOrDamageAll`/`stopAll`) sit immediately before/around the fire-and-forget
+   `bleSendPlayAll()`/`bleSendStopAll()` sends. Building a `MatchSnapshot` and
+   `jsonEncode`-ing it there would add synchronous work *before* those sends —
+   forbidden. So splitting:
+   - On any recoverable change, call `_markDirty()` — a trivial `bool` set, no
+     snapshot construction, no JSON. Safe to call from anywhere, including the
+     command paths.
+   - A coalesced flush (`_persistMatchState()` → build snapshot →
+     `_stateStore?.save`) runs **after** the fan-out is launched — scheduled via
+     `scheduleMicrotask`/post-frame, or piggy-backed on the next heartbeat tick.
+     It is a no-op unless `_dirty`, and a no-op until `_stateStore` exists / while
+     `_suppressPersist == true` (item 4a). **Never** put snapshot build or
+     `jsonEncode` on the `bleSendPlayAll`/`bleSendStopAll` path.
+   - Discrete `_markDirty()` sources: `startTimer`/`stopTimer`/`toggleTimer` SKIP;
+     `_tickTimer` stage transitions; `notifyModulesScore` (every score change);
+     `toggleTeamOrder`; `loadMatchData()` (**real method name**, `game.dart:683`,
+     not `loadMatch`); manual team-name edits via a new `Game.setTeamName(team,
+     value)` (replacing direct `team.name =` + `notifyMQTT()` in
+     `TeamSettingsWidget`, `home.dart:464`, which otherwise bypasses every
+     chokepoint).
+   - **Module mutations** mark dirty via the existing `_game` back-reference
+     (`Module` → `Game._markDirty()`) — but only a flag set, never a save, so it
+     stays off the fan-out latency path. Given the ~5 s heartbeat already bounds
+     loss, the per-mutation marks mainly tighten penalty/label freshness; keep
+     the marker dead-simple so it cannot creep into `bleSendPlayAll/StopAll`.
 
-3. **Heartbeat:** while `isTimeRunning`, persist the current `remainingTime`
-   every ~5 s. Implemented by piggy-backing on the existing 1 Hz `_tickTimer`
-   (persist when `_remainingTime % 5 == 0`) rather than adding a second `Timer`
-   — no extra timer object, naturally stops when the clock stops, and skipped
-   during `_replaying` catch-up bursts.
+3. **Heartbeat:** while `isTimeRunning`, flush at most every ~5 s by piggy-backing
+   on the 1 Hz `_tickTimer` (flush when `_remainingTime % 5 == 0`) — no second
+   `Timer`, stops with the clock, skipped during `_replaying` bursts. **Place the
+   flush only in the normal decrement branch** (inside `if (_remainingTime > 0)`,
+   *before* any stage-transition reset to `halfTimeDuration`/`periodTime`),
+   otherwise the `% 5` test samples the freshly-reset value at a boundary and
+   persists a misleading freeze point. After a warm-resume catch-up
+   (`didChangeAppLifecycleState(resumed)`) finishes replaying, do **one** flush of
+   the post-catch-up state — `_replaying` suppressed the per-tick flushes, so a
+   crash right after resume would otherwise persist the stale pre-background
+   freeze point and over-credit time on the next cold resume.
 
 4a. **Suppress persistence during bootstrap/reset (critical).** `gameInit()`
    calls `stopTimer()` (`game.dart:115`), and `stopTimer()` is now a persistence
@@ -184,14 +209,18 @@ class MatchStateStore {
    (it runs `gameInit()` whenever `inGame == false`, which is always true at
    startup); clearing there would erase the persisted match before the resume
    path ever reads it, so the prompt could never appear. Instead, clearing is
-   explicit and happens only at genuine end-of-match / fresh-start points:
-   - `discardPendingMatch()` (referee chose Discard)
-   - the `fullTime` transition / GAME OVER (`toggleTimer`'s reset) — match is
-     finished
-   - the start of a brand-new match initiated by the referee (not the bootstrap
-     `gameInit()` in `_loadPrefs`)
-   These call a dedicated `_clearMatchState()` rather than relying on
-   `gameInit()`.
+   explicit and happens only at genuine end-of-match / fresh-start points. These
+   are **two distinct call sites** — do not conflate them (item 2 makes
+   `_tickTimer` stage transitions a *persist* point, so without this the
+   secondHalf→fullTime transition would save a stale `fullTime` snapshot instead
+   of clearing):
+   - `discardPendingMatch()` (referee chose Discard).
+   - the **secondHalf→fullTime transition inside `_tickTimer`** (`game.dart:208-213`)
+     — match just ended; clear here instead of persisting.
+   - the **GAME OVER / REPEAT branch of `toggleTimer`** (`game.dart:276`, runs
+     *after* fullTime) — clear when starting the brand-new match.
+   These call a dedicated `_clearMatchState()` (which enqueues the store
+   tombstone, item store-section) rather than relying on `gameInit()`.
 
 5. **Cold-resume flow** in `_loadPrefs()` (this runs only on a fresh process, so
    it *is* the cold path — warm resume goes through the lifecycle observer, not
@@ -215,9 +244,15 @@ class MatchStateStore {
      `_resumePrompted` flag so it fires exactly once.
    - If there is no usable snapshot, the bootstrap `gameInit()` defaults stand
      and no prompt fires.
-   - **Resume** → `resumePendingMatch()` (runs under `_suppressPersist = true`,
-     persisting once at the end so the multi-step restore can't write a dozen
-     partial snapshots):
+   - **Resume** → `resumePendingMatch()`. The multi-step restore runs under
+     `_suppressPersist = true` so it can't write a dozen partial snapshots; the
+     single committed save is issued **after** the scope closes (a flush while
+     suppressed is a no-op, so persisting "once at the end" must mean *after*
+     `_suppressPersist` is reset — not inside the `finally`). The async reconnects
+     that complete later mutate only **connection status**, which is **not** a
+     recoverable/persisted field, so they do not each trigger a save (state this
+     explicitly so the module dirty-mark contract isn't read as "persist on every
+     reconnect"). Steps:
      - Restore `currentStage`, scores, `inGame`, and **`_remainingTime` = the
        snapshot's freeze point** (no wall-clock subtraction).
      - **Restore team order by id, not by index (correctness).** `Game()` always
@@ -264,20 +299,28 @@ class MatchStateStore {
        directly will not compile. This builds `BluetoothDevice.fromId` and calls
        `bleConnect()` for enabled modules with a non-empty MAC.
      - **Do NOT replay damage/play to robots while the clock is frozen
-       (critical).** This corrects an earlier draft: a restored `damage` module
-       reconnecting via `bleNotify()` would call `bleSendDamage(_penaltyTime)`
-       immediately, starting the **robot-side** penalty countdown while the
-       match clock — and the app-side penalty decrement (which only runs from
-       `_tickTimer` → `notifyAllModulesTimer`) — are intentionally frozen. The
-       robot could then self-release mid-stoppage without a referee START. So
-       during cold restore, reconnect to **re-establish the GATT link only**, and
-       suppress the outbound play/damage fan-out (send at most STOP + score).
-       Keep `damage`/`penaltyTime` in the phone model. On the referee's
-       double-tap **START**, the existing path sends `playOrDamageAll()` —
-       `bleSendDamage` to modules still serving a penalty, `bleSendPlay` to the
-       rest — so penalties resume *with* match time. (Implementation seam: a
-       `_restoring` flag that gates `bleNotify`'s play/damage emission, mirroring
-       the existing `_replaying` pattern.)
+       (critical) — and the gate must be ASYNC-safe.** A restored `damage` module
+       reconnecting via `bleNotify()` would call `bleSendDamage(_penaltyTime)`,
+       starting the **robot-side** penalty countdown while the match clock — and
+       the app-side penalty decrement (only via `_tickTimer` →
+       `notifyAllModulesTimer`) — are frozen, so the robot could self-release
+       mid-stoppage without a referee START. The subtlety: `bleConnect()` is
+       `async void` and the send happens **later** on the connected-event
+       (`bleConnect` → connectionState → `bleInitModule` → `bleSendCurrentState`
+       → `bleNotify`, `module.dart:188,312,545`) — seconds after
+       `resumePendingMatch()` returns. A single game-scoped `_restoring` flag
+       cleared at the end of the (synchronous) restore would already be **false**
+       when that callback fires, so it would NOT suppress the send (the bug a flag
+       "mirroring `_replaying`" would have shipped). Instead use a **per-module
+       one-shot**: `restoreFromSnapshot` sets `_suppressNextRestoreNotify = true`
+       on the module; the **first** post-restore `bleNotify()` consumes it
+       (clear-on-consume in a `finally`) and sends at most STOP + score, never
+       play/damage. It is per-module so each module's own late reconnect is
+       covered; it is one-shot so it can NOT linger and suppress the referee's
+       later START (and a module whose Bluetooth never comes back simply never
+       consumes it — harmless). On the referee's double-tap **START**, the normal
+       path sends `playOrDamageAll()` (`bleSendDamage` to still-penalized modules,
+       `bleSendPlay` to the rest), so penalties resume *with* match time.
      - **Bound the reconnect, reusing the preset-load path.** Restoring up to 10
        enabled modules calls `bleConnect()` (100 ms stagger, then
        `connect(autoConnect:true)`) — the same fan-out the existing
@@ -286,11 +329,34 @@ class MatchStateStore {
        reconnect enabled modules with non-empty MACs; surface per-module
        "Connecting…"/Cancel state (already supported); keep it entirely off the
        START/STOP command paths.
-     - Set the clock **frozen**: `isTimeRunning = false`, `_isGameRunning =
-       false`, `_runClockStartedAt = null`, `timerButtonText = 'START'` (or
-       `'SKIP'` if stage is `halfTime`).
-     - `_broadcastFullState()`, then one `_persistMatchState()`, then
-       `notifyListeners()`.
+     - **Both START controls must be penalty-aware after resume.** The central
+       timer START (`toggleTimer` → `playAll(false)` → `playOrDamageAll`)
+       preserves penalties, but the bottom "START ALL ROBOTS"
+       (`toggleAllModules` → `playAll(true)` when nobody is playing,
+       `game.dart:307`) calls `Module.playAll()`/`play()` which **zeroes
+       `_penaltyTime`** (`module.dart:368`) — it would erase restored penalties.
+       Fix: after a cold resume with any restored penalty, the first START from
+       *either* control must go through the penalty-aware path. Route
+       `toggleAllModules`' first post-resume start through `playAll(false)`
+       (penalty-aware), or gate the bottom START until the central timer START has
+       resumed the match. Pick one and state it.
+     - **Frozen clock — except a half-time break may keep counting.** For
+       `firstHalf`/`secondHalf`, freeze: `isTimeRunning = false`, `_isGameRunning
+       = false`, `_runClockStartedAt = null`, `timerButtonText = 'START'`; robots
+       stopped. For a kill **during the half-time break** (`stage == halfTime`),
+       the break countdown drives **no robot play** (robots were stopped by
+       `halfTimeAll`), so freezing it and showing `'SKIP'` would strand the
+       remaining break with no way to continue (`toggleTimer`'s halfTime branch
+       only *skips* to the second half, `game.dart:259`). Instead, restore the
+       break's remaining time as the freeze point and **resume the break timer
+       running** (`startTimer()` for the halfTime stage) so it continues counting
+       down to the second half; `'SKIP'` still lets the referee jump ahead. This
+       stays consistent with freeze-and-give-back (the dead time is given back,
+       then the break continues) and never auto-plays robots.
+     - `_broadcastFullState()`; then **exit the `_suppressPersist` scope and
+       `_markDirty()` + flush exactly once** (the flush is a no-op while
+       suppressed, so the single committed save must happen *after* the scope
+       closes — see the persist-once note below); then `notifyListeners()`.
    - **Discard** → `discardPendingMatch()` → `gameInit()` + `_clearMatchState()`.
      Discard destroys the recoverable snapshot, so it must not be a single
      accidental tap (double-tap safety invariant). Make **Resume** the default/
@@ -335,10 +401,28 @@ class MatchStateStore {
 
 - Register `game.onRequestResumeMatch = () => showDialog(...)` alongside the
   existing `onRequestSwitchTeamOrderDialog` registration.
-- `AlertDialog`: title *"Resume match in progress?"*, body summarizing
-  `"<teamA> <scoreA> – <scoreB> <teamB>, <stage>, saved <n> min ago"`, actions
-  **Resume** → `game.resumePendingMatch()`, **Discard** →
-  `game.discardPendingMatch()`.
+- `AlertDialog`, **non-dismissible** (`barrierDismissible: false`, and a
+  `PopScope`/`WillPopScope` that blocks the back button — the referee must pick a
+  path, not silently end up in neither): title *"Resume match in progress?"*,
+  body `"<teamA> <scoreA> – <scoreB> <teamB>, <stage>, saved <n> min ago"`.
+- **Resume** is the default/prominent action → `game.resumePendingMatch()`.
+- **Discard is destructive** (it clears the recoverable snapshot) so it must not
+  be a single accidental tap (double-tap invariant). Concrete flow: the first
+  "Discard" press opens a **second non-dismissible "Discard match?" confirm**
+  whose destructive button calls `game.discardPendingMatch()` (or a double-tap
+  discard control) — one stray tap can never wipe the match.
+
+### State flags introduced (keep the count honest)
+
+This design adds `_resumePrompted` (one-shot UI), `_suppressPersist` (bootstrap/
+restore persistence gate), `_dirty` (persist marker), and a **per-module**
+`_suppressNextRestoreNotify`. `_suppressPersist` and the restore-notify suppress
+serve the same "restore in progress" phase; an implementation MAY collapse the
+game-scoped ones into a single `RestorePhase`/`_coldResumeInProgress` state to
+reduce independently-clocked booleans (each transient flag is a lifetime bug
+waiting to happen — the async-gate finding above was exactly that). The
+per-module one-shot stays per-module by necessity (async reconnects complete
+independently).
 
 ## Data flow
 
@@ -368,8 +452,11 @@ end of match     -> fullTime / GAME OVER -> _clearMatchState
 Unit tests (no Flutter toolchain on the dev box; rely on CI Quality Gate):
 
 - `match_state_store_test.dart`: round-trip save/load (incl. per-module
-  `macAddress`); `load()` null on missing key, on corrupted JSON, and on version
-  mismatch; `clear()` removes it.
+  `macAddress` and the `runClockStartedAtMs`/`runClockStartRemainingTime` anchor
+  fields); `load()` null on missing key, on corrupted JSON, and on version
+  mismatch; `clear()` removes it; **a stale older `save` completing after a
+  `clear()` (or a newer `save`) does NOT resurrect/overwrite** — generation guard
+  / coalescing (regression for the durability ordering finding).
 - `game_recovery_test.dart`:
   - score change persists a snapshot with the right scores;
   - heartbeat updates `remainingTime` while the clock runs;
@@ -396,10 +483,24 @@ Unit tests (no Flutter toolchain on the dev box; rely on CI Quality Gate):
     later `Module.stop()` (which switches on `_lastState`) is not a silent no-op
     (regression tests for the auto-play-on-reconnect and the `stop()`-no-op
     bugs); a `damage` module keeps `damage`.
-  - **damage is not replayed to the robot during the frozen clock** — restoring a
-    `damage` module and reconnecting does **not** emit `bleSendDamage` while
-    `isTimeRunning == false`; only after a START does `playOrDamageAll` send it
-    (regression test for the robot-self-release-during-stoppage bug).
+  - **damage is not replayed to the robot during the frozen clock, even on a
+    LATE async reconnect** — `restoreFromSnapshot` sets the per-module
+    `_suppressNextRestoreNotify`; a `bleNotify()` fired from a reconnect that
+    completes *after* `resumePendingMatch()` returns still suppresses
+    `bleSendDamage`/`bleSendPlay` (sends at most STOP+score) and consumes the
+    one-shot; only a referee START via `playOrDamageAll` sends damage (regression
+    for the async-gate bug — a synchronous flag would already be cleared).
+  - **bottom START preserves restored penalties** — after a cold resume with a
+    `damage` module, the bottom "START ALL" path does not zero `_penaltyTime`
+    (goes through the penalty-aware start, not `playAll(true)`).
+  - **half-time cold resume continues the break** — a `halfTime` snapshot restores
+    the break with the clock **running** (not auto-skipped to second half) at the
+    frozen remaining time.
+  - **warm-resume persists post-catch-up** — after the `resumed` replay loop, one
+    flush records the advanced freeze point (so a crash right after resume can't
+    over-credit).
+  - **fullTime transition clears, not persists** — the secondHalf→fullTime
+    `_tickTimer` case clears the snapshot rather than saving a `fullTime` one.
   - **module MAC round-trips and drives reconnect** — `restoreFromSnapshot` on a
     fresh module with a non-empty `macAddress` sets `macAddress` and (for an
     enabled module) goes through the `applyPresetConfig` device-setup path with a
@@ -430,9 +531,9 @@ Unit tests (no Flutter toolchain on the dev box; rely on CI Quality Gate):
 
 | Path | Change |
 |---|---|
-| `lib/services/match_state_store.dart` | **new** — versioned snapshot model + SharedPreferences wrapper |
-| `lib/models/game.dart` | store wiring, `_persistMatchState` (+ Module callback contract), `_suppressPersist` scope, heartbeat, pause-snapshot, cold-resume flow, `setTeamName`, restore-by-id |
-| `lib/models/module.dart` | `toSnapshot()` / `restoreFromSnapshot()` (normalize `_state` **and** `_lastState`, enabled-first ordering), `_restoring` gate on `bleNotify` play/damage |
+| `lib/services/match_state_store.dart` | **new** — versioned snapshot model (incl. clock-anchor fields) + serialized save/clear stream with generation guard/coalescing |
+| `lib/models/game.dart` | store wiring, `_markDirty` + off-hot-path coalesced flush, `_suppressPersist` scope, heartbeat (decrement-branch only) + post-catch-up flush, pause-snapshot, cold-resume flow, `setTeamName`, restore-by-id, penalty-aware first START |
+| `lib/models/module.dart` | `toSnapshot()` / `restoreFromSnapshot()` (normalize `_state` **and** `_lastState`, enabled-first ordering), per-module one-shot `_suppressNextRestoreNotify` consumed by first post-restore `bleNotify` |
 | `lib/screens/home.dart` | register `onRequestResumeMatch`, resume/**confirm-discard** dialog, route team-name edits through `Game.setTeamName` |
 | `test/match_state_store_test.dart` | **new** |
 | `test/game_recovery_test.dart` | **new** |
