@@ -2,7 +2,7 @@
 
 Issue: #12 (Feature: allow switching double taps to single taps).
 Date: 2026-06-20
-Status: draft — approved in brainstorming + review-anvil R1 hardening
+Status: draft — approved in brainstorming + review-anvil R1–R2 hardening (converged)
 
 ## Problem
 
@@ -224,8 +224,8 @@ onLongPress -> unchanged in both modes
 
 | Path | Change |
 |---|---|
-| `lib/models/game.dart` | pref-backed `singleTapEnabled` getter/setter (with `_prefsLoaded`/pending-write guard) + load in `_loadPrefs`; `criticalButtonGestures` helper (or co-locate with the widget) |
-| `lib/widgets/critical_gesture_detector.dart` | **new** — single/double-tap wrapper for non-button sites + `criticalButtonGestures` helper for button sites |
+| `lib/models/game.dart` | pref-backed `singleTapEnabled` getter/setter (with `_prefsLoaded`/pending-write guard) + load in `_loadPrefs` |
+| `lib/widgets/critical_gesture_detector.dart` | **new** — `CriticalGestureDetector` (non-button sites) **and** the `criticalButtonGestures` helper (button sites); both live here |
 | `lib/screens/home.dart` | per-module & score → `CriticalGestureDetector`; timer & all-robots → `criticalButtonGestures` on the existing `ElevatedButton` |
 | `lib/screens/settings.dart` | `SettingSwitch` in a `SettingsSection` via `setState`; optional `subtitle` on `SettingSwitch` for the warning |
 | `test/critical_gesture_detector_test.dart` | **new** (incl. an `ElevatedButton`-child case) |
