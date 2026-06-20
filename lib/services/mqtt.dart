@@ -197,7 +197,8 @@ class MqttService {
     } else {
       debugPrint('MQTT_LOGS::ERROR Mosquitto client connection failed - disconnecting, status is ${_client!.connectionStatus}');
       final status = _client!.connectionStatus!;
-      _lastErrorMessage = describeMqttReturnCode(status.returnCode);
+      _lastErrorMessage = describeMqttReturnCode(
+          status.returnCode ?? MqttConnectReturnCode.noneSpecified);
       connectionStateNotifier.value = MqttConnectionStateEx.error;
       return false;
     }
