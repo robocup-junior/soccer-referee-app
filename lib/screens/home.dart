@@ -31,10 +31,15 @@ class Home extends StatelessWidget {
   }
 
   // Long-press the remaining-time display to manually correct the clock
-  // (issue #21). Editing is only allowed while the clock is stopped and during
-  // an actual playing/break stage — this keeps the run-clock catch-up anchors
-  // out of the picture (see Game.setRemainingTime). The double-tap start/stop
-  // toggle lives on the button below and is intentionally left untouched.
+  // (issue #21). Editing is only allowed while the clock is stopped within an
+  // active first or second half — this keeps the run-clock catch-up anchors
+  // out of the picture (see Game.setRemainingTime). Half-time is excluded
+  // because its clock runs continuously (the firstHalf->halfTime transition
+  // calls startTimer() and SKIP jumps straight to the second half, so there is
+  // no stopped half-time state); pre-match setup (inGame == false) is excluded
+  // so the match duration is only changed via Settings; full time is excluded
+  // by the stage check. The double-tap start/stop toggle lives on the button
+  // below and is intentionally left untouched.
   void _editRemainingTime(BuildContext context, Game game) {
     if (game.isTimerRunning) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -42,9 +47,9 @@ class Home extends StatelessWidget {
       );
       return;
     }
-    if (game.currentStage != MatchStage.firstHalf &&
-        game.currentStage != MatchStage.secondHalf &&
-        game.currentStage != MatchStage.halfTime) {
+    if (!game.inGame ||
+        (game.currentStage != MatchStage.firstHalf &&
+            game.currentStage != MatchStage.secondHalf)) {
       return;
     }
     showModalBottomSheet(

@@ -667,18 +667,18 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   // Manual correction of the remaining match time (issue #21), e.g. to give
   // back playing time lost to a stoppage. The UI only opens the editor while
-  // the clock is stopped, so the run-clock catch-up anchors
+  // the clock is stopped within an active first or second half
+  // (Home._editRemainingTime), so the run-clock catch-up anchors
   // (_runClockStartedAt / _runClockStartRemainingTime) are already null and
-  // need no reconciliation. This is a one-time correction, not a tick: it does
-  // NOT call notifyAllModulesTimer() (that decrements module damage timers) and
-  // does NOT trigger game-timer vibration. Publishes to MQTT only, mirroring
-  // _tickTimer — the BLE bridge carries no time topic.
+  // need no reconciliation, and both editable stages cap at periodTime. This is
+  // a one-time correction, not a tick: it does NOT call notifyAllModulesTimer()
+  // (that decrements module damage timers) and does NOT trigger game-timer
+  // vibration. Publishes stage+time to every sink like the other stopped-state
+  // updates (_broadcastStageAndTime) — the BLE bridge carries no time topic.
   void setRemainingTime(int seconds) {
-    final int maxTime =
-        currentStage == MatchStage.halfTime ? halfTimeDuration : periodTime;
-    _remainingTime = seconds.clamp(0, maxTime);
+    _remainingTime = seconds.clamp(0, periodTime);
     notifyListeners();
-    mqttService.publishTime(_remainingTime);
+    _broadcastStageAndTime();
   }
 
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;

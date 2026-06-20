@@ -18,11 +18,17 @@ below the time is left untouched (double-tap safety invariant).
 
 ## Decisions
 
-- **Editable only while the clock is stopped.** The editor will not open
-  while the timer is running. This avoids reconciling the background
-  catch-up anchors (`_runClockStartedAt`,
-  `_runClockStartRemainingTime`), which are already `null` when stopped
-  (`stopTimer` clears them). Simplest and safest.
+- **Editable only while the clock is stopped within an active first or
+  second half.** The editor will not open while the timer is running.
+  This avoids reconciling the background catch-up anchors
+  (`_runClockStartedAt`, `_runClockStartRemainingTime`), which are
+  already `null` when stopped (`stopTimer` clears them). Half-time is
+  excluded because its clock always runs (the `firstHalf -> halfTime`
+  transition calls `startTimer()` and the only half-time control, SKIP,
+  jumps straight to the second half, so a stopped half-time state never
+  exists). Pre-match setup (`inGame == false`) is excluded so the match
+  duration is changed only via Settings; full time is excluded by the
+  stage check.
 - **Editor controls: quick +/- buttons plus an `mm:ss` field.** Mirrors
   the score editor's affordance set while allowing a precise jump.
 
@@ -40,10 +46,12 @@ independent, so `setRemainingTime` does **not** call it.
 Likewise, the issue mentions publishing the corrected time to the BLE
 bridge. The bridge currently carries only `team{1,2}_score` and
 `team{1,2}_color` (`bridge_message.dart`) — there is no time topic, and
-the live timer ticks never publish time to the bridge. To stay
-consistent with existing behavior, `setRemainingTime` publishes to MQTT
-only (mirroring `_tickTimer`). Adding a bridge time topic is out of
-scope.
+the live timer ticks never publish time to the bridge. `setRemainingTime`
+therefore does not publish to the bridge; adding a bridge time topic is
+out of scope. It does publish stage+time to MQTT via
+`_broadcastStageAndTime()` (the same call every other stopped-state
+update uses — reset, refresh, resume-without-replay, SKIP) so a retained
+MQTT consumer never combines the corrected time with a stale stage.
 
 ## Model — `lib/models/game.dart`
 
@@ -51,20 +59,17 @@ Add a public setter next to the `remainingTime` getter:
 
 ```dart
 void setRemainingTime(int seconds) {
-  // Editing is gated to a stopped clock in the UI, so the run-clock
-  // catch-up anchors are already null — no reconciliation needed.
-  final maxTime = currentStage == MatchStage.halfTime
-      ? halfTimeDuration
-      : periodTime;
-  _remainingTime = seconds.clamp(0, maxTime);
+  // Editing is gated to a stopped clock in an active half by the UI, so
+  // the run-clock catch-up anchors are already null — no reconciliation
+  // needed — and both editable stages cap at periodTime.
+  _remainingTime = seconds.clamp(0, periodTime);
   notifyListeners();
-  mqttService.publishTime(_remainingTime);
+  _broadcastStageAndTime();
 }
 ```
 
-- Clamp to the current stage's natural maximum (`halfTimeDuration`
-  during the break, otherwise `periodTime`), floor 0.
-- Publishes to MQTT only.
+- Clamp to `periodTime` (the maximum of both editable stages), floor 0.
+- Publishes stage+time via `_broadcastStageAndTime()`.
 - Does not touch the run-clock anchors and does not call
   `notifyAllModulesTimer()`.
 
@@ -75,9 +80,10 @@ Wrap the remaining-time `Text` (currently home.dart:88) in a
 stays on the separate `ElevatedButton` below it (unchanged).
 
 - `onLongPress` opens the editor only when `!game.isTimerRunning` **and**
-  `currentStage` is `firstHalf`, `secondHalf`, or `halfTime`.
+  `game.inGame` **and** `currentStage` is `firstHalf` or `secondHalf`.
 - While the timer is running, show a `SnackBar`: "Stop the clock to edit
-  the time." (Do not open the editor.)
+  the time." (Do not open the editor.) Other blocked states (pre-match,
+  full time) silently ignore the long-press.
 - The editor is a `showModalBottomSheet` using the same
   `FractionallySizedBox` + grey container styling as the score editor,
   hosting a new `TimeSettingsWidget`.
@@ -88,8 +94,13 @@ Mirrors `TeamSettingsWidget`:
 
 - Title "Edit remaining time".
 - An `mm:ss` `TextEditingController` seeded from `game.remainingTime`.
-  "Set" parses the field (accept `mm:ss` or a plain seconds integer;
-  ignore unparseable input) and applies via `game.setRemainingTime`.
+  "Set" parses the field via the top-level `parseMmSs(String)` helper and
+  applies via `game.setRemainingTime`. `parseMmSs` accepts either a plain
+  nonnegative seconds integer or `mm:ss` with a nonnegative minutes part
+  and a seconds part in `0..59`; anything else (`5:99`, `1:2:3`, `:30`,
+  empty, non-numeric) returns `null` and the field is restored to the
+  current value. Extracting it as a top-level pure function keeps the
+  parsing unit-testable without pumping a widget.
 - Quick-nudge buttons **−1:00 / −0:30 / +0:30 / +1:00**, each calling
   `game.setRemainingTime(game.remainingTime ± delta)` (clamping handles
   the bounds) and refreshing the field text to the clamped value.
