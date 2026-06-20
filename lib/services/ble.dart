@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:rcj_scoreboard/services/error_messages.dart';
 
 class BLEServices {
 
@@ -24,12 +25,9 @@ class BLEServices {
     if (state == BluetoothAdapterState.on) {
       // usually start scanning, connecting, etc
       status = 'OK';
-    } else if (state == BluetoothAdapterState.unavailable) {
-      status = 'No connection';
     } else {
       // show an error to the user, etc
-      debugPrint('off');
-      status = 'Bluetooth is disabled';
+      status = describeAdapterState(state).message;
     }
     // var subscription = FlutterBluePlus.adapterState.listen((BluetoothAdapterState state) {
     //   debugPrint('TEST');
@@ -45,7 +43,7 @@ class BLEServices {
     //   }
     // });
 
-    if (status == 'Bluetooth is disabled') {
+    if (status == describeAdapterState(BluetoothAdapterState.off).message) {
       if (await enableBLE() == false) {
         status = 'Bluetooth is disabled';
       } else {
@@ -67,7 +65,7 @@ class BLEServices {
         await FlutterBluePlus.turnOn();
         return true;
       } catch (e) {
-        debugPrint('Enable BLE error');
+        debugPrint('Enable BLE error: $e');
         return false;
       }
     }
