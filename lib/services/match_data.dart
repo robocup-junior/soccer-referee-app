@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
+import 'package:rcj_scoreboard/services/error_messages.dart';
 
 
 class Match {
@@ -64,7 +65,7 @@ class MatchDataService {
       debugPrint('Number of matches: ${matchesList.length}');
       return matchesList.map((matchJson) => Match.fromJson(matchJson)).toList();
     } else {
-      throw Exception('Failed to load matches');
+      throw HttpStatusException(response.statusCode, url: url);
     }
   }
 
@@ -115,7 +116,7 @@ class MatchDataService {
       _matches = await fetchMatches(_url);
       debugPrint('Matches loaded: ${_matches.length}');
     } catch (e) {
-      stateNotifier.value = 'Error loading matches';
+      stateNotifier.value = describeError(e).message;
       debugPrint('Error loading matches: $e');
       return null;
     }

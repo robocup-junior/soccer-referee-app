@@ -3,6 +3,7 @@ import 'package:rcj_scoreboard/models/bridge_message.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'dart:async';
 import 'package:rcj_scoreboard/models/team.dart';
+import 'package:rcj_scoreboard/services/ble_adapter_monitor.dart';
 import 'package:rcj_scoreboard/services/ble_bridge_service.dart';
 import 'package:rcj_scoreboard/services/mqtt.dart';
 import 'package:rcj_scoreboard/services/match_data.dart';
@@ -52,6 +53,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   //MQTT
   MqttService mqttService = MqttService();
   BleBridgeService bleBridgeService = BleBridgeService();
+  final BleAdapterMonitor bleAdapterMonitor = BleAdapterMonitor();
   MatchDataService matchDataService = MatchDataService();
   VibrationService vibrationService = VibrationService();
   WakelockService wakelockService = WakelockService();
