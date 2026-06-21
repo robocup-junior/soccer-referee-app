@@ -349,11 +349,13 @@ class Module with ChangeNotifier {
     bleStatus = 'Disconnected';
     notifyListeners();
 
+    // Cancel the connection-state listener BEFORE disconnecting so no
+    // disconnect event can re-enter the reconnect scheduler during teardown.
+    // (Same cancel-first ordering as setBleDevice().)
+    subscription?.cancel();
+
     // Disconnect from device also disables auto connect
     await bleDevice?.disconnect();
-
-    // cancel to prevent duplicate listeners
-    subscription?.cancel();
 
 
 
@@ -562,10 +564,12 @@ class Module with ChangeNotifier {
         debugPrint('disconnect');
 
         // Auto-reconnect: if we still intend to be connected and the module is
-        // enabled, schedule a bounded reconnect after a short delay. The reconnect
-        // guard (bleDevice == null || bleDevice!.isConnected) in bleConnect()
-        // prevents concurrent attempts. Reset _connectIntent after exhausting
-        // retries so the UI shows "Disconnected" rather than perpetual "Connecting...".
+        // enabled, increment the counter and schedule a bounded reconnect after
+        // 2s. A stale scheduled reconnect racing a user disconnect is prevented
+        // by the delayed callback's own _connectIntent/_isEnabled/!_isConnected
+        // gate and by bleConnect()'s post-delay `!_connectIntent` re-check — not
+        // by the top-of-function already-connected guard. The sibling else-if
+        // handles exhaustion (see its comment).
         if (_connectIntent && _isEnabled &&
             _reconnectAttempts < _maxReconnectAttempts) {
           _reconnectAttempts++;
