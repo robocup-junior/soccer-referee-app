@@ -39,6 +39,16 @@ void main() {
     expect(find.widgetWithText(TextButton, 'Turn on'), findsOneWidget);
   });
 
+  testWidgets('off with no onTurnOn (iOS) shows the message but no action',
+      (tester) async {
+    // On iOS the caller passes a null onTurnOn because turnOn() can't work
+    // there; the banner must still show but offer no dead button.
+    await tester.pumpWidget(
+        wrap(const BluetoothBanner(state: BluetoothAdapterState.off)));
+    expect(find.text('Bluetooth is off'), findsOneWidget);
+    expect(find.widgetWithText(TextButton, 'Turn on'), findsNothing);
+  });
+
   testWidgets('unauthorized shows the message but no action button',
       (tester) async {
     await tester.pumpWidget(

@@ -31,8 +31,12 @@ class BluetoothBanner extends StatelessWidget {
     // `unauthorized` (needs a permission grant) or `unavailable` (no BLE
     // hardware) turnOn() does nothing, so we show no action button and let the
     // hint guide the user rather than offer a button that does nothing.
-    final canTurnOn = state == BluetoothAdapterState.off ||
-        state == BluetoothAdapterState.turningOff;
+    // The caller also withholds [onTurnOn] where turning the radio on can't
+    // work (iOS, where FlutterBluePlus.turnOn() throws and the OS forbids it),
+    // so a null callback likewise suppresses the button.
+    final canTurnOn = onTurnOn != null &&
+        (state == BluetoothAdapterState.off ||
+            state == BluetoothAdapterState.turningOff);
     return MaterialBanner(
       backgroundColor: Colors.red.shade900,
       leading: const Icon(Icons.bluetooth_disabled, color: Colors.white),

@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:rcj_scoreboard/screens/module_settings.dart';
@@ -77,9 +79,14 @@ class Home extends StatelessWidget {
                 Consumer<BleAdapterMonitor>(
                   builder: (context, monitor, _) => BluetoothBanner(
                     state: monitor.state,
-                    onTurnOn: () {
-                      FlutterBluePlus.turnOn().catchError((_) {});
-                    },
+                    // FlutterBluePlus.turnOn() is Android-only; on iOS it throws
+                    // and the OS forbids toggling the radio from an app, so we
+                    // offer no button there (the banner hint guides the user).
+                    onTurnOn: (!kIsWeb && Platform.isAndroid)
+                        ? () {
+                            FlutterBluePlus.turnOn().catchError((_) {});
+                          }
+                        : null,
                   ),
                 ),
                 Expanded(
