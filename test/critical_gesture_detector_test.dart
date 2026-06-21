@@ -88,7 +88,9 @@ void main() {
       await tester.tap(find.text('x'));
       await tester.pump(const Duration(milliseconds: 50));
       await tester.tap(find.text('x'));
-      await tester.pump();
+      // Pump past the double-tap window so the recognizer's timer settles and
+      // the test does not end with a pending Timer.
+      await tester.pump(const Duration(milliseconds: 400));
       expect(fired, 1);
     });
 
@@ -156,7 +158,9 @@ void main() {
       await tester.tap(find.text('go'));
       await tester.pump(const Duration(milliseconds: 50));
       await tester.tap(find.text('go'));
-      await tester.pump();
+      // Pump past the double-tap window so the recognizer's timer settles and
+      // the test does not end with a pending Timer.
+      await tester.pump(const Duration(milliseconds: 400));
       expect(fired, 1);
     });
   });
