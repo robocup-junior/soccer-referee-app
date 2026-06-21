@@ -694,12 +694,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
   }
 
+  /// Publish team info to every sink. Delegates to [_broadcastTeamInfo] so
+  /// the fan-out stays consistent (names + IDs) across all call sites.
   void notifyMQTT() {
-    // mqttService.publishGameState(currentStage);
-    // mqttService.publishTime(_remainingTime);
-    mqttService.publishTeamNames(teams);
-    // mqttService.publishTeam(teams);
-    // mqttService.publishScore(teams);
+    _broadcastTeamInfo();
   }
 
   GamePreset createPreset(String name) {

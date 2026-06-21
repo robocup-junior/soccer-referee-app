@@ -157,7 +157,10 @@ class MqttService {
 
 
     _client!.keepAlivePeriod = 300;
-    _client!.onDisconnected = _onDisconnected;
+    // Capture the current connection in the callback closures so a stale
+    // callback from a previous connect() can never read a newer _client.
+    final capturedClient = _client!;
+    _client!.onDisconnected = () => _onDisconnected(capturedClient);
     _client!.onConnected = _onConnected;
     _client!.onSubscribed = _onSubscribed;
     _client!.pongCallback = _pong; // Optional: for keep alive
@@ -166,14 +169,10 @@ class MqttService {
 
     final connMess = MqttConnectMessage()
         .withClientIdentifier(_clientIdentifier)
-        .withWillTopic('willtopic') // Optional: Example Will topic
-        .withWillMessage('Last will message :)') // Optional: Example Will message
-        .startClean() // Non persistent session
+        .withWillTopic('willtopic')
+        .withWillMessage('Last will message :)')
+        .startClean()
         .withWillQos(MqttQos.atLeastOnce);
-
-  if (_username.isNotEmpty && _password.isNotEmpty) {
-    connMess.authenticateAs(_username, _password);
-  }
 
     _client!.connectionMessage = connMess;
 
@@ -304,26 +303,35 @@ class MqttService {
     connectionStateNotifier.value = MqttConnectionStateEx.connected;
   }
 
-  void _onDisconnected() {
+  // Max reconnect attempts before giving up (circuit-breaker for #37).
+  static const int _maxReconnectAttempts = 10;
+
+  void _onDisconnected(MqttServerClient disconnectedClient) {
     debugPrint('MQTT_LOGS::Client disconnected');
-    if (_client != null &&
-        _client!.connectionStatus!.disconnectionOrigin ==
+    if (disconnectedClient.connectionStatus?.disconnectionOrigin ==
             MqttDisconnectionOrigin.solicited) {
       _client = null;
       debugPrint('MQTT_LOGS::Disconnected callback is solicited, not attempting reconnection');
       connectionStateNotifier.value = MqttConnectionStateEx.disconnected;
       return;
     }
-    // Unintentional disconnect: try to reconnect after a delay
+    // Unintentional disconnect: try to reconnect with bounded retries.
     Future<void> attemptReconnect() async {
-      while (_isEnabled == true && _client != null && !isConnected) {
+      int attempts = 0;
+      while (_isEnabled == true && _client != null && !isConnected &&
+             attempts < _maxReconnectAttempts) {
+        attempts++;
         connectionStateNotifier.value = MqttConnectionStateEx.connecting;
-        debugPrint('MQTT_LOGS::Attempting to reconnect...');
+        debugPrint('MQTT_LOGS::Attempting to reconnect ($attempts/$_maxReconnectAttempts)...');
         bool success = await connect();
         if (success) break;
         debugPrint('MQTT_LOGS::Reconnection failed, retrying in 5 seconds...');
         connectionStateNotifier.value = MqttConnectionStateEx.connecting;
         await Future.delayed(const Duration(seconds: 5));
+      }
+      if (!isConnected && attempts >= _maxReconnectAttempts) {
+        _lastErrorMessage = 'Reconnection failed after $_maxReconnectAttempts attempts';
+        connectionStateNotifier.value = MqttConnectionStateEx.error;
       }
     }
 
