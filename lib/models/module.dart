@@ -113,18 +113,24 @@ class Module with ChangeNotifier {
     // reconnect budget over. Delayed auto-reconnect calls re-enter bleConnect()
     // with _connectIntent already true, so they keep counting toward the cap.
     final bool freshConnect = !_connectIntent;
-
-    // don't know why but without this delay sometimes it cannot connect more than 5 modules
-    await Future.delayed(const Duration(milliseconds: 100));
-
-    subscription?.cancel();
-    //bleDevice?.disconnect();
-
     if (freshConnect) _reconnectAttempts = 0;
+
+    // Set the intent BEFORE the pre-connect delay so a bleDisconnect() that runs
+    // during the delay (user Cancel / disconnectAll) is observable when we
+    // re-check below — otherwise this in-flight connect would revive autoConnect
+    // after the user asked to stop.
     _connectIntent = true;
     bleStatus = 'Connecting...';
     notifyListeners();
 
+    // don't know why but without this delay sometimes it cannot connect more than 5 modules
+    await Future.delayed(const Duration(milliseconds: 100));
+
+    // Abort if the user disconnected (intent cleared) or the device connected
+    // during the delay.
+    if (!_connectIntent || (bleDevice?.isConnected ?? false)) return;
+
+    subscription?.cancel();
     _registerBleSubscriber(bleDevice!);
 
     try {
@@ -523,8 +529,19 @@ class Module with ChangeNotifier {
     if (bleDevice != null) {
       debugPrint('try disconect previos one');
       bleDevice?.disconnect();
+      // Cancel the old device's connection-state listener so it can't drive
+      // reconnect work against a device we're replacing.
+      subscription?.cancel();
     }
-    
+
+    // Swapping the device is a fresh-connection boundary: clear the old
+    // device's reconnect lifecycle so the new device starts with a full retry
+    // budget and no stale intent carries over (issue #38). Callers that want a
+    // connection call bleConnect() right after, which re-establishes intent.
+    _connectIntent = false;
+    _isConnected = false;
+    _reconnectAttempts = 0;
+
      bleDevice = device;
 
      if (bleDevice == null) return;
