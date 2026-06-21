@@ -30,7 +30,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   String timerButtonText = 'START';
   final int _maxPlayer = 5;
   List<Team> teams = [];
-  int _numberOfPLayers = 2;
+  int _numberOfPlayers = 2;
   int _remainingTime = 0;
   int _penaltyTime = 60;
   int _periodTime = 600;
@@ -91,7 +91,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _prefs = await SharedPreferences.getInstance();
     _periodTime = _prefs!.getInt(_periodTimeKey) ?? 600;
     _halfTimeDuration = _prefs!.getInt(_halfTimeDurationKey) ?? 300;
-    _numberOfPLayers =
+    _numberOfPlayers =
         (_prefs!.getInt(_numberOfPlayersKey) ?? 2).clamp(1, _maxPlayer).toInt();
     _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? 60;
 
@@ -118,7 +118,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     for (var team in teams) {
       team.score = 0;
       for (var i = 0; i < _maxPlayer; i++) {
-        i < numberOfPLayers
+        i < numberOfPlayers
             ? team.modules[i].enable()
             : team.modules[i].disable();
         team.modules[i].init();
@@ -600,8 +600,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _numberOfPlaying += add;
 
     if (_numberOfPlaying < 0) _numberOfPlaying = 0;
-    if (_numberOfPlaying > numberOfPLayers * 2) {
-      _numberOfPlaying = numberOfPLayers * 2;
+    if (_numberOfPlaying > numberOfPlayers * 2) {
+      _numberOfPlaying = numberOfPlayers * 2;
     }
 
     if (_numberOfPlaying < 2) notifyListeners();
@@ -651,9 +651,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _prefs?.setInt(_halfTimeDurationKey, value);
   }
 
-  int get numberOfPLayers => _numberOfPLayers;
-  set numberOfPLayers(int value) {
-    _numberOfPLayers = value;
+  int get numberOfPlayers => _numberOfPlayers;
+  set numberOfPlayers(int value) {
+    _numberOfPlayers = value;
     _prefs?.setInt(_numberOfPlayersKey, value);
   }
 
