@@ -664,6 +664,28 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   int get remainingTime => _remainingTime;
+
+  // Manual correction of the remaining match time (issue #21), e.g. to give
+  // back playing time lost to a stoppage. The UI only opens the editor while
+  // the clock is stopped within an active first or second half
+  // (Home._editRemainingTime), so the run-clock catch-up anchors
+  // (_runClockStartedAt / _runClockStartRemainingTime) are already null and
+  // need no reconciliation, and both editable stages cap at periodTime. This is
+  // a one-time correction, not a tick: it does NOT call notifyAllModulesTimer()
+  // (that decrements module damage timers) and does NOT trigger game-timer
+  // vibration. Publishes stage+time to every sink like the other stopped-state
+  // updates (_broadcastStageAndTime) — the BLE bridge carries no time topic.
+  //
+  // Floors at 1 second, not 0: the normal expiry path never leaves an active
+  // half stopped at 0:00 (a tick at 0 transitions the stage), so allowing a
+  // manual 0:00 would create a state where a later START double-tap fires
+  // playAll() one tick before the stage transition stops the robots again.
+  void setRemainingTime(int seconds) {
+    _remainingTime = seconds.clamp(1, periodTime);
+    notifyListeners();
+    _broadcastStageAndTime();
+  }
+
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;
   bool get isTimerRunning => isTimeRunning;
   bool get isGameRunning => _isGameRunning;
