@@ -56,6 +56,9 @@ class Module with ChangeNotifier {
   // Lets a device-level disconnect read as "Connecting..." (still trying) rather
   // than "Disconnected", until the user explicitly disconnects.
   bool _connectIntent = false;
+  // Bounded reconnect attempts when a connection drops unintentionally.
+  static const int _maxReconnectAttempts = 5;
+  int _reconnectAttempts = 0;
   BluetoothDevice? bleDevice;
   StreamSubscription<BluetoothConnectionState>? subscription;
   BluetoothCharacteristic? bleTX;
@@ -525,27 +528,41 @@ class Module with ChangeNotifier {
       debugPrint('BLE device status: $state');
       if (state == BluetoothConnectionState.disconnected) {
         _isConnected = false;
-        // 1. typically, start a periodic timer that tries to
-        //    reconnect, or just call connect() again right now
-        // 2. you must always re-discover services after disconnection!
         // While we still intend to be connected (autoConnect is retrying in the
         // background), report "Connecting..." instead of "Disconnected" — this
         // also covers the initial disconnected event right after connect().
         bleStatus = _connectIntent ? 'Connecting...' : 'Disconnected';
         notifyListeners();
-        debugPrint("disconnect");
+        debugPrint('disconnect');
+
+        // Auto-reconnect: if we still intend to be connected and the module is
+        // enabled, schedule a bounded reconnect after a short delay. The reconnect
+        // guard (bleDevice == null || bleDevice!.isConnected) in bleConnect()
+        // prevents concurrent attempts. Reset _connectIntent after exhausting
+        // retries so the UI shows "Disconnected" rather than perpetual "Connecting...".
+        if (_connectIntent && _isEnabled &&
+            _reconnectAttempts < _maxReconnectAttempts) {
+          _reconnectAttempts++;
+          Future.delayed(const Duration(seconds: 2), () {
+            if (_connectIntent && _isEnabled && !_isConnected) {
+              bleConnect();
+            }
+          });
+        } else if (_reconnectAttempts >= _maxReconnectAttempts) {
+          _connectIntent = false;
+          bleStatus = 'Disconnected';
+          notifyListeners();
+          debugPrint('reconnect exhausted after $_maxReconnectAttempts attempts');
+        }
       } else if (state == BluetoothConnectionState.connected) {
-        //bleCheckServicesAndGetCharacteristics();
+        _reconnectAttempts = 0;
         _isConnected = true;
-        debugPrint("Connect");
+        debugPrint('Connect');
         bleStatus = 'Connected';
-        //bleSendTest();
         notifyListeners();
-        //bleSendCurrentState();
         bleInitModule();
       }
     });
-    //device.cancelWhenDisconnected(subscription, delayed:true, next:true);
   }
 
 

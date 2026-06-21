@@ -163,42 +163,40 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     setState(() {
       bleIsScanning = true;
     });
+    // Cancel any previous subscription before creating a new one.
     await _scanSubscription?.cancel();
     _scanSubscription = null;
 
+    // Subscribe BEFORE startScan so no results are missed between the scan
+    // starting and .listen() being attached (race in the old ordering).
+    _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
+      for (ScanResult result in results) {
+        if (!devices.contains(result.device)) {
+          if (mounted) {
+            setState(() {
+              devices.add(result.device);
+            });
+          }
+        }
+      }
+    });
+
     try {
       await FlutterBluePlus.startScan(
-        //withNames: ['RCJ-soccer_module'],
-        //withServices: [Guid('6E400002-B5A3-F393-E0A9-E50E24DCCA9E')],
         withKeywords: ['RCJ', 'soccer', 'module'],
         timeout: const Duration(seconds: 3),
       );
-      // Subscribe AFTER startScan to avoid replaying stale cached results
-      _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
-        for (ScanResult result in results) {
-          if (!devices.contains(result.device)) {
-            if (mounted) {
-              setState(() {
-                devices.add(result.device);
-              });
-            }
-          }
-        }
-      });
-
       // Wait for scanning to stop
       await FlutterBluePlus.isScanning.where((val) => val == false).first;
     } finally {
       await _scanSubscription?.cancel();
       _scanSubscription = null;
-
       if (mounted) {
         setState(() {
           bleIsScanning = false;
         });
       }
     }
-
   }
 
   // @override
