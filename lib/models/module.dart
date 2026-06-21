@@ -109,6 +109,10 @@ class Module with ChangeNotifier {
     if (bleDevice == null || bleDevice!.isConnected) return;
     //debugPrint('BLE connect222...........................');
 
+    // A fresh user-intended connect (intent not already set) starts the
+    // reconnect budget over. Delayed auto-reconnect calls re-enter bleConnect()
+    // with _connectIntent already true, so they keep counting toward the cap.
+    final bool freshConnect = !_connectIntent;
 
     // don't know why but without this delay sometimes it cannot connect more than 5 modules
     await Future.delayed(const Duration(milliseconds: 100));
@@ -116,6 +120,7 @@ class Module with ChangeNotifier {
     subscription?.cancel();
     //bleDevice?.disconnect();
 
+    if (freshConnect) _reconnectAttempts = 0;
     _connectIntent = true;
     bleStatus = 'Connecting...';
     notifyListeners();
@@ -326,19 +331,23 @@ class Module with ChangeNotifier {
     // module is stuck on "Connecting..." forever with no way out.
     if (bleDevice == null) return;
 
-    // Disconnect from device also disable auto connect
+    // Clear the connect intent *synchronously* before the async disconnect.
+    // The reconnect callback scheduled in _registerBleSubscriber gates on
+    // _connectIntent; if it fired during the await below it would re-enter
+    // bleConnect() and revive autoConnect after the user asked to disconnect.
+    // Also reset the reconnect budget so the next manual connect starts with a
+    // full set of attempts.
+    _connectIntent = false;
+    _isConnected = false;
+    _reconnectAttempts = 0;
+    bleStatus = 'Disconnected';
+    notifyListeners();
+
+    // Disconnect from device also disables auto connect
     await bleDevice?.disconnect();
 
     // cancel to prevent duplicate listeners
     subscription?.cancel();
-
-    // Explicit user disconnect — stop intending to be connected so the status
-    // reads "Disconnected" rather than "Connecting...".
-    _connectIntent = false;
-    _isConnected = false;
-    bleStatus = 'Disconnected';
-
-    notifyListeners();
 
 
 
@@ -549,10 +558,18 @@ class Module with ChangeNotifier {
             }
           });
         } else if (_reconnectAttempts >= _maxReconnectAttempts) {
+          // Give up. Clear intent AND tear down the OS-level autoConnect that
+          // connect(autoConnect:true) installed: otherwise the module could
+          // silently reconnect later — behind a "Disconnected" UI — and start
+          // obeying play/stop again. Mirror bleDisconnect()'s teardown. The
+          // disconnect() is fire-and-forget so this state listener stays
+          // non-blocking; cancelling our own subscription here is safe.
           _connectIntent = false;
           bleStatus = 'Disconnected';
           notifyListeners();
           debugPrint('reconnect exhausted after $_maxReconnectAttempts attempts');
+          bleDevice?.disconnect();
+          subscription?.cancel();
         }
       } else if (state == BluetoothConnectionState.connected) {
         _reconnectAttempts = 0;
