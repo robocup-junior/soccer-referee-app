@@ -694,8 +694,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
   }
 
-  /// Publish team info to every sink. Delegates to [_broadcastTeamInfo] so
-  /// the fan-out stays consistent (names + IDs) across all call sites.
+  /// Publish team info (names + IDs) to MQTT. Delegates to
+  /// [_broadcastTeamInfo] so the fan-out stays consistent across all call
+  /// sites. Note: team info is MQTT-only — unlike score, it is not mirrored
+  /// to the BLE bridge.
   void notifyMQTT() {
     _broadcastTeamInfo();
   }
