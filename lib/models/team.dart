@@ -20,13 +20,14 @@ class Team with ChangeNotifier {
 
   // Setter for the team name
   set name(String value) {
-    if (value.isEmpty) {
-      _name = 'Team $id'; // Default name if empty
-      notifyListeners();
-    } else if (_name != value) {
-      _name = value;
-      notifyListeners();
-    }
+    // Normalize first (empty -> default name), then notify only when the
+    // effective name actually changes. Re-submitting the current name, or an
+    // empty field when the team is already at its default, must not rebuild
+    // listeners (#28).
+    final nextName = value.isEmpty ? 'Team $id' : value;
+    if (_name == nextName) return;
+    _name = nextName;
+    notifyListeners();
   }
 
 }
