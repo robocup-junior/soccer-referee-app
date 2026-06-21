@@ -24,6 +24,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   static const String _halfTimeDurationKey = 'game_halftime_duration';
   static const String _numberOfPlayersKey = 'game_num_players';
   static const String _penaltyTimeKey = 'game_penalty_time';
+  static const String _singleTapEnabledKey = 'gesture_single_tap_enabled';
   static const String _notifPermissionRequestedKey =
       'notif_permission_requested';
 
@@ -48,6 +49,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   // threshold crossed while backgrounded buzzes at once on return). State, MQTT
   // and module updates still run during replay.
   bool _replaying = false;
+  // Single-tap gesture mode (issue #12). Default false => double-tap everywhere,
+  // preserving the accidental-touch protection invariant. _pendingSingleTapWrite
+  // guards the load-timing race: _loadPrefs() runs unawaited, so a toggle made
+  // before it resolves must not be clobbered by the stored default (see setter
+  // and _loadPrefs).
+  bool _singleTapEnabled = false;
+  bool _pendingSingleTapWrite = false;
   SharedPreferences? _prefs;
   //MQTT
   MqttService mqttService = MqttService();
@@ -94,6 +102,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _numberOfPLayers =
         (_prefs!.getInt(_numberOfPlayersKey) ?? 2).clamp(1, _maxPlayer).toInt();
     _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? 60;
+
+    // Single-tap pref: flush a pre-load toggle if one happened, otherwise adopt
+    // the stored value. Reading unconditionally would clobber an early toggle.
+    if (_pendingSingleTapWrite) {
+      _prefs!.setBool(_singleTapEnabledKey, _singleTapEnabled);
+      _pendingSingleTapWrite = false;
+    } else {
+      _singleTapEnabled = _prefs!.getBool(_singleTapEnabledKey) ?? false;
+    }
 
     if (!inGame) {
       gameInit();
@@ -643,6 +660,22 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   set periodTime(int value) {
     _periodTime = value;
     _prefs?.setInt(_periodTimeKey, value);
+  }
+
+  // Single-tap gesture mode (issue #12). Unlike periodTime, this setter MUST
+  // notifyListeners() so the Home control buttons swap their gesture recognizer
+  // live on toggle. The pending-write guard handles a toggle made before
+  // _loadPrefs() resolves (see _loadPrefs).
+  bool get singleTapEnabled => _singleTapEnabled;
+  set singleTapEnabled(bool value) {
+    if (_singleTapEnabled == value) return;
+    _singleTapEnabled = value;
+    if (_prefs != null) {
+      _prefs!.setBool(_singleTapEnabledKey, value);
+    } else {
+      _pendingSingleTapWrite = true;
+    }
+    notifyListeners();
   }
 
   int get halfTimeDuration => _halfTimeDuration;

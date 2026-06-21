@@ -9,6 +9,7 @@ import 'package:rcj_scoreboard/models/module.dart';
 import 'package:flutter/services.dart';
 import 'package:rcj_scoreboard/screens/settings.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
+import 'package:rcj_scoreboard/widgets/critical_gesture_detector.dart';
 
 class Home extends StatelessWidget {
   const Home({super.key});
@@ -132,24 +133,29 @@ class Home extends StatelessWidget {
                             Text(game.gameStageString),
                             SizedBox(
                               width: double.infinity,
-                              child: GestureDetector(
-                                onDoubleTap: () {
-                                  game.toggleTimer();
-                                },
-                                child: ElevatedButton(
-                                  onPressed: () {},
-                                  style: ElevatedButton.styleFrom(
-                                    //minimumSize: const Size(120, 50),
-                                    backgroundColor: (game.isGameRunning
-                                        ? (game.isTimerRunning
-                                            ? AppColors.red
-                                            : AppColors.green)
-                                        : AppColors.green),
+                              child: Builder(builder: (context) {
+                                final g = criticalButtonGestures(
+                                  singleTap: game.singleTapEnabled,
+                                  onAction: () => game.toggleTimer(),
+                                );
+                                return GestureDetector(
+                                  onDoubleTap: g.onDoubleTap,
+                                  child: ElevatedButton(
+                                    onPressed: g.onPressed,
+                                    style: ElevatedButton.styleFrom(
+                                      //minimumSize: const Size(120, 50),
+                                      backgroundColor: (game.isGameRunning
+                                          ? (game.isTimerRunning
+                                              ? AppColors.red
+                                              : AppColors.green)
+                                          : AppColors.green),
+                                    ),
+                                    child: Text(game.timerButtonText,
+                                        style:
+                                            const TextStyle(color: Colors.white)),
                                   ),
-                                  child: Text(game.timerButtonText,
-                                      style: const TextStyle(color: Colors.white)),
-                                ),
-                              ),
+                                );
+                              }),
                             )
                           ],
                         ),
@@ -191,32 +197,36 @@ class Home extends StatelessWidget {
                     margin: const EdgeInsets.all(4.0),
                     width: double.infinity,
                     //height: 70.0,
-                    child: GestureDetector(
-                      onDoubleTap: () {
-                        game.toggleAllModules();
-                      },
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor:
-                              (game.currentStage == MatchStage.fullTime
-                                  ? AppColors.blue
+                    child: Builder(builder: (context) {
+                      final g = criticalButtonGestures(
+                        singleTap: game.singleTapEnabled,
+                        onAction: () => game.toggleAllModules(),
+                      );
+                      return GestureDetector(
+                        onDoubleTap: g.onDoubleTap,
+                        child: ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor:
+                                (game.currentStage == MatchStage.fullTime
+                                    ? AppColors.blue
+                                    : (game.isSomeonePlaying
+                                        ? AppColors.red
+                                        : AppColors.green)),
+                            // shape: RoundedRectangleBorder(
+                            //   borderRadius: BorderRadius.circular(30.0),
+                            // )
+                          ),
+                          child: Text(
+                              game.currentStage == MatchStage.fullTime
+                                  ? 'DISCONNECT ALL ROBOTS'
                                   : (game.isSomeonePlaying
-                                      ? AppColors.red
-                                      : AppColors.green)),
-                          // shape: RoundedRectangleBorder(
-                          //   borderRadius: BorderRadius.circular(30.0),
-                          // )
+                                      ? 'STOP ALL ROBOTS'
+                                      : 'START ALL ROBOTS'),
+                              style: const TextStyle(color: Colors.white)),
+                          onPressed: g.onPressed,
                         ),
-                        child: Text(
-                            game.currentStage == MatchStage.fullTime
-                                ? 'DISCONNECT ALL ROBOTS'
-                                : (game.isSomeonePlaying
-                                    ? 'STOP ALL ROBOTS'
-                                    : 'START ALL ROBOTS'),
-                            style: const TextStyle(color: Colors.white)),
-                        onPressed: () {},
-                      ),
-                    ),
+                      );
+                    }),
                   ),
                 ),
               ],
@@ -234,8 +244,9 @@ Widget buildModuleButton(Module module, Game game) {
     child: Consumer<Module>(
       builder: (context, module, child) {
         return Expanded(
-          child: GestureDetector(
-            onDoubleTap: () {
+          child: CriticalGestureDetector(
+            singleTap: game.singleTapEnabled,
+            onAction: () {
               if (module.isPlaying) {
                 if (game.isGameRunning) {
                   module.penalty(game.penaltyTime);
@@ -302,8 +313,9 @@ Widget buildTeamContainer(Team team, Game game) {
     value: team,
     child: Consumer<Team>(
       builder: (context, team, child) {
-        return GestureDetector(
-          onDoubleTap: () {
+        return CriticalGestureDetector(
+          singleTap: game.singleTapEnabled,
+          onAction: () {
             team.addScore(1);
             game.stopAll(true);
             game.notifyModulesScore();
