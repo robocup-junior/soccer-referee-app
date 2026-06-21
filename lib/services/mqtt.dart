@@ -308,6 +308,15 @@ class MqttService {
 
   void _onDisconnected(MqttServerClient disconnectedClient) {
     debugPrint('MQTT_LOGS::Client disconnected');
+    // Ignore callbacks from a stale client. A delayed disconnect from a
+    // previous connect() must never mutate the state of a newer connection:
+    // capturing the client (above) prevents *reading* a newer _client, but we
+    // must also refuse to *write* _client / connection state / reconnect work
+    // unless this callback belongs to the currently active client.
+    if (!identical(_client, disconnectedClient)) {
+      debugPrint('MQTT_LOGS::Ignoring disconnect callback from a stale client');
+      return;
+    }
     if (disconnectedClient.connectionStatus?.disconnectionOrigin ==
             MqttDisconnectionOrigin.solicited) {
       _client = null;
