@@ -575,18 +575,14 @@ class Module with ChangeNotifier {
             }
           });
         } else if (_reconnectAttempts >= _maxReconnectAttempts) {
-          // Give up. Clear intent AND tear down the OS-level autoConnect that
-          // connect(autoConnect:true) installed: otherwise the module could
-          // silently reconnect later — behind a "Disconnected" UI — and start
-          // obeying play/stop again. Mirror bleDisconnect()'s teardown. The
-          // disconnect() is fire-and-forget so this state listener stays
-          // non-blocking; cancelling our own subscription here is safe.
-          _connectIntent = false;
-          bleStatus = 'Disconnected';
-          notifyListeners();
+          // Give up. Delegate to bleDisconnect() (fire-and-forget) so there is a
+          // single teardown routine: it tears down the OS-level autoConnect that
+          // connect(autoConnect:true) installed, clears intent, resets the retry
+          // budget, sets "Disconnected", and cancels this subscription. Without
+          // that teardown the module could silently reconnect later behind a
+          // "Disconnected" UI and start obeying play/stop again.
           debugPrint('reconnect exhausted after $_maxReconnectAttempts attempts');
-          bleDevice?.disconnect();
-          subscription?.cancel();
+          bleDisconnect();
         }
       } else if (state == BluetoothConnectionState.connected) {
         _reconnectAttempts = 0;
