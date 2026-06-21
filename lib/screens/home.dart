@@ -19,18 +19,34 @@ class Home extends StatefulWidget {
 
 class _HomeState extends State<Home> {
   bool _didSetupCallbacks = false;
+  Game? _game;
+  void Function()? _switchOrderCallback;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     // Set up model callbacks once. Using didChangeDependencies (not initState)
-    // ensures BuildContext is valid for showDialog. This runs once because the
-    // inherited Game provider instance does not change after construction.
+    // ensures BuildContext is valid for showDialog. The _didSetupCallbacks flag
+    // is what enforces once-only (didChangeDependencies can fire repeatedly);
+    // the stable Game provider instance is what makes that guard safe. Read with
+    // listen:false — this is a one-time install, not a subscription (build()
+    // establishes the real listening relationship).
     if (!_didSetupCallbacks) {
       _didSetupCallbacks = true;
-      final game = Provider.of<Game>(context);
-      setupGameCallbacks(game, context);
+      _game = Provider.of<Game>(context, listen: false);
+      _switchOrderCallback = setupGameCallbacks(_game!, context);
     }
+  }
+
+  @override
+  void dispose() {
+    // Clear the dialog callback we installed so the long-lived Game does not
+    // retain a closure capturing this disposed State's context. Guard on
+    // identity so we never clear a newer Home's callback.
+    if (identical(_game?.onRequestSwitchTeamOrderDialog, _switchOrderCallback)) {
+      _game?.onRequestSwitchTeamOrderDialog = null;
+    }
+    super.dispose();
   }
 
   void _navigateToSettings(context, Game game) async {
@@ -543,8 +559,11 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
 
 
 
-void setupGameCallbacks(Game game, BuildContext context) {
-  game.onRequestSwitchTeamOrderDialog = () async {
+/// Installs the half-time "switch team order" dialog callback on [game] and
+/// returns the exact closure assigned, so the caller can clear it on dispose
+/// (the closure captures [context]).
+void Function() setupGameCallbacks(Game game, BuildContext context) {
+  final void Function() callback = () async {
     bool? switchOrder = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -588,6 +607,8 @@ void setupGameCallbacks(Game game, BuildContext context) {
       game.toggleTeamOrder(); // Switch team order
     }
   };
+  game.onRequestSwitchTeamOrderDialog = callback;
+  return callback;
 }
 
 Future<bool> _showExitDialog(BuildContext context) async {
