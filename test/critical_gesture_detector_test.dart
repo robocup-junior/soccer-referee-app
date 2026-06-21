@@ -2,6 +2,12 @@
 // #12): CriticalGestureDetector (non-button sites), CriticalButton
 // (ElevatedButton-backed sites), and the TapDebounce guard that makes a
 // reflexive double-tap fire a single-tap action only once.
+//
+// Note on the double-tap-mode tests: a single tap on a GestureDetector that
+// registers only onDoubleTap leaves the DoubleTapGestureRecognizer's timeout
+// Timer pending. We dispose the tree (pump an empty widget) at the end of each
+// such case so the recognizer is disposed and its Timer cancelled — otherwise
+// the test trips the `!timersPending` invariant.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -33,17 +39,23 @@ void main() {
   });
 
   group('CriticalGestureDetector (non-button)', () {
-    testWidgets('single-tap mode: a single tap fires onAction', (tester) async {
-      var fired = 0;
-      await tester.pumpWidget(MaterialApp(
+    Widget host(bool single, VoidCallback onAction,
+        {VoidCallback? onLongPress}) {
+      return MaterialApp(
         home: Scaffold(
           body: CriticalGestureDetector(
-            singleTap: true,
-            onAction: () => fired++,
+            singleTap: single,
+            onAction: onAction,
+            onLongPress: onLongPress,
             child: const SizedBox(width: 200, height: 200, child: Text('x')),
           ),
         ),
-      ));
+      );
+    }
+
+    testWidgets('single-tap mode: a single tap fires onAction', (tester) async {
+      var fired = 0;
+      await tester.pumpWidget(host(true, () => fired++));
       await tester.tap(find.text('x'));
       await tester.pump();
       expect(fired, 1);
@@ -52,15 +64,7 @@ void main() {
     testWidgets('single-tap mode: a reflexive double tap fires only once',
         (tester) async {
       var fired = 0;
-      await tester.pumpWidget(MaterialApp(
-        home: Scaffold(
-          body: CriticalGestureDetector(
-            singleTap: true,
-            onAction: () => fired++,
-            child: const SizedBox(width: 200, height: 200, child: Text('x')),
-          ),
-        ),
-      ));
+      await tester.pumpWidget(host(true, () => fired++));
       // Two taps in immediate succession (wall-clock gap << 300ms debounce).
       await tester.tap(find.text('x'));
       await tester.tap(find.text('x'));
@@ -68,48 +72,35 @@ void main() {
       expect(fired, 1, reason: 'second tap within the window is debounced');
     });
 
-    testWidgets('double-tap mode: a double tap fires, a single tap does not',
-        (tester) async {
+    testWidgets('double-tap mode: a single tap does not fire', (tester) async {
       var fired = 0;
-      await tester.pumpWidget(MaterialApp(
-        home: Scaffold(
-          body: CriticalGestureDetector(
-            singleTap: false,
-            onAction: () => fired++,
-            child: const SizedBox(width: 200, height: 200, child: Text('x')),
-          ),
-        ),
-      ));
-
+      await tester.pumpWidget(host(false, () => fired++));
       await tester.tap(find.text('x'));
       await tester.pump(const Duration(milliseconds: 400));
-      expect(fired, 0, reason: 'single tap must not fire in double-tap mode');
+      expect(fired, 0);
+      await tester.pumpWidget(const SizedBox()); // dispose recognizer + timer
+    });
 
+    testWidgets('double-tap mode: a double tap fires once', (tester) async {
+      var fired = 0;
+      await tester.pumpWidget(host(false, () => fired++));
       await tester.tap(find.text('x'));
       await tester.pump(const Duration(milliseconds: 50));
       await tester.tap(find.text('x'));
-      // Pump past the double-tap window so the recognizer's timer settles and
-      // the test does not end with a pending Timer.
-      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump();
       expect(fired, 1);
+      await tester.pumpWidget(const SizedBox()); // dispose recognizer + timer
     });
 
     testWidgets('onLongPress fires in both modes', (tester) async {
       for (final single in [true, false]) {
         var longPressed = 0;
-        await tester.pumpWidget(MaterialApp(
-          home: Scaffold(
-            body: CriticalGestureDetector(
-              singleTap: single,
-              onAction: () {},
-              onLongPress: () => longPressed++,
-              child: const SizedBox(width: 200, height: 200, child: Text('x')),
-            ),
-          ),
-        ));
+        await tester.pumpWidget(
+            host(single, () {}, onLongPress: () => longPressed++));
         await tester.longPress(find.text('x'));
         await tester.pump();
         expect(longPressed, 1, reason: 'singleTap=$single');
+        await tester.pumpWidget(const SizedBox()); // dispose recognizers
       }
     });
   });
@@ -146,22 +137,24 @@ void main() {
       expect(fired, 1, reason: 'second tap within the window is debounced');
     });
 
-    testWidgets('double-tap mode: a double tap fires, a single tap does not',
-        (tester) async {
+    testWidgets('double-tap mode: a single tap does not fire', (tester) async {
       var fired = 0;
       await tester.pumpWidget(host(false, () => fired++));
-
       await tester.tap(find.text('go'));
       await tester.pump(const Duration(milliseconds: 400));
-      expect(fired, 0, reason: 'single tap must not fire in double-tap mode');
+      expect(fired, 0);
+      await tester.pumpWidget(const SizedBox()); // dispose recognizer + timer
+    });
 
+    testWidgets('double-tap mode: a double tap fires once', (tester) async {
+      var fired = 0;
+      await tester.pumpWidget(host(false, () => fired++));
       await tester.tap(find.text('go'));
       await tester.pump(const Duration(milliseconds: 50));
       await tester.tap(find.text('go'));
-      // Pump past the double-tap window so the recognizer's timer settles and
-      // the test does not end with a pending Timer.
-      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump();
       expect(fired, 1);
+      await tester.pumpWidget(const SizedBox()); // dispose recognizer + timer
     });
   });
 }
