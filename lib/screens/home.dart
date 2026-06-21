@@ -563,7 +563,10 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
 /// returns the exact closure assigned, so the caller can clear it on dispose
 /// (the closure captures [context]).
 void Function() setupGameCallbacks(Game game, BuildContext context) {
-  final void Function() callback = () async {
+  // A local function declaration (not a `final ... = () {}` variable) to satisfy
+  // the analyzer's prefer_function_declarations_over_variables lint, which CI
+  // runs as fatal (`flutter analyze --fatal-infos`).
+  void callback() async {
     bool? switchOrder = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -606,7 +609,7 @@ void Function() setupGameCallbacks(Game game, BuildContext context) {
     if (switchOrder == true) {
       game.toggleTeamOrder(); // Switch team order
     }
-  };
+  }
   game.onRequestSwitchTeamOrderDialog = callback;
   return callback;
 }
