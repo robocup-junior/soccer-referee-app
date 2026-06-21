@@ -46,7 +46,12 @@ ErrorInfo describeError(Object error) {
     return const ErrorInfo('Bluetooth connection failed',
         hint: 'Move closer, re-power the robot, or re-scan');
   }
-  return ErrorInfo('Something went wrong: $error');
+  // Fallback: keep the user-facing string short and fixed. The raw [error]
+  // (which can be a verbose multi-line PlatformException) is logged by callers
+  // via debugPrint — never surfaced into a status chip where it overflows the
+  // layout.
+  return const ErrorInfo('Connection failed',
+      hint: 'Check the address and that the device is powered');
 }
 
 /// Map a BLE adapter state to a user-facing message for the Home banner and

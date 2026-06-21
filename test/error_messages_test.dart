@@ -60,9 +60,14 @@ void main() {
       expect(info.hint, 'Move closer, re-power the robot, or re-scan');
     });
 
-    test('unknown error falls back without crashing', () {
-      final info = describeError('weird');
-      expect(info.message, startsWith('Something went wrong'));
+    test('unknown error falls back to a short, fixed message (no raw dump)', () {
+      // The raw error must NOT leak into the user-facing string — a verbose
+      // PlatformException there overflows the status row and borks the screen.
+      final info = describeError(
+          'PlatformException(some, very long, ${'x' * 500}, detail)');
+      expect(info.message, 'Connection failed');
+      expect(info.message.contains('x' * 50), isFalse);
+      expect(info.hint, 'Check the address and that the device is powered');
     });
   });
 
