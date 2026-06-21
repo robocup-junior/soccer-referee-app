@@ -168,8 +168,12 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     _scanSubscription = null;
 
     // Subscribe BEFORE startScan so no results are missed between the scan
-    // starting and .listen() being attached (race in the old ordering).
-    _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
+    // starting and .listen() being attached (race in the old ordering). Use
+    // onScanResults, not scanResults: scanResults is a behavior stream that
+    // replays the previous scan's cached results to a new listener, so
+    // subscribing before startScan would surface stale/unfiltered devices from
+    // an earlier scan; onScanResults clears between scans.
+    _scanSubscription = FlutterBluePlus.onScanResults.listen((results) {
       for (ScanResult result in results) {
         if (!devices.contains(result.device)) {
           if (mounted) {
