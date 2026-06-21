@@ -520,24 +520,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             );
                           },
                         ),
-                        SettingsSection(
-                          title: 'Controls',
-                          locked: false,
-                          settings: [
-                            SettingSwitch(
-                              title: 'Single-tap actions',
-                              subtitle:
-                                  'Off by default. When on, start/stop, scoring '
-                                  'and robot controls fire on a single tap — '
-                                  'removes the accidental-touch protection.',
-                              value: widget.game.singleTapEnabled,
-                              onChanged: (value) {
-                                setState(() {
-                                  widget.game.singleTapEnabled = value;
-                                });
-                              },
-                            ),
-                          ],
+                        AnimatedBuilder(
+                          animation: widget.game,
+                          builder: (context, child) {
+                            return SettingsSection(
+                              title: 'Controls',
+                              locked: false,
+                              settings: [
+                                SettingSwitch(
+                                  title: 'Single-tap actions',
+                                  subtitle:
+                                      'Off by default. When on, start/stop, '
+                                      'scoring and robot controls fire on a '
+                                      'single tap — removes the accidental-touch '
+                                      'protection.',
+                                  value: widget.game.singleTapEnabled,
+                                  onChanged: (value) {
+                                    widget.game.singleTapEnabled = value;
+                                  },
+                                ),
+                              ],
+                            );
+                          },
                         ),
                         const SettingsSection(
                           title: 'About',
