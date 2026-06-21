@@ -491,8 +491,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   void disconnectAll() {
     for (var team in teams) {
-      for (var module in team.modules
-          .where((module) => module.isEnabled && module.isConnected)) {
+      // Include modules that are mid-reconnect (isConnecting), not just
+      // currently-connected ones: issue #38 added a reconnecting state where
+      // isConnected is false while autoConnect keeps retrying. Without this a
+      // "disconnect all" would skip those modules, leaving them retrying and
+      // later consuming GATT slots after the referee asked to disconnect.
+      for (var module in team.modules.where(
+          (module) => module.isEnabled && (module.isConnected || module.isConnecting))) {
         module.bleDisconnect();
       }
     }
