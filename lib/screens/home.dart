@@ -10,8 +10,28 @@ import 'package:flutter/services.dart';
 import 'package:rcj_scoreboard/screens/settings.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
 
-class Home extends StatelessWidget {
+class Home extends StatefulWidget {
   const Home({super.key});
+
+  @override
+  State<Home> createState() => _HomeState();
+}
+
+class _HomeState extends State<Home> {
+  bool _didSetupCallbacks = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Set up model callbacks once. Using didChangeDependencies (not initState)
+    // ensures BuildContext is valid for showDialog. This runs once because the
+    // inherited Game provider instance does not change after construction.
+    if (!_didSetupCallbacks) {
+      _didSetupCallbacks = true;
+      final game = Provider.of<Game>(context);
+      setupGameCallbacks(game, context);
+    }
+  }
 
   void _navigateToSettings(context, Game game) async {
     final updatedGame = await Navigator.push<Game>(
@@ -33,7 +53,6 @@ class Home extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final game = Provider.of<Game>(context);
-    setupGameCallbacks(game, context);
 
     return PopScope(
       canPop: false,
