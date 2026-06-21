@@ -310,9 +310,10 @@ class MqttService {
     debugPrint('MQTT_LOGS::Client disconnected');
     // Ignore callbacks from a stale client. A delayed disconnect from a
     // previous connect() must never mutate the state of a newer connection:
-    // capturing the client (above) prevents *reading* a newer _client, but we
-    // must also refuse to *write* _client / connection state / reconnect work
-    // unless this callback belongs to the currently active client.
+    // the closure capture in connect() prevents *reading* a newer _client, and
+    // this identical() check additionally refuses to *write* _client /
+    // connection state / reconnect work unless the callback belongs to the
+    // currently active client.
     if (!identical(_client, disconnectedClient)) {
       debugPrint('MQTT_LOGS::Ignoring disconnect callback from a stale client');
       return;
@@ -334,12 +335,24 @@ class MqttService {
         debugPrint('MQTT_LOGS::Attempting to reconnect ($attempts/$_maxReconnectAttempts)...');
         bool success = await connect();
         if (success) break;
+        // Don't wait after the final failed attempt: the trailing delay would
+        // otherwise open a 5s window in which a user disable/disconnect could
+        // be clobbered by the exhausted-retry error below.
+        if (attempts >= _maxReconnectAttempts) break;
         debugPrint('MQTT_LOGS::Reconnection failed, retrying in 5 seconds...');
         connectionStateNotifier.value = MqttConnectionStateEx.connecting;
         await Future.delayed(const Duration(seconds: 5));
       }
-      if (!isConnected && attempts >= _maxReconnectAttempts) {
-        _lastErrorMessage = 'Reconnection failed after $_maxReconnectAttempts attempts';
+      // Only report exhaustion if this reconnect session is still active: a
+      // user disable (_isEnabled == false) or solicited disconnect
+      // (_client == null) during the loop must not be flipped back into error.
+      if (_isEnabled == true && _client != null && !isConnected &&
+          attempts >= _maxReconnectAttempts) {
+        // Preserve the specific cause connect() recorded on the last attempt
+        // instead of hiding it behind a generic message.
+        final cause = _lastErrorMessage.isNotEmpty ? ' ($_lastErrorMessage)' : '';
+        _lastErrorMessage =
+            'Reconnection failed after $_maxReconnectAttempts attempts$cause';
         connectionStateNotifier.value = MqttConnectionStateEx.error;
       }
     }
