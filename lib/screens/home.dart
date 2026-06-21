@@ -73,6 +73,19 @@ class Home extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final game = Provider.of<Game>(context);
+    // Gesture wiring for the two button-backed critical controls (timer,
+    // all-robots): single-tap mode routes the action through the button's
+    // onPressed, double-tap mode through the parent GestureDetector. Computed
+    // here (build already rebuilds on Game changes) so the button subtrees stay
+    // wrapper-free. See criticalButtonGestures.
+    final timerGestures = criticalButtonGestures(
+      singleTap: game.singleTapEnabled,
+      onAction: () => game.toggleTimer(),
+    );
+    final allRobotsGestures = criticalButtonGestures(
+      singleTap: game.singleTapEnabled,
+      onAction: () => game.toggleAllModules(),
+    );
     setupGameCallbacks(game, context);
 
     return PopScope(
@@ -133,29 +146,22 @@ class Home extends StatelessWidget {
                             Text(game.gameStageString),
                             SizedBox(
                               width: double.infinity,
-                              child: Builder(builder: (context) {
-                                final g = criticalButtonGestures(
-                                  singleTap: game.singleTapEnabled,
-                                  onAction: () => game.toggleTimer(),
-                                );
-                                return GestureDetector(
-                                  onDoubleTap: g.onDoubleTap,
-                                  child: ElevatedButton(
-                                    onPressed: g.onPressed,
-                                    style: ElevatedButton.styleFrom(
-                                      //minimumSize: const Size(120, 50),
-                                      backgroundColor: (game.isGameRunning
-                                          ? (game.isTimerRunning
-                                              ? AppColors.red
-                                              : AppColors.green)
-                                          : AppColors.green),
-                                    ),
-                                    child: Text(game.timerButtonText,
-                                        style:
-                                            const TextStyle(color: Colors.white)),
+                              child: GestureDetector(
+                                onDoubleTap: timerGestures.onDoubleTap,
+                                child: ElevatedButton(
+                                  onPressed: timerGestures.onPressed,
+                                  style: ElevatedButton.styleFrom(
+                                    //minimumSize: const Size(120, 50),
+                                    backgroundColor: (game.isGameRunning
+                                        ? (game.isTimerRunning
+                                            ? AppColors.red
+                                            : AppColors.green)
+                                        : AppColors.green),
                                   ),
-                                );
-                              }),
+                                  child: Text(game.timerButtonText,
+                                      style: const TextStyle(color: Colors.white)),
+                                ),
+                              ),
                             )
                           ],
                         ),
@@ -197,36 +203,30 @@ class Home extends StatelessWidget {
                     margin: const EdgeInsets.all(4.0),
                     width: double.infinity,
                     //height: 70.0,
-                    child: Builder(builder: (context) {
-                      final g = criticalButtonGestures(
-                        singleTap: game.singleTapEnabled,
-                        onAction: () => game.toggleAllModules(),
-                      );
-                      return GestureDetector(
-                        onDoubleTap: g.onDoubleTap,
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor:
-                                (game.currentStage == MatchStage.fullTime
-                                    ? AppColors.blue
-                                    : (game.isSomeonePlaying
-                                        ? AppColors.red
-                                        : AppColors.green)),
-                            // shape: RoundedRectangleBorder(
-                            //   borderRadius: BorderRadius.circular(30.0),
-                            // )
-                          ),
-                          child: Text(
-                              game.currentStage == MatchStage.fullTime
-                                  ? 'DISCONNECT ALL ROBOTS'
+                    child: GestureDetector(
+                      onDoubleTap: allRobotsGestures.onDoubleTap,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor:
+                              (game.currentStage == MatchStage.fullTime
+                                  ? AppColors.blue
                                   : (game.isSomeonePlaying
-                                      ? 'STOP ALL ROBOTS'
-                                      : 'START ALL ROBOTS'),
-                              style: const TextStyle(color: Colors.white)),
-                          onPressed: g.onPressed,
+                                      ? AppColors.red
+                                      : AppColors.green)),
+                          // shape: RoundedRectangleBorder(
+                          //   borderRadius: BorderRadius.circular(30.0),
+                          // )
                         ),
-                      );
-                    }),
+                        child: Text(
+                            game.currentStage == MatchStage.fullTime
+                                ? 'DISCONNECT ALL ROBOTS'
+                                : (game.isSomeonePlaying
+                                    ? 'STOP ALL ROBOTS'
+                                    : 'START ALL ROBOTS'),
+                            style: const TextStyle(color: Colors.white)),
+                        onPressed: allRobotsGestures.onPressed,
+                      ),
+                    ),
                   ),
                 ),
               ],
