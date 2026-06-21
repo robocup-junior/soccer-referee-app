@@ -462,6 +462,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
+    mqttService.dispose();
+    bleBridgeService.dispose();
+    wakelockService.dispose();
     super.dispose();
   }
 

@@ -22,12 +22,11 @@ class Team with ChangeNotifier {
   set name(String value) {
     if (value.isEmpty) {
       _name = 'Team $id'; // Default name if empty
+      notifyListeners();
     } else if (_name != value) {
       _name = value;
-      // Notify listeners only if the name has changed
-
+      notifyListeners();
     }
-    notifyListeners();
   }
 
 }
