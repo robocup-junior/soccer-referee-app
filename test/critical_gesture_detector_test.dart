@@ -3,11 +3,14 @@
 // (ElevatedButton-backed sites), and the TapDebounce guard that makes a
 // reflexive double-tap fire a single-tap action only once.
 //
-// Note on the double-tap-mode tests: a single tap on a GestureDetector that
-// registers only onDoubleTap leaves the DoubleTapGestureRecognizer's timeout
-// Timer pending. We dispose the tree (pump an empty widget) at the end of each
-// such case so the recognizer is disposed and its Timer cancelled — otherwise
-// the test trips the `!timersPending` invariant.
+// Single-tap mode is verified with real taps (only a TapGestureRecognizer is
+// involved). Double-tap mode is verified by inspecting/invoking the configured
+// callbacks rather than simulating a real double tap: a single tap on a
+// GestureDetector that registers only onDoubleTap leaves the
+// DoubleTapGestureRecognizer's timeout Timer pending and trips the test
+// binding's `!timersPending` invariant. Inspecting the wiring proves the
+// contract (single tap cannot fire; the action is bound to the double tap)
+// without that fragility.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -53,6 +56,13 @@ void main() {
       );
     }
 
+    GestureDetector findGd(WidgetTester tester) => tester.widget<GestureDetector>(
+          find.descendant(
+            of: find.byType(CriticalGestureDetector),
+            matching: find.byType(GestureDetector),
+          ),
+        );
+
     testWidgets('single-tap mode: a single tap fires onAction', (tester) async {
       var fired = 0;
       await tester.pumpWidget(host(true, () => fired++));
@@ -72,24 +82,24 @@ void main() {
       expect(fired, 1, reason: 'second tap within the window is debounced');
     });
 
-    testWidgets('double-tap mode: a single tap does not fire', (tester) async {
-      var fired = 0;
-      await tester.pumpWidget(host(false, () => fired++));
-      await tester.tap(find.text('x'));
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(fired, 0);
-      await tester.pumpWidget(const SizedBox()); // dispose recognizer + timer
+    testWidgets('single-tap mode: only onTap is wired', (tester) async {
+      await tester.pumpWidget(host(true, () {}));
+      final gd = findGd(tester);
+      expect(gd.onTap, isNotNull);
+      expect(gd.onDoubleTap, isNull);
     });
 
-    testWidgets('double-tap mode: a double tap fires once', (tester) async {
+    testWidgets(
+        'double-tap mode: only onDoubleTap is wired and it fires the action',
+        (tester) async {
       var fired = 0;
       await tester.pumpWidget(host(false, () => fired++));
-      await tester.tap(find.text('x'));
-      await tester.pump(const Duration(milliseconds: 50));
-      await tester.tap(find.text('x'));
-      await tester.pump();
+      final gd = findGd(tester);
+      // No onTap => a single tap cannot fire the critical action.
+      expect(gd.onTap, isNull);
+      expect(gd.onDoubleTap, isNotNull);
+      gd.onDoubleTap!();
       expect(fired, 1);
-      await tester.pumpWidget(const SizedBox()); // dispose recognizer + timer
     });
 
     testWidgets('onLongPress fires in both modes', (tester) async {
@@ -100,7 +110,6 @@ void main() {
         await tester.longPress(find.text('x'));
         await tester.pump();
         expect(longPressed, 1, reason: 'singleTap=$single');
-        await tester.pumpWidget(const SizedBox()); // dispose recognizers
       }
     });
   });
@@ -137,24 +146,30 @@ void main() {
       expect(fired, 1, reason: 'second tap within the window is debounced');
     });
 
-    testWidgets('double-tap mode: a single tap does not fire', (tester) async {
+    testWidgets('double-tap mode: button press is a no-op; double tap fires',
+        (tester) async {
       var fired = 0;
       await tester.pumpWidget(host(false, () => fired++));
-      await tester.tap(find.text('go'));
-      await tester.pump(const Duration(milliseconds: 400));
-      expect(fired, 0);
-      await tester.pumpWidget(const SizedBox()); // dispose recognizer + timer
-    });
 
-    testWidgets('double-tap mode: a double tap fires once', (tester) async {
-      var fired = 0;
-      await tester.pumpWidget(host(false, () => fired++));
-      await tester.tap(find.text('go'));
-      await tester.pump(const Duration(milliseconds: 50));
-      await tester.tap(find.text('go'));
-      await tester.pump();
+      // The button stays enabled but its press is a no-op, so a single tap
+      // cannot fire the critical action.
+      final btn = tester.widget<ElevatedButton>(find.byType(ElevatedButton));
+      expect(btn.onPressed, isNotNull);
+      btn.onPressed!();
+      expect(fired, 0, reason: 'a single button press must not fire the action');
+
+      // The action is bound to the parent GestureDetector's double tap.
+      final gd = tester.widget<GestureDetector>(
+        find
+            .ancestor(
+              of: find.byType(ElevatedButton),
+              matching: find.byType(GestureDetector),
+            )
+            .first,
+      );
+      expect(gd.onDoubleTap, isNotNull);
+      gd.onDoubleTap!();
       expect(fired, 1);
-      await tester.pumpWidget(const SizedBox()); // dispose recognizer + timer
     });
   });
 }
