@@ -181,12 +181,13 @@ class ScoreboardResultService with ChangeNotifier {
     final rawBaseUrl = uri.queryParameters['base_url']?.trim();
     if (kDebugMode && rawBaseUrl != null && rawBaseUrl.isNotEmpty) {
       final decodedBase = Uri.decodeComponent(rawBaseUrl);
-      if (decodedBase.contains('://')) {
+      if (decodedBase.startsWith('http://') ||
+          decodedBase.startsWith('https://')) {
         final parsedBase = Uri.tryParse(decodedBase);
         if (parsedBase != null &&
             parsedBase.host.isNotEmpty &&
             (parsedBase.scheme == 'http' || parsedBase.scheme == 'https') &&
-            _isAllowedDebugBaseUri(parsedBase)) {
+            _isAllowedLocalDebugBaseUri(parsedBase)) {
           baseUri = parsedBase.replace(path: '', query: null, fragment: null);
         }
       }
@@ -196,7 +197,8 @@ class ScoreboardResultService with ChangeNotifier {
     return (token: token, baseUri: baseUri ?? _defaultBaseUri);
   }
 
-  bool _isAllowedDebugBaseUri(Uri uri) {
+  bool _isAllowedLocalDebugBaseUri(Uri uri) {
+    assert(kDebugMode);
     final host = uri.host.toLowerCase();
     // Debug-only local hosts; any port is allowed for local test servers.
     return host == 'localhost' ||
@@ -217,6 +219,7 @@ class ScoreboardResultService with ChangeNotifier {
 
     final octets = <int>[];
     for (final part in parts) {
+      if (part.length > 1 && part.startsWith('0')) return false;
       final value = int.tryParse(part);
       if (value == null || value < 0 || value > 255) return false;
       octets.add(value);
