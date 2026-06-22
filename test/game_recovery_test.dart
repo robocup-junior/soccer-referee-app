@@ -15,8 +15,6 @@ import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
 
-const String _kSnapshotKey = 'match_state_snapshot';
-
 ModuleSnapshot _moduleSnap({
   required int id,
   String state = 'stop',
@@ -65,14 +63,15 @@ MatchSnapshot _snap({
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  late SharedPreferences prefs;
+
   setUp(() async {
     SharedPreferences.setMockInitialValues({});
-    final prefs = await SharedPreferences.getInstance();
+    prefs = await SharedPreferences.getInstance();
     await prefs.clear();
   });
 
   Future<void> persist(MatchSnapshot snapshot) async {
-    final prefs = await SharedPreferences.getInstance();
     await MatchStateStore(prefs).save(snapshot);
   }
 
@@ -108,7 +107,6 @@ void main() {
       final game = Game();
       await settleLoad(tester);
 
-      final prefs = await SharedPreferences.getInstance();
       final reloaded = MatchStateStore(prefs).load();
       expect(reloaded, isNotNull,
           reason: 'the suppressed bootstrap must not overwrite the snapshot');
@@ -230,6 +228,36 @@ void main() {
       game.dispose();
     });
 
+    testWidgets('half-time resume does not count down a restored penalty',
+        (tester) async {
+      // A penalty given during the break is unusual but possible; on resume the
+      // break clock runs, so the penalty must NOT count down (and must never
+      // auto-release the robot via play()) while off-field at half-time.
+      await persist(_snap(
+        stage: 'halfTime',
+        remainingTime: 60,
+        modules: [
+          _moduleSnap(id: 0, state: 'damage', lastState: 'damage', penalty: 5),
+        ],
+      ));
+      final game = Game();
+      await settleLoad(tester);
+
+      game.resumePendingMatch();
+      await tester.pump();
+      final m0 = game.teams[0].modules[0];
+      expect(m0.state, ModuleState.damage);
+      expect(m0.penaltyTime, 5);
+
+      await tester.pump(const Duration(seconds: 1)); // one break tick
+      expect(m0.penaltyTime, 5,
+          reason: 'penalties must not count down during the half-time break');
+      expect(m0.state, ModuleState.damage);
+
+      game.stopTimer();
+      game.dispose();
+    });
+
     testWidgets('restores a swapped team order by id, not by index',
         (tester) async {
       // Saved with B on the physical left (teams[0].id == 'B').
@@ -269,7 +297,6 @@ void main() {
       expect(game.getScore('A'), 0);
       expect(game.inGame, isFalse);
 
-      final prefs = await SharedPreferences.getInstance();
       expect(MatchStateStore(prefs).load(), isNull);
       game.dispose();
     });
@@ -285,7 +312,6 @@ void main() {
       await tester.pump(); // run the scheduled microtask flush
       await tester.pump(); // let the async save() setString land
 
-      final prefs = await SharedPreferences.getInstance();
       final snapshot = MatchStateStore(prefs).load();
       expect(snapshot, isNotNull);
       expect(snapshot!.teams.firstWhere((t) => t.id == 'A').score, 1);
@@ -313,8 +339,7 @@ void main() {
       final game = Game();
       await settleLoad(tester);
 
-      game.clearMatchSnapshot();
-      await tester.pump();
+      await game.clearMatchSnapshot();
       await tester.pump();
 
       expect(MatchStateStore(prefs).load(), isNull);
