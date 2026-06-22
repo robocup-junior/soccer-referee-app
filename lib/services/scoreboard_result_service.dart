@@ -15,6 +15,7 @@ class ScoreboardResultService with ChangeNotifier {
   static const _prefsMatchKey = 'scoreboard_match_config';
   static const _bearerScheme = '\u0042earer';
   static const _fallbackLinkScheme = 'rcjrefmate';
+  static final Uri _defaultBaseUri = Uri.https('scoreboard.junior.robocup.org');
   static const _retryInterval = Duration(seconds: 20);
 
   final AppLinks _appLinks = AppLinks();
@@ -25,7 +26,7 @@ class ScoreboardResultService with ChangeNotifier {
   Timer? _retryTimer;
 
   String? _token;
-  Uri _baseUri = Uri.https('scoreboard.junior.robocup.org');
+  Uri _baseUri = _defaultBaseUri;
   ScoreboardMatchConfig? _matchConfig;
   List<ResultOutboxItem> _outbox = [];
   bool _isSubmitting = false;
@@ -177,13 +178,22 @@ class ScoreboardResultService with ChangeNotifier {
       final parsedBase = Uri.tryParse(decodedBase);
       if (parsedBase != null &&
           parsedBase.host.isNotEmpty &&
-          (parsedBase.scheme == 'http' || parsedBase.scheme == 'https')) {
+          (parsedBase.scheme == 'http' || parsedBase.scheme == 'https') &&
+          _isAllowedDebugBaseUri(parsedBase)) {
         baseUri = parsedBase.replace(path: '', query: null, fragment: null);
       }
     }
 
     if (token.isEmpty) return null;
-    return (token: token, baseUri: baseUri ?? _baseUri);
+    return (token: token, baseUri: baseUri ?? _defaultBaseUri);
+  }
+
+  bool _isAllowedDebugBaseUri(Uri uri) {
+    final host = uri.host.toLowerCase();
+    return host == 'localhost' ||
+        host == '127.0.0.1' ||
+        host == '::1' ||
+        host == '10.0.2.2';
   }
 
   Future<void> refreshMatchConfig() async {
