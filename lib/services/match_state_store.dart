@@ -210,7 +210,8 @@ class MatchStateStore {
     _pendingGeneration = _generation;
     _hasPending = true;
     try {
-      await _prefs.setInt(_tombstoneKey, _generation);
+      final ok = await _prefs.setInt(_tombstoneKey, _generation);
+      if (!ok) debugPrint('MatchStateStore: tombstone write returned false');
     } catch (e) {
       debugPrint('MatchStateStore.clear tombstone write failed: $e');
     }
@@ -236,10 +237,12 @@ class MatchStateStore {
 
         try {
           if (isClear) {
-            await _prefs.remove(_snapshotKey);
+            final ok = await _prefs.remove(_snapshotKey);
+            if (!ok) debugPrint('MatchStateStore: snapshot remove returned false');
           } else if (snapshot != null) {
             final map = snapshot.toJson()..['generation'] = generation;
-            await _prefs.setString(_snapshotKey, jsonEncode(map));
+            final ok = await _prefs.setString(_snapshotKey, jsonEncode(map));
+            if (!ok) debugPrint('MatchStateStore: snapshot save returned false');
           }
         } catch (e) {
           // Best-effort: log and keep draining any newer pending op.

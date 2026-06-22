@@ -214,8 +214,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   /// Mark dirty and schedule a coalesced flush AFTER the current synchronous
-  /// work (e.g. the START/STOP fan-out) has been launched, via scheduleMicrotask
-  /// — so the snapshot build + jsonEncode never run inline on a command path.
+  /// work has run, via scheduleMicrotask — so the snapshot build + jsonEncode
+  /// never run inline on the caller's frame. This is deliberate: callers like
+  /// [Module.setLabel]/[Module.play] are reached from within larger synchronous
+  /// operations, and the microtask hop keeps the build off that frame even
+  /// though no current caller sits on the START/STOP fan-out itself (those use
+  /// the bare flag [markMatchStateDirty]). Use [_flushMatchStateNow] when an
+  /// immediate synchronous flush is wanted (heartbeat tick / resume commit).
   void _markDirtyFlush() {
     if (_suppressPersist || _stateStore == null) return;
     _dirty = true;
@@ -238,8 +243,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   /// Public clear for intentional fresh-start paths outside the resume flow
   /// (e.g. Settings "Reset current game"). gameInit() deliberately does not
   /// clear the snapshot, so those paths must clear it explicitly or a killed
-  /// app would re-offer the reset match on next launch.
-  void clearMatchSnapshot() => _clearMatchState();
+  /// app would re-offer the reset match on next launch. Awaitable so a caller
+  /// can confirm the clear landed (the destructive intent should not be lost on
+  /// an immediate kill).
+  Future<void> clearMatchSnapshot() => _clearMatchStateAndWait();
 
   /// Build the snapshot (if dirty) and enqueue the save. A no-op unless dirty,
   /// the store exists, and persistence isn't suppressed.
@@ -591,6 +598,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   void notifyAllModulesTimer() {
+    // Penalties are a match-time concept; robots are off-field during the
+    // half-time break, so never count a penalty down (and never auto-release it
+    // via play()) while in halfTime. Normally modules are in halfTime state here
+    // so the loop is a no-op anyway, but a cold resume can restore a module in
+    // damage (a penalty given during the break) — guard against auto-PLAY there.
+    if (currentStage == MatchStage.halfTime) return;
+
     // Use a flag so that at most one vibration fires per timer tick even if
     // multiple modules hit a threshold simultaneously.
     bool vibrateTriggered = false;
@@ -686,8 +700,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         // The per-tick heartbeat was suppressed during the replay burst, so
         // flush ONCE now — otherwise a crash right after a warm resume would
         // persist the stale pre-background freeze point and over-credit time on
-        // the next cold resume.
-        _flushMatchStateNow();
+        // the next cold resume. But if the replay reached fullTime, the
+        // secondHalf->fullTime tick already CLEARED the snapshot; don't re-save a
+        // terminal match (it would undo the clear-on-fullTime contract).
+        if (currentStage != MatchStage.fullTime) {
+          _flushMatchStateNow();
+        }
       }
     }
   }

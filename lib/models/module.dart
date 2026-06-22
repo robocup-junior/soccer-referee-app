@@ -383,7 +383,10 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
-    _game.markMatchStateDirty();
+    // Single-module action (not the simultaneous START/STOP fan-out), so a
+    // scheduled flush is latency-safe and persists it even when the clock is
+    // stopped (e.g. a robot toggled while the cold-resumed clock is frozen).
+    _game.markMatchStateDirtyAndFlush();
   }
 
   void play() async {
@@ -395,7 +398,7 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
-    _game.markMatchStateDirty();
+    _game.markMatchStateDirtyAndFlush();
   }
 
   void playOrDamageAll() async {
@@ -498,9 +501,9 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
-    // Penalty given is a discrete recoverable event; mark the match state dirty
-    // so the snapshot captures it (the flush rides the heartbeat / next event).
-    _game.markMatchStateDirty();
+    // Penalty given is a discrete recoverable event; flush it (off the hot path)
+    // so it survives a crash even if the clock isn't running to drive a heartbeat.
+    _game.markMatchStateDirtyAndFlush();
   }
 
   void _askForPenalty() {
