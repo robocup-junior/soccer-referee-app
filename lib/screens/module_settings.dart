@@ -82,7 +82,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     final mac = _controller.text.trim();
     if (mac.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a MAC address first')),
+        const SnackBar(content: Text('Enter a device address first')),
       );
       return;
     }
@@ -286,9 +286,16 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                   'Module status:',
                   style: TextStyle(fontSize: 18),
                 ),
-                Text(
-                  deviceStatus == 'OK' ? module.bleStatus : deviceStatus,
-                  style: const TextStyle(fontSize: 18),
+                // Flexible + ellipsis so a long status string can never overflow
+                // the Row and bork the screen (BLE errors can be verbose).
+                Flexible(
+                  child: Text(
+                    deviceStatus == 'OK' ? module.bleStatus : deviceStatus,
+                    style: const TextStyle(fontSize: 18),
+                    textAlign: TextAlign.right,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ],
             ),
@@ -387,7 +394,15 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                   if (module.isConnected || module.isConnecting) {
                     module.bleDisconnect();
                   } else {
-                    module.setBleDevice(BluetoothDevice.fromId(_controller.text.toUpperCase()));
+                    final mac = _controller.text.trim();
+                    if (mac.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                            content: Text('Enter a device address first')),
+                      );
+                      return;
+                    }
+                    module.setBleDevice(BluetoothDevice.fromId(mac.toUpperCase()));
                     module.bleConnect();
                     FlutterBluePlus.stopScan();
                   }
