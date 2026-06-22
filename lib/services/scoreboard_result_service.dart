@@ -14,6 +14,7 @@ class ScoreboardResultService with ChangeNotifier {
   static const _prefsOutboxKey = 'scoreboard_result_outbox';
   static const _prefsMatchKey = 'scoreboard_match_config';
   static const _bearerScheme = '\u0042earer';
+  static const _fallbackLinkScheme = 'rcjrefmate';
   static const _retryInterval = Duration(seconds: 20);
 
   final AppLinks _appLinks = AppLinks();
@@ -129,18 +130,14 @@ class ScoreboardResultService with ChangeNotifier {
   }
 
   Future<void> handleDeepLink(Uri uri) async {
-    if (uri.scheme != 'https') return;
-    if (uri.pathSegments.length < 2 || uri.pathSegments.first != 'r') return;
+    final parsed = _parseDeepLink(uri);
+    if (parsed == null) return;
 
-    final rawToken = Uri.decodeComponent(uri.pathSegments[1]).trim();
+    final rawToken = parsed.$1;
     if (rawToken.isEmpty) return;
 
     _token = rawToken;
-    _baseUri = Uri(
-      scheme: 'https',
-      host: uri.host,
-      port: uri.hasPort ? uri.port : null,
-    );
+    _baseUri = parsed.$2;
     _statusMessage = 'Referee link received';
 
     await _prefs?.setString(_prefsTokenKey, rawToken);
@@ -148,6 +145,59 @@ class ScoreboardResultService with ChangeNotifier {
 
     notifyListeners();
     await refreshMatchConfig();
+  }
+
+  (String, Uri)? _parseDeepLink(Uri uri) {
+    if (uri.scheme == 'https') {
+      if (uri.pathSegments.length < 2 || uri.pathSegments.first != 'r') {
+        return null;
+      }
+      final token = Uri.decodeComponent(uri.pathSegments[1]).trim();
+      if (token.isEmpty || uri.host.isEmpty) return null;
+      return (
+        token,
+        Uri(
+          scheme: 'https',
+          host: uri.host,
+          port: uri.hasPort ? uri.port : null,
+        ),
+      );
+    }
+
+    if (uri.scheme != _fallbackLinkScheme) return null;
+
+    final pathSegments = uri.pathSegments;
+    String token = '';
+    Uri? baseUri;
+
+    if (uri.host == 'r' && pathSegments.isNotEmpty) {
+      token = Uri.decodeComponent(pathSegments.first).trim();
+    } else if (pathSegments.length >= 2 && pathSegments.first == 'r') {
+      token = Uri.decodeComponent(pathSegments[1]).trim();
+      if (uri.host.isNotEmpty) {
+        baseUri = Uri(
+          scheme: 'https',
+          host: uri.host,
+          port: uri.hasPort ? uri.port : null,
+        );
+      }
+    } else {
+      return null;
+    }
+
+    final rawBaseUrl = uri.queryParameters['base_url']?.trim();
+    if (rawBaseUrl != null && rawBaseUrl.isNotEmpty) {
+      final decodedBase = Uri.decodeComponent(rawBaseUrl);
+      final parsedBase = Uri.tryParse(decodedBase);
+      if (parsedBase != null &&
+          parsedBase.host.isNotEmpty &&
+          (parsedBase.scheme == 'http' || parsedBase.scheme == 'https')) {
+        baseUri = parsedBase.replace(path: '', query: null, fragment: null);
+      }
+    }
+
+    if (token.isEmpty) return null;
+    return (token, baseUri ?? _baseUri);
   }
 
   Future<void> refreshMatchConfig() async {
