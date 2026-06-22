@@ -1,7 +1,7 @@
 # RCJ Soccer RefMate — CLAUDE.md
 
 ## What this project is
-Android Flutter app (portrait-only) that controls RoboCup Junior Soccer robot modules via BLE and publishes match data via MQTT. Up to 10 robot modules are connected simultaneously. The UI is intentionally protected against accidental touch by requiring **double-tap** for all critical actions (start/stop robots, score goals, toggle timer).
+Cross-platform **Android + iOS (iPhone)** Flutter app (portrait-only) that controls RoboCup Junior Soccer robot modules via BLE and publishes match data via MQTT. Up to 10 robot modules are connected simultaneously. The UI is intentionally protected against accidental touch by requiring **double-tap** for all critical actions (start/stop robots, score goals, toggle timer). **Every change must work on both Android and iOS** (iOS support was added with Fabian; e.g. App Links on Android map to Universal Links on iOS).
 
 ## Critical invariants — never violate these
 1. **Robot START/STOP latency**: `bleSendPlayAll()` and `bleSendStopAll()` use `timeout:0` (fire-and-forget) and are launched without `await` so all modules fire simultaneously. Never add awaits, blocking calls, queues, or synchronization that could delay or serialize robot commands.
