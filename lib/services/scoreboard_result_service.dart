@@ -133,11 +133,11 @@ class ScoreboardResultService with ChangeNotifier {
     final parsed = _parseDeepLink(uri);
     if (parsed == null) return;
 
-    final rawToken = parsed.$1;
+    final rawToken = parsed.token;
     if (rawToken.isEmpty) return;
 
     _token = rawToken;
-    _baseUri = parsed.$2;
+    _baseUri = parsed.baseUri;
     _statusMessage = 'Referee link received';
 
     await _prefs?.setString(_prefsTokenKey, rawToken);
@@ -147,7 +147,7 @@ class ScoreboardResultService with ChangeNotifier {
     await refreshMatchConfig();
   }
 
-  (String, Uri)? _parseDeepLink(Uri uri) {
+  ({String token, Uri baseUri})? _parseDeepLink(Uri uri) {
     if (uri.scheme == 'https') {
       if (uri.pathSegments.length < 2 || uri.pathSegments.first != 'r') {
         return null;
@@ -155,8 +155,8 @@ class ScoreboardResultService with ChangeNotifier {
       final token = Uri.decodeComponent(uri.pathSegments[1]).trim();
       if (token.isEmpty || uri.host.isEmpty) return null;
       return (
-        token,
-        Uri(
+        token: token,
+        baseUri: Uri(
           scheme: 'https',
           host: uri.host,
           port: uri.hasPort ? uri.port : null,
@@ -197,7 +197,9 @@ class ScoreboardResultService with ChangeNotifier {
     }
 
     if (token.isEmpty) return null;
-    return (token, baseUri ?? _baseUri);
+    final resolvedBase = baseUri ?? _baseUri;
+    if (resolvedBase.host.isEmpty) return null;
+    return (token: token, baseUri: resolvedBase);
   }
 
   Future<void> refreshMatchConfig() async {

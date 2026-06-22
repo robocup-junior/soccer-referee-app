@@ -67,9 +67,6 @@
                 <data
                     android:scheme="rcjrefmate"
                     android:host="r" />
-                <data
-                    android:scheme="rcjrefmate"
-                    android:pathPrefix="/r/" />
             </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
