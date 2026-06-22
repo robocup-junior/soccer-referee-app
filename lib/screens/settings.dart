@@ -48,7 +48,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final List<SetItem> _penaltyTimes = [
     SetItem('30 sec', 30),
     SetItem('60 sec', 60),
-    SetItem('90 mins', 90),
+    SetItem('90 sec', 90),
   ];
 
   @override
@@ -58,7 +58,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _gameDurations.firstWhere((item) => item.values == widget.game.periodTime, orElse: () => _gameDurations[4]);
     _selectedHalftimeBreak = _halftimeBreaks.firstWhere((item) => item.values == widget.game.halfTimeDuration,
         orElse: () => _halftimeBreaks[2]);
-    _selectedNumberOfPlayers = _numberOfPlayersList.firstWhere((item) => item.values == widget.game.numberOfPLayers,
+    _selectedNumberOfPlayers = _numberOfPlayersList.firstWhere((item) => item.values == widget.game.numberOfPlayers,
         orElse: () => _numberOfPlayersList[1]);
     _selectedPenaltyTime =
         _penaltyTimes.firstWhere((item) => item.values == widget.game.penaltyTime, orElse: () => _penaltyTimes[1]);
@@ -410,7 +410,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               onChanged: (value) {
                                 setState(() {
                                   _selectedNumberOfPlayers = value!;
-                                  widget.game.numberOfPLayers = value.values;
+                                  widget.game.numberOfPlayers = value.values;
                                 });
                                 if (value!.values >= 4) {
                                   showDialog(
