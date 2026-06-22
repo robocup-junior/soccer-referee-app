@@ -30,6 +30,7 @@ class MyApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider.value(value: game),
         ChangeNotifierProvider.value(value: game.bleBridgeService),
+        ChangeNotifierProvider.value(value: game.bleAdapterMonitor),
         ...game.teams.map((team) => ChangeNotifierProvider.value(value: team)),
         ...game.teams[0].modules
             .map((module) => ChangeNotifierProvider.value(value: module)),
