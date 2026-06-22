@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/models/game.dart';
+import 'package:rcj_scoreboard/services/error_messages.dart';
 
 
 
@@ -195,21 +196,8 @@ class MqttService {
     } else {
       debugPrint('MQTT_LOGS::ERROR Mosquitto client connection failed - disconnecting, status is ${_client!.connectionStatus}');
       final status = _client!.connectionStatus!;
-      if (status.returnCode == MqttConnectReturnCode.unacceptedProtocolVersion) {
-        _lastErrorMessage = 'Connection failed: Invalid protocol version';
-      } else if (status.returnCode == MqttConnectReturnCode.identifierRejected) {
-        _lastErrorMessage = 'Connection failed: Invalid client identifier';
-      } else if (status.returnCode == MqttConnectReturnCode.brokerUnavailable) {
-        _lastErrorMessage = 'Connection failed: Broker unavailable';
-      } else if (status.returnCode == MqttConnectReturnCode.badUsernameOrPassword) {
-        _lastErrorMessage = 'Auth failed: Bad username/password';
-      } else if (status.returnCode == MqttConnectReturnCode.notAuthorized) {
-        _lastErrorMessage = 'Auth failed: Invalid credentials';
-      } else if (status.returnCode == MqttConnectReturnCode.noneSpecified) {
-        _lastErrorMessage = 'Connection failed: No return code specified';
-      } else {
-        _lastErrorMessage = 'Connection failed: ${status.returnCode}';
-      }
+      _lastErrorMessage = describeMqttReturnCode(
+          status.returnCode ?? MqttConnectReturnCode.noneSpecified);
       connectionStateNotifier.value = MqttConnectionStateEx.error;
       return false;
     }
