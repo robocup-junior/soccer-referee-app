@@ -157,6 +157,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   widget.game.setTeamToDefaultOrder();
                                   widget.game.gameInit();
                                   widget.game.resetModuleNames();
+                                  // gameInit() deliberately does not clear the
+                                  // cold-resume snapshot; an intentional reset
+                                  // must, or a kill would re-offer this match.
+                                  widget.game.clearMatchSnapshot();
                                 });
                               },
                             ),

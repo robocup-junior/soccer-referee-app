@@ -222,6 +222,25 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     scheduleMicrotask(_persistMatchState);
   }
 
+  /// Public entry for off-hot-path collaborators (e.g. [Module.setLabel]) that
+  /// want a change scheduled to disk now, not merely flagged for the next
+  /// heartbeat. Never call from a robot-command path.
+  void markMatchStateDirtyAndFlush() => _markDirtyFlush();
+
+  /// Force an immediate, synchronous flush of the current state. `_dirty` alone
+  /// is not enough — [_persistMatchState] no-ops unless dirty — so the two are
+  /// always paired; this helper makes that contract explicit at every call site.
+  void _flushMatchStateNow() {
+    markMatchStateDirty();
+    _persistMatchState();
+  }
+
+  /// Public clear for intentional fresh-start paths outside the resume flow
+  /// (e.g. Settings "Reset current game"). gameInit() deliberately does not
+  /// clear the snapshot, so those paths must clear it explicitly or a killed
+  /// app would re-offer the reset match on next launch.
+  void clearMatchSnapshot() => _clearMatchState();
+
   /// Build the snapshot (if dirty) and enqueue the save. A no-op unless dirty,
   /// the store exists, and persistence isn't suppressed.
   void _persistMatchState() {
@@ -239,6 +258,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void _clearMatchState() {
     _dirty = false;
     unawaited(_stateStore?.clear());
+  }
+
+  /// Same as [_clearMatchState] but awaitable, for destructive UI paths that
+  /// want to confirm the clear landed before dismissing.
+  Future<void> _clearMatchStateAndWait() async {
+    _dirty = false;
+    await _stateStore?.clear();
   }
 
   MatchSnapshot _buildSnapshot() {
@@ -315,17 +341,19 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _pendingResume = null;
     // Commit the restored state ONCE, now that the suppress scope has closed (a
     // flush while suppressed is a no-op).
-    markMatchStateDirty();
-    _persistMatchState();
+    _flushMatchStateNow();
     notifyListeners();
   }
 
   /// Referee chose Discard: fresh match and clear the persisted snapshot.
-  void discardPendingMatch() {
+  /// Awaits the clear so the destructive flow doesn't dismiss while a failed/
+  /// pending tombstone could still re-offer the match on next launch (this is a
+  /// dialog action, not a robot-command path, so the await is safe).
+  Future<void> discardPendingMatch() async {
     _pendingResume = null;
     gameInit();
     setTeamToDefaultOrder();
-    _clearMatchState();
+    await _clearMatchStateAndWait();
     notifyListeners();
   }
 
@@ -402,8 +430,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // warm-resume replay burst. Direct flush (not microtask): the 1 Hz tick is
       // a low-frequency callback, not a command path.
       if (!_replaying && _remainingTime % 5 == 0) {
-        markMatchStateDirty();
-        _persistMatchState();
+        _flushMatchStateNow();
       }
     }
 
@@ -535,9 +562,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       disconnectAll();
     } else if (_numberOfPlaying > 0) {
       stopAll(true);
-      // Master STOP changes module state without touching the match clock;
-      // mark dirty (flag only, off the command path) so the snapshot tracks it.
-      markMatchStateDirty();
+      // Master STOP clears penalties and changes module state without touching
+      // the match clock, so the heartbeat may not be running; schedule a flush
+      // (off the command path) so a crash right after STOP can't restore stale
+      // penalties.
+      _markDirtyFlush();
     } else {
       if (!_isGameRunning &&
           (currentStage == MatchStage.firstHalf ||
@@ -658,8 +687,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         // flush ONCE now — otherwise a crash right after a warm resume would
         // persist the stale pre-background freeze point and over-credit time on
         // the next cold resume.
-        markMatchStateDirty();
-        _persistMatchState();
+        _flushMatchStateNow();
       }
     }
   }
@@ -937,6 +965,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _remainingTime = seconds.clamp(1, periodTime);
     notifyListeners();
     _broadcastStageAndTime();
+    // A manual clock correction changes the exact freeze point cold resume
+    // restores; persist it (off the hot path — the editor is only open while
+    // the clock is stopped) so a crash before the next event can't lose it.
+    _markDirtyFlush();
   }
 
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;

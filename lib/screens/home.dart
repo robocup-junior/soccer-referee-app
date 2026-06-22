@@ -779,7 +779,7 @@ void setupGameCallbacks(Game game, BuildContext context) {
                     onPressed: () async {
                       final confirmed = await _confirmDiscardMatch(dialogContext);
                       if (confirmed == true) {
-                        game.discardPendingMatch();
+                        await game.discardPendingMatch();
                         if (dialogContext.mounted) {
                           Navigator.of(dialogContext).pop();
                         }

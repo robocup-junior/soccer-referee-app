@@ -370,6 +370,7 @@ class Module with ChangeNotifier {
   }
 
   void playOrDamage() {
+    _clearRestoreSuppress();
     _lastState = _state;
     if (_penaltyTime > 0) {
       _playStatus(false);
@@ -382,9 +383,11 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    _game.markMatchStateDirty();
   }
 
   void play() async {
+    _clearRestoreSuppress();
     _lastState = _state;
     _playStatus(true);
     _penaltyTime = 0;
@@ -392,9 +395,11 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    _game.markMatchStateDirty();
   }
 
   void playOrDamageAll() async {
+    _clearRestoreSuppress();
     _lastState = _state;
     if (_penaltyTime > 0) {
       _playStatus(false);
@@ -412,9 +417,11 @@ class Module with ChangeNotifier {
       // Send it one more time with acknowledgment to ensure all modules are in play state
       bleSendPlay();
     }
+    _game.markMatchStateDirty();
   }
 
   void playAll() async {
+    _clearRestoreSuppress();
     _lastState = _state;
     _playStatus(true);
     _penaltyTime = 0;
@@ -428,6 +435,16 @@ class Module with ChangeNotifier {
     }
     // Send it one more time with acknowledgment to ensure all modules are in play state
     bleSendPlay();
+    _game.markMatchStateDirty();
+  }
+
+  // Cancel a pending cold-resume restore suppression: once the referee starts a
+  // robot (any START path), subsequent reconnect bleNotify()s must reflect the
+  // real state, not a lingering STOP. Without this a late reconnect after START
+  // would STOP an already-playing robot (the play START path does not itself
+  // call bleNotify, so it would not otherwise consume the one-shot).
+  void _clearRestoreSuppress() {
+    _suppressNextRestoreNotify = false;
   }
 
   void stopAll(bool removePenalty, {bool force = false}) async {
@@ -447,6 +464,7 @@ class Module with ChangeNotifier {
           await Future.delayed(const Duration(milliseconds: 100));
         }
     }
+    _game.markMatchStateDirty();
   }
 
   void stop() {
@@ -470,6 +488,7 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    _game.markMatchStateDirty();
   }
 
   void penalty(int seconds) {
@@ -500,6 +519,7 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    _game.markMatchStateDirty();
   }
 
   void halfTimeSyncTime() {
@@ -516,6 +536,7 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    _game.markMatchStateDirty();
   }
 
 
@@ -593,6 +614,8 @@ class Module with ChangeNotifier {
   int get penaltyTime => _penaltyTime;
   ModuleState get state => _state;
   ModuleState get lastState => _lastState;
+  @visibleForTesting
+  bool get suppressNextRestoreNotify => _suppressNextRestoreNotify;
 
   void setLabel(String label) {
     _label = label.trim();
@@ -601,8 +624,11 @@ class Module with ChangeNotifier {
     // bleSendName() self-guards on connection, so this is a no-op otherwise.
     // (Not in the START/STOP critical path — fire-and-forget is fine.)
     unawaited(bleSendName());
-    // A module label is recoverable state; mark dirty so the snapshot tracks it.
-    _game.markMatchStateDirty();
+    // A module label is recoverable state. Schedule a flush (not just a dirty
+    // flag): labels are typically edited pre-match while the clock is stopped,
+    // when the heartbeat isn't running, so a bare flag could be lost on a crash.
+    // Off the START/STOP hot path, so the scheduled flush is fine.
+    _game.markMatchStateDirtyAndFlush();
   }
 
   void applyPresetConfig(String macAddress, String label) {

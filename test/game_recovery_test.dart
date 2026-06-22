@@ -185,6 +185,32 @@ void main() {
       game.dispose();
     });
 
+    testWidgets('referee START clears the per-module restore-notify one-shot',
+        (tester) async {
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 300,
+        modules: [_moduleSnap(id: 0, state: 'play', lastState: 'play')],
+      ));
+      final game = Game();
+      await settleLoad(tester);
+
+      game.resumePendingMatch();
+      await tester.pump();
+      final m0 = game.teams[0].modules[0];
+      expect(m0.suppressNextRestoreNotify, isTrue,
+          reason: 'armed by restore so a frozen-window reconnect stays stopped');
+
+      // A referee START path must cancel the suppression synchronously, so a
+      // LATE reconnect after START reflects the real (playing) state instead of
+      // sending a stale STOP.
+      m0.playOrDamageAll();
+      expect(m0.suppressNextRestoreNotify, isFalse);
+
+      await tester.pump(const Duration(milliseconds: 400)); // drain fan-out
+      game.dispose();
+    });
+
     testWidgets('half-time resume keeps the break clock running (not skipped)',
         (tester) async {
       await persist(_snap(stage: 'halfTime', remainingTime: 90));
@@ -236,9 +262,8 @@ void main() {
       await settleLoad(tester);
       expect(game.pendingResume, isNotNull);
 
-      game.discardPendingMatch();
+      await game.discardPendingMatch(); // awaits the clear (tombstone + remove)
       await tester.pump();
-      await tester.pump(); // let the async clear() (tombstone + remove) land
 
       expect(game.pendingResume, isNull);
       expect(game.getScore('A'), 0);
@@ -264,6 +289,35 @@ void main() {
       final snapshot = MatchStateStore(prefs).load();
       expect(snapshot, isNotNull);
       expect(snapshot!.teams.firstWhere((t) => t.id == 'A').score, 1);
+      game.dispose();
+    });
+
+    testWidgets('a manual remaining-time edit persists', (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+
+      game.currentStage = MatchStage.firstHalf;
+      game.setRemainingTime(123);
+      await tester.pump();
+      await tester.pump();
+
+      final loaded = MatchStateStore(prefs).load();
+      expect(loaded, isNotNull);
+      expect(loaded!.remainingTime, 123);
+      game.dispose();
+    });
+
+    testWidgets('clearMatchSnapshot removes the snapshot (e.g. Settings reset)',
+        (tester) async {
+      await persist(_snap(remainingTime: 200));
+      final game = Game();
+      await settleLoad(tester);
+
+      game.clearMatchSnapshot();
+      await tester.pump();
+      await tester.pump();
+
+      expect(MatchStateStore(prefs).load(), isNull);
       game.dispose();
     });
   });
