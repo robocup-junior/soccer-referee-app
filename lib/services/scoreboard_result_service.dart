@@ -154,7 +154,7 @@ class ScoreboardResultService with ChangeNotifier {
         return null;
       }
       final token = Uri.decodeComponent(uri.pathSegments[1]).trim();
-      if (token.isEmpty || uri.host.isEmpty) return null;
+      if (token.isEmpty || !_isAllowedHttpsHost(uri.host)) return null;
       return (
         token: token,
         baseUri: Uri(
@@ -190,10 +190,19 @@ class ScoreboardResultService with ChangeNotifier {
 
   bool _isAllowedDebugBaseUri(Uri uri) {
     final host = uri.host.toLowerCase();
+    final ipv4Private = RegExp(
+      r'^(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})$',
+    );
     return host == 'localhost' ||
         host == '127.0.0.1' ||
         host == '::1' ||
-        host == '10.0.2.2';
+        host == '10.0.2.2' ||
+        ipv4Private.hasMatch(host);
+  }
+
+  bool _isAllowedHttpsHost(String host) {
+    final normalizedHost = host.toLowerCase();
+    return normalizedHost == _defaultBaseUri.host;
   }
 
   Future<void> refreshMatchConfig() async {
