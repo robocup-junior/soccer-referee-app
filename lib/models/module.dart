@@ -616,6 +616,7 @@ class Module with ChangeNotifier {
   bool get hasCustomLabel => _label != null && _label!.isNotEmpty;
   int get penaltyTime => _penaltyTime;
   ModuleState get state => _state;
+  @visibleForTesting
   ModuleState get lastState => _lastState;
   @visibleForTesting
   bool get suppressNextRestoreNotify => _suppressNextRestoreNotify;
