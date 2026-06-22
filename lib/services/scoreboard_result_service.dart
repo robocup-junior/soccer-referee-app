@@ -14,7 +14,7 @@ class ScoreboardResultService with ChangeNotifier {
   static const _prefsOutboxKey = 'scoreboard_result_outbox';
   static const _prefsMatchKey = 'scoreboard_match_config';
   static const _bearerScheme = '\u0042earer';
-  static const _fallbackLinkScheme = 'rcjrefmate';
+  static const _customLinkScheme = 'rcjrefmate';
   static final Uri _defaultBaseUri = Uri.https('scoreboard.junior.robocup.org');
   static const _retryInterval = Duration(seconds: 20);
 
@@ -148,6 +148,10 @@ class ScoreboardResultService with ChangeNotifier {
     await refreshMatchConfig();
   }
 
+  /// Parses HTTPS referee links and the custom `rcjrefmate://r/<token>` links.
+  ///
+  /// Returns `null` for unsupported schemes/hosts/formats, and returns the
+  /// extracted token + resolved base URI for valid links.
   ({String token, Uri baseUri})? _parseDeepLink(Uri uri) {
     if (uri.scheme == 'https') {
       if (uri.pathSegments.length < 2 || uri.pathSegments.first != 'r') {
@@ -165,7 +169,7 @@ class ScoreboardResultService with ChangeNotifier {
       );
     }
 
-    if (uri.scheme != _fallbackLinkScheme) return null;
+    if (uri.scheme != _customLinkScheme) return null;
 
     if (uri.host != 'r' || uri.pathSegments.isEmpty) return null;
 
@@ -190,19 +194,33 @@ class ScoreboardResultService with ChangeNotifier {
 
   bool _isAllowedDebugBaseUri(Uri uri) {
     final host = uri.host.toLowerCase();
-    final ipv4Private = RegExp(
-      r'^(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})$',
-    );
     return host == 'localhost' ||
         host == '127.0.0.1' ||
         host == '::1' ||
         host == '10.0.2.2' ||
-        ipv4Private.hasMatch(host);
+        _isPrivateIpv4Host(host);
   }
 
   bool _isAllowedHttpsHost(String host) {
     final normalizedHost = host.toLowerCase();
     return normalizedHost == _defaultBaseUri.host;
+  }
+
+  bool _isPrivateIpv4Host(String host) {
+    final parts = host.split('.');
+    if (parts.length != 4) return false;
+
+    final octets = <int>[];
+    for (final part in parts) {
+      final value = int.tryParse(part);
+      if (value == null || value < 0 || value > 255) return false;
+      octets.add(value);
+    }
+
+    if (octets[0] == 10) return true;
+    if (octets[0] == 192 && octets[1] == 168) return true;
+    if (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) return true;
+    return false;
   }
 
   Future<void> refreshMatchConfig() async {
