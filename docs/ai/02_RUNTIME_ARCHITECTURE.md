@@ -68,8 +68,38 @@ BLE connection lifecycle per module:
        └── bleSendCurrentState() → bleSendName() + bleSendScore() + bleNotify()
 5. On disconnected event:
    ├── _isConnected = false
-   └── notifyListeners() — NO automatic reconnect
+   ├── bleStatus = _connectIntent ? 'Connecting...' : 'Disconnected'
+   └── auto-reconnect (see "Auto-reconnect policy" below)
 ```
+
+### Auto-reconnect policy (match-aware) — issues #34/#38
+
+When a connection drops *while we still intend to be connected* (`_connectIntent`
+is true — i.e. the user did not disconnect), the module schedules a reconnect
+after 2 s. The number of attempts is bounded **by match state, not a fixed
+count**:
+
+- **During a match** (`_game.currentStage` is `firstHalf` / `halfTime` /
+  `secondHalf`, and pre-match setup): reconnection is **unbounded** — it retries
+  forever until the module returns. This is essential: a penalised robot is
+  powered off for ~1 min and the halftime break is ~5 min, and the module must
+  reconnect the instant it comes back with no referee action. A module that is
+  genuinely dead mid-match is dismissed via the manual **Cancel** button, not by
+  auto-giving-up.
+- **After the match is over** (`MatchStage.fullTime`): the `_maxReconnectAttempts`
+  (5) cap applies. `_reconnectAttempts` is only incremented post-match, so
+  full-time starts with a fresh budget; once spent, the module calls
+  `bleDisconnect()` (tears down the OS autoConnect, clears intent, shows
+  "Disconnected"). This stops modules powered down for good after the match from
+  looping forever.
+
+> History: PR #42 (issue #38) first added a *fixed* 5-attempt cap that applied
+> always. That broke live use (it abandoned penalised/halftime modules after
+> ~10 s), so the cap was made match-aware — unbounded in-match, bounded only at
+> full time. The robot-stop safety guarantee does **not** depend on this; it
+> lives in the module firmware's BLE supervision timeout (link-layer).
+
+Implementation: `Module._registerBleSubscriber` in `lib/models/module.dart`.
 
 ### START/STOP command flow (LATENCY-CRITICAL)
 

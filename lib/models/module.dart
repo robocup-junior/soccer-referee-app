@@ -57,7 +57,10 @@ class Module with ChangeNotifier {
   // Lets a device-level disconnect read as "Connecting..." (still trying) rather
   // than "Disconnected", until the user explicitly disconnects.
   bool _connectIntent = false;
-  // Bounded reconnect attempts when a connection drops unintentionally.
+  // Post-match reconnect cap. Reconnection is unbounded DURING a match (modules
+  // are powered off on purpose for penalties/halftime and must come back); this
+  // cap only applies once the match is over (MatchStage.fullTime). See the
+  // reconnect logic in _registerBleSubscriber.
   static const int _maxReconnectAttempts = 5;
   int _reconnectAttempts = 0;
   BluetoothDevice? bleDevice;
@@ -564,29 +567,41 @@ class Module with ChangeNotifier {
         notifyListeners();
         debugPrint('disconnect');
 
-        // Auto-reconnect: if we still intend to be connected and the module is
-        // enabled, increment the counter and schedule a bounded reconnect after
-        // 2s. A stale scheduled reconnect racing a user disconnect is prevented
-        // by the delayed callback's own _connectIntent/_isEnabled/!_isConnected
-        // gate and by bleConnect()'s post-delay `!_connectIntent` re-check — not
-        // by the top-of-function already-connected guard. The sibling else-if
-        // handles exhaustion (see its comment).
+        // Auto-reconnect. While we still intend to be connected and the module
+        // is enabled, schedule a reconnect after 2s. A stale scheduled reconnect
+        // racing a user disconnect is prevented by the delayed callback's own
+        // _connectIntent/_isEnabled/!_isConnected gate and by bleConnect()'s
+        // post-delay `!_connectIntent` re-check.
+        //
+        // Match-aware bounding: during a live match a module is routinely
+        // powered off ON PURPOSE — a penalised robot serves ~1 min off and the
+        // halftime break is ~5 min — and must reconnect the instant it returns
+        // with no referee intervention. So reconnection is UNBOUNDED until the
+        // match is over. The _maxReconnectAttempts cap (and the give-up that
+        // settles the UI to "Disconnected") applies ONLY once the match has
+        // ended (MatchStage.fullTime), so a module powered down for good after
+        // the match eventually stops looping instead of retrying forever. A
+        // genuinely-dead module mid-match is handled by the manual Cancel
+        // button, not by auto-giving-up. The counter is only incremented
+        // post-match so full-time starts with a fresh attempt budget.
+        final bool matchOver = _game.currentStage == MatchStage.fullTime;
         if (_connectIntent && _isEnabled &&
-            _reconnectAttempts < _maxReconnectAttempts) {
-          _reconnectAttempts++;
+            (!matchOver || _reconnectAttempts < _maxReconnectAttempts)) {
+          if (matchOver) _reconnectAttempts++;
           Future.delayed(const Duration(seconds: 2), () {
             if (_connectIntent && _isEnabled && !_isConnected) {
               bleConnect();
             }
           });
-        } else if (_reconnectAttempts >= _maxReconnectAttempts) {
-          // Give up. Delegate to bleDisconnect() (fire-and-forget) so there is a
-          // single teardown routine: it tears down the OS-level autoConnect that
+        } else if (matchOver && _reconnectAttempts >= _maxReconnectAttempts) {
+          // Match over and the post-match retry budget is spent — give up.
+          // Delegate to bleDisconnect() (fire-and-forget) so there is a single
+          // teardown routine: it tears down the OS-level autoConnect that
           // connect(autoConnect:true) installed, clears intent, resets the retry
           // budget, sets "Disconnected", and cancels this subscription. Without
           // that teardown the module could silently reconnect later behind a
           // "Disconnected" UI and start obeying play/stop again.
-          debugPrint('reconnect exhausted after $_maxReconnectAttempts attempts');
+          debugPrint('reconnect exhausted after $_maxReconnectAttempts post-match attempts');
           bleDisconnect();
         }
       } else if (state == BluetoothConnectionState.connected) {
