@@ -8,6 +8,7 @@ Cross-platform **Android + iOS (iPhone)** Flutter app (portrait-only) that contr
 2. **Double-tap/long-press safety**: All destructive UI actions (play/stop all, score, timer toggle, disconnect) use `onDoubleTap`. Do not change them to `onTap`.
 3. **Provider tree integrity**: `Game`, both `Team`s, and all 10 `Module`s are registered as `ChangeNotifierProvider` in `main.dart`. The module provider list is static. Do not restructure provider registration without understanding this.
 4. **Portrait-only**: `SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp])` is set in `main()`. Do not remove.
+5. **BLE auto-reconnect is match-aware (NOT a bug)**: per-module auto-reconnect retries **indefinitely while a match is in progress** — modules are powered off *on purpose* (a penalised robot for ~1 min, the halftime break for ~5 min) and must rejoin the instant they return, with no referee action. The `_maxReconnectAttempts` cap applies **only after the match ends** (`MatchStage.fullTime`). A module stuck on "Connecting…" mid-match is intended; a genuinely-dead one is dismissed via the manual **Cancel** button. **Do not add a fixed reconnect cap that applies during the match.** See `Module._registerBleSubscriber` and `docs/ai/02_RUNTIME_ARCHITECTURE.md` ("Auto-reconnect policy").
 
 ## Toolchain versions (as of 2026-06-01, shipped in Play release 0.9.8)
 - Flutter: **3.44.0** / Dart 3.12 — upgraded (was 3.22.2); gives 16 kB page alignment
