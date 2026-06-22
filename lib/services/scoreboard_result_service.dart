@@ -152,6 +152,8 @@ class ScoreboardResultService with ChangeNotifier {
   ///
   /// Returns `null` for unsupported schemes/hosts/formats, and returns the
   /// extracted token + resolved base URI for valid links.
+  /// Example (debug only base override):
+  /// rcjrefmate://r/abc123?base_url=http%3A%2F%2F10.0.2.2%3A8080
   ({String token, Uri baseUri})? _parseDeepLink(Uri uri) {
     if (uri.scheme == 'https') {
       if (uri.pathSegments.length < 2 || uri.pathSegments.first != 'r') {
@@ -179,12 +181,14 @@ class ScoreboardResultService with ChangeNotifier {
     final rawBaseUrl = uri.queryParameters['base_url']?.trim();
     if (kDebugMode && rawBaseUrl != null && rawBaseUrl.isNotEmpty) {
       final decodedBase = Uri.decodeComponent(rawBaseUrl);
-      final parsedBase = Uri.tryParse(decodedBase);
-      if (parsedBase != null &&
-          parsedBase.host.isNotEmpty &&
-          (parsedBase.scheme == 'http' || parsedBase.scheme == 'https') &&
-          _isAllowedDebugBaseUri(parsedBase)) {
-        baseUri = parsedBase.replace(path: '', query: null, fragment: null);
+      if (decodedBase.contains('://')) {
+        final parsedBase = Uri.tryParse(decodedBase);
+        if (parsedBase != null &&
+            parsedBase.host.isNotEmpty &&
+            (parsedBase.scheme == 'http' || parsedBase.scheme == 'https') &&
+            _isAllowedDebugBaseUri(parsedBase)) {
+          baseUri = parsedBase.replace(path: '', query: null, fragment: null);
+        }
       }
     }
 
@@ -194,6 +198,7 @@ class ScoreboardResultService with ChangeNotifier {
 
   bool _isAllowedDebugBaseUri(Uri uri) {
     final host = uri.host.toLowerCase();
+    // Debug-only local hosts; any port is allowed for local test servers.
     return host == 'localhost' ||
         host == '127.0.0.1' ||
         host == '::1' ||
@@ -217,6 +222,7 @@ class ScoreboardResultService with ChangeNotifier {
       octets.add(value);
     }
 
+    // RFC 1918: 10.0.0.0/8, 192.168.0.0/16, 172.16.0.0/12.
     if (octets[0] == 10) return true;
     if (octets[0] == 192 && octets[1] == 168) return true;
     if (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31) return true;
