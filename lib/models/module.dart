@@ -479,6 +479,9 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    // Penalty given is a discrete recoverable event; mark the match state dirty
+    // so the snapshot captures it (the flush rides the heartbeat / next event).
+    _game.markMatchStateDirty();
   }
 
   void _askForPenalty() {
@@ -589,6 +592,7 @@ class Module with ChangeNotifier {
   bool get hasCustomLabel => _label != null && _label!.isNotEmpty;
   int get penaltyTime => _penaltyTime;
   ModuleState get state => _state;
+  ModuleState get lastState => _lastState;
 
   void setLabel(String label) {
     _label = label.trim();
@@ -597,6 +601,8 @@ class Module with ChangeNotifier {
     // bleSendName() self-guards on connection, so this is a no-op otherwise.
     // (Not in the START/STOP critical path — fire-and-forget is fine.)
     unawaited(bleSendName());
+    // A module label is recoverable state; mark dirty so the snapshot tracks it.
+    _game.markMatchStateDirty();
   }
 
   void applyPresetConfig(String macAddress, String label) {
