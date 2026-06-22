@@ -754,12 +754,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
   }
 
+  /// Publish team info (names + IDs) to MQTT. Delegates to
+  /// [_broadcastTeamInfo] so the fan-out stays consistent across all call
+  /// sites. Note: team info is MQTT-only — unlike score, it is not mirrored
+  /// to the BLE bridge.
   void notifyMQTT() {
-    // mqttService.publishGameState(currentStage);
-    // mqttService.publishTime(_remainingTime);
-    mqttService.publishTeamNames(teams);
-    // mqttService.publishTeam(teams);
-    // mqttService.publishScore(teams);
+    _broadcastTeamInfo();
   }
 
   GamePreset createPreset(String name) {
