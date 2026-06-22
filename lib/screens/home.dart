@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:rcj_scoreboard/screens/module_settings.dart';
@@ -10,6 +12,9 @@ import 'package:flutter/services.dart';
 import 'package:rcj_scoreboard/screens/settings.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
 import 'package:rcj_scoreboard/widgets/critical_gesture_detector.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:rcj_scoreboard/services/ble_adapter_monitor.dart';
+import 'package:rcj_scoreboard/screens/widgets/bluetooth_banner.dart';
 
 class Home extends StatelessWidget {
   const Home({super.key});
@@ -111,6 +116,19 @@ class Home extends StatelessWidget {
             padding: const EdgeInsets.all(8.0),
             child: Column(
               children: <Widget>[
+                Consumer<BleAdapterMonitor>(
+                  builder: (context, monitor, _) => BluetoothBanner(
+                    state: monitor.state,
+                    // FlutterBluePlus.turnOn() is Android-only; on iOS it throws
+                    // and the OS forbids toggling the radio from an app, so we
+                    // offer no button there (the banner hint guides the user).
+                    onTurnOn: (!kIsWeb && Platform.isAndroid)
+                        ? () {
+                            FlutterBluePlus.turnOn().catchError((_) {});
+                          }
+                        : null,
+                  ),
+                ),
                 Expanded(
                   flex: 6,
                   child: Row(

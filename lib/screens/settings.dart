@@ -194,7 +194,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                             ? 'Connecting...'
                                             : bridgeState ==
                                                     BridgeConnectionState.error
-                                                ? 'Error'
+                                                ? (widget.game.bleBridgeService.lastErrorMessage ?? 'Error')
                                                 : 'Disconnected',
                                   ),
                                   SettingInputField(
