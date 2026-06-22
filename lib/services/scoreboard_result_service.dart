@@ -166,27 +166,13 @@ class ScoreboardResultService with ChangeNotifier {
 
     if (uri.scheme != _fallbackLinkScheme) return null;
 
-    final pathSegments = uri.pathSegments;
-    String token = '';
+    if (uri.host != 'r' || uri.pathSegments.isEmpty) return null;
+
+    final token = Uri.decodeComponent(uri.pathSegments.first).trim();
     Uri? baseUri;
 
-    if (uri.host == 'r' && pathSegments.isNotEmpty) {
-      token = Uri.decodeComponent(pathSegments.first).trim();
-    } else if (pathSegments.length >= 2 && pathSegments.first == 'r') {
-      token = Uri.decodeComponent(pathSegments[1]).trim();
-      if (uri.host.isNotEmpty) {
-        baseUri = Uri(
-          scheme: 'https',
-          host: uri.host,
-          port: uri.hasPort ? uri.port : null,
-        );
-      }
-    } else {
-      return null;
-    }
-
     final rawBaseUrl = uri.queryParameters['base_url']?.trim();
-    if (rawBaseUrl != null && rawBaseUrl.isNotEmpty) {
+    if (kDebugMode && rawBaseUrl != null && rawBaseUrl.isNotEmpty) {
       final decodedBase = Uri.decodeComponent(rawBaseUrl);
       final parsedBase = Uri.tryParse(decodedBase);
       if (parsedBase != null &&
@@ -197,9 +183,7 @@ class ScoreboardResultService with ChangeNotifier {
     }
 
     if (token.isEmpty) return null;
-    final resolvedBase = baseUri ?? _baseUri;
-    if (resolvedBase.host.isEmpty) return null;
-    return (token: token, baseUri: resolvedBase);
+    return (token: token, baseUri: baseUri ?? _baseUri);
   }
 
   Future<void> refreshMatchConfig() async {
