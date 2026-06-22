@@ -198,7 +198,6 @@ class ScoreboardResultService with ChangeNotifier {
   }
 
   bool _isAllowedLocalDebugBaseUri(Uri uri) {
-    assert(kDebugMode);
     final host = uri.host.toLowerCase();
     // Debug-only local hosts; any port is allowed for local test servers.
     return host == 'localhost' ||
@@ -219,7 +218,6 @@ class ScoreboardResultService with ChangeNotifier {
 
     final octets = <int>[];
     for (final part in parts) {
-      if (part.length > 1 && part.startsWith('0')) return false;
       final value = int.tryParse(part);
       if (value == null || value < 0 || value > 255) return false;
       octets.add(value);
