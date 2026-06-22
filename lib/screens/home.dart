@@ -16,8 +16,44 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/services/ble_adapter_monitor.dart';
 import 'package:rcj_scoreboard/screens/widgets/bluetooth_banner.dart';
 
-class Home extends StatelessWidget {
+class Home extends StatefulWidget {
   const Home({super.key});
+
+  @override
+  State<Home> createState() => _HomeState();
+}
+
+class _HomeState extends State<Home> {
+  bool _didSetupCallbacks = false;
+  Game? _game;
+  void Function()? _switchOrderCallback;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Set up model callbacks once. Using didChangeDependencies (not initState)
+    // ensures BuildContext is valid for showDialog. The _didSetupCallbacks flag
+    // is what enforces once-only (didChangeDependencies can fire repeatedly);
+    // the stable Game provider instance is what makes that guard safe. Read with
+    // listen:false — this is a one-time install, not a subscription (build()
+    // establishes the real listening relationship).
+    if (!_didSetupCallbacks) {
+      _didSetupCallbacks = true;
+      _game = Provider.of<Game>(context, listen: false);
+      _switchOrderCallback = setupGameCallbacks(_game!, context);
+    }
+  }
+
+  @override
+  void dispose() {
+    // Clear the dialog callback we installed so the long-lived Game does not
+    // retain a closure capturing this disposed State's context. Guard on
+    // identity so we never clear a newer Home's callback.
+    if (identical(_game?.onRequestSwitchTeamOrderDialog, _switchOrderCallback)) {
+      _game?.onRequestSwitchTeamOrderDialog = null;
+    }
+    super.dispose();
+  }
 
   void _navigateToSettings(context, Game game) async {
     final updatedGame = await Navigator.push<Game>(
@@ -78,7 +114,6 @@ class Home extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final game = Provider.of<Game>(context);
-    setupGameCallbacks(game, context);
 
     return PopScope(
       canPop: false,
@@ -690,8 +725,14 @@ class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
   }
 }
 
-void setupGameCallbacks(Game game, BuildContext context) {
-  game.onRequestSwitchTeamOrderDialog = () async {
+/// Installs the half-time "switch team order" dialog callback on [game] and
+/// returns the exact closure assigned, so the caller can clear it on dispose
+/// (the closure captures [context]).
+void Function() setupGameCallbacks(Game game, BuildContext context) {
+  // A local function declaration (not a `final ... = () {}` variable) to satisfy
+  // the analyzer's prefer_function_declarations_over_variables lint, which CI
+  // runs as fatal (`flutter analyze --fatal-infos`).
+  void callback() async {
     bool? switchOrder = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -734,7 +775,9 @@ void setupGameCallbacks(Game game, BuildContext context) {
     if (switchOrder == true) {
       game.toggleTeamOrder(); // Switch team order
     }
-  };
+  }
+  game.onRequestSwitchTeamOrderDialog = callback;
+  return callback;
 }
 
 Future<bool> _showExitDialog(BuildContext context) async {
