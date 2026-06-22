@@ -11,13 +11,56 @@ import 'package:rcj_scoreboard/models/module.dart';
 import 'package:flutter/services.dart';
 import 'package:rcj_scoreboard/screens/settings.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
+import 'package:rcj_scoreboard/widgets/critical_gesture_detector.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/services/ble_adapter_monitor.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
 import 'package:rcj_scoreboard/screens/widgets/bluetooth_banner.dart';
 
-class Home extends StatelessWidget {
+class Home extends StatefulWidget {
   const Home({super.key});
+
+  @override
+  State<Home> createState() => _HomeState();
+}
+
+class _HomeState extends State<Home> {
+  bool _didSetupCallbacks = false;
+  Game? _game;
+  void Function()? _switchOrderCallback;
+  void Function()? _resumeCallback;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Set up model callbacks once. Using didChangeDependencies (not initState)
+    // ensures BuildContext is valid for showDialog. The _didSetupCallbacks flag
+    // is what enforces once-only (didChangeDependencies can fire repeatedly);
+    // the stable Game provider instance is what makes that guard safe. Read with
+    // listen:false — this is a one-time install, not a subscription (build()
+    // establishes the real listening relationship).
+    if (!_didSetupCallbacks) {
+      _didSetupCallbacks = true;
+      _game = Provider.of<Game>(context, listen: false);
+      final callbacks = setupGameCallbacks(_game!, context);
+      _switchOrderCallback = callbacks.switchOrder;
+      _resumeCallback = callbacks.resume;
+    }
+  }
+
+  @override
+  void dispose() {
+    // Clear the dialog callbacks we installed so the long-lived Game does not
+    // retain closures capturing this disposed State's context. Guard on
+    // identity so we never clear a newer Home's callback.
+    if (identical(_game?.onRequestSwitchTeamOrderDialog, _switchOrderCallback)) {
+      _game?.onRequestSwitchTeamOrderDialog = null;
+    }
+    if (identical(_game?.onRequestResumeMatch, _resumeCallback)) {
+      _game?.onRequestResumeMatch = null;
+    }
+    super.dispose();
+  }
 
   void _navigateToSettings(context, Game game) async {
     final updatedGame = await Navigator.push<Game>(
@@ -78,7 +121,6 @@ class Home extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final game = Provider.of<Game>(context);
-    setupGameCallbacks(game, context);
 
     return PopScope(
       canPop: false,
@@ -151,23 +193,19 @@ class Home extends StatelessWidget {
                             Text(game.gameStageString),
                             SizedBox(
                               width: double.infinity,
-                              child: GestureDetector(
-                                onDoubleTap: () {
-                                  game.toggleTimer();
-                                },
-                                child: ElevatedButton(
-                                  onPressed: () {},
-                                  style: ElevatedButton.styleFrom(
-                                    //minimumSize: const Size(120, 50),
-                                    backgroundColor: (game.isGameRunning
-                                        ? (game.isTimerRunning
-                                            ? AppColors.red
-                                            : AppColors.green)
-                                        : AppColors.green),
-                                  ),
-                                  child: Text(game.timerButtonText,
-                                      style: const TextStyle(color: Colors.white)),
+                              child: CriticalButton(
+                                singleTap: game.singleTapEnabled,
+                                onAction: () => game.toggleTimer(),
+                                style: ElevatedButton.styleFrom(
+                                  //minimumSize: const Size(120, 50),
+                                  backgroundColor: (game.isGameRunning
+                                      ? (game.isTimerRunning
+                                          ? AppColors.red
+                                          : AppColors.green)
+                                      : AppColors.green),
                                 ),
+                                child: Text(game.timerButtonText,
+                                    style: const TextStyle(color: Colors.white)),
                               ),
                             )
                           ],
@@ -210,31 +248,27 @@ class Home extends StatelessWidget {
                     margin: const EdgeInsets.all(4.0),
                     width: double.infinity,
                     //height: 70.0,
-                    child: GestureDetector(
-                      onDoubleTap: () {
-                        game.toggleAllModules();
-                      },
-                      child: ElevatedButton(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor:
-                              (game.currentStage == MatchStage.fullTime
-                                  ? AppColors.blue
-                                  : (game.isSomeonePlaying
-                                      ? AppColors.red
-                                      : AppColors.green)),
-                          // shape: RoundedRectangleBorder(
-                          //   borderRadius: BorderRadius.circular(30.0),
-                          // )
-                        ),
-                        child: Text(
-                            game.currentStage == MatchStage.fullTime
-                                ? 'DISCONNECT ALL ROBOTS'
+                    child: CriticalButton(
+                      singleTap: game.singleTapEnabled,
+                      onAction: () => game.toggleAllModules(),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor:
+                            (game.currentStage == MatchStage.fullTime
+                                ? AppColors.blue
                                 : (game.isSomeonePlaying
-                                    ? 'STOP ALL ROBOTS'
-                                    : 'START ALL ROBOTS'),
-                            style: const TextStyle(color: Colors.white)),
-                        onPressed: () {},
+                                    ? AppColors.red
+                                    : AppColors.green)),
+                        // shape: RoundedRectangleBorder(
+                        //   borderRadius: BorderRadius.circular(30.0),
+                        // )
                       ),
+                      child: Text(
+                          game.currentStage == MatchStage.fullTime
+                              ? 'DISCONNECT ALL ROBOTS'
+                              : (game.isSomeonePlaying
+                                  ? 'STOP ALL ROBOTS'
+                                  : 'START ALL ROBOTS'),
+                          style: const TextStyle(color: Colors.white)),
                     ),
                   ),
                 ),
@@ -253,8 +287,9 @@ Widget buildModuleButton(Module module, Game game) {
     child: Consumer<Module>(
       builder: (context, module, child) {
         return Expanded(
-          child: GestureDetector(
-            onDoubleTap: () {
+          child: CriticalGestureDetector(
+            singleTap: game.singleTapEnabled,
+            onAction: () {
               if (module.isPlaying) {
                 if (game.isGameRunning) {
                   module.penalty(game.penaltyTime);
@@ -321,8 +356,9 @@ Widget buildTeamContainer(Team team, Game game) {
     value: team,
     child: Consumer<Team>(
       builder: (context, team, child) {
-        return GestureDetector(
-          onDoubleTap: () {
+        return CriticalGestureDetector(
+          singleTap: game.singleTapEnabled,
+          onAction: () {
             team.addScore(1);
             game.stopAll(true);
             game.notifyModulesScore();
@@ -698,8 +734,15 @@ class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
   }
 }
 
-void setupGameCallbacks(Game game, BuildContext context) {
-  game.onRequestSwitchTeamOrderDialog = () async {
+/// Installs the half-time "switch team order" dialog and the cold-resume prompt
+/// callbacks on [game], returning the exact closures assigned so the caller can
+/// clear them on dispose (both capture [context]).
+({void Function() switchOrder, void Function() resume}) setupGameCallbacks(
+    Game game, BuildContext context) {
+  // A local function declaration (not a `final ... = () {}` variable) to satisfy
+  // the analyzer's prefer_function_declarations_over_variables lint, which CI
+  // runs as fatal (`flutter analyze --fatal-infos`).
+  void callback() async {
     bool? switchOrder = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
@@ -742,15 +785,18 @@ void setupGameCallbacks(Game game, BuildContext context) {
     if (switchOrder == true) {
       game.toggleTeamOrder(); // Switch team order
     }
-  };
+  }
+  game.onRequestSwitchTeamOrderDialog = callback;
 
   // Cold-resume prompt (#45). Non-destructive: Resume is the prominent default;
   // Discard requires a deliberate second confirmation so a stray tap can never
   // wipe an in-progress match (double-tap safety invariant). The dialog is
-  // non-dismissible (no barrier/back-button escape into neither path).
-  game.onRequestResumeMatch = () {
-    // The draining setter may invoke this synchronously from within build()
-    // (setupGameCallbacks runs in Home.build), so defer to after the frame —
+  // non-dismissible (no barrier/back-button escape into neither path). A named
+  // function declaration (not a `final x = () {}` variable) to satisfy the
+  // analyzer's prefer_function_declarations_over_variables lint (fatal in CI).
+  void resumeCallback() {
+    // The draining setter may invoke this synchronously while callbacks are
+    // installed in didChangeDependencies, so defer to after the frame —
     // showDialog() during build throws.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final snapshot = game.pendingResume;
@@ -810,7 +856,10 @@ void setupGameCallbacks(Game game, BuildContext context) {
       ),
       );
     });
-  };
+  }
+  game.onRequestResumeMatch = resumeCallback;
+
+  return (switchOrder: callback, resume: resumeCallback);
 }
 
 String _resumeMatchBody(MatchSnapshot snapshot) {

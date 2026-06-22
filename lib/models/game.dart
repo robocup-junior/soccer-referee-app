@@ -26,13 +26,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   static const String _halfTimeDurationKey = 'game_halftime_duration';
   static const String _numberOfPlayersKey = 'game_num_players';
   static const String _penaltyTimeKey = 'game_penalty_time';
+  static const String _singleTapEnabledKey = 'gesture_single_tap_enabled';
   static const String _notifPermissionRequestedKey =
       'notif_permission_requested';
 
   String timerButtonText = 'START';
   final int _maxPlayer = 5;
   List<Team> teams = [];
-  int _numberOfPLayers = 2;
+  int _numberOfPlayers = 2;
   int _remainingTime = 0;
   int _penaltyTime = 60;
   int _periodTime = 600;
@@ -50,6 +51,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   // threshold crossed while backgrounded buzzes at once on return). State, MQTT
   // and module updates still run during replay.
   bool _replaying = false;
+  // Single-tap gesture mode (issue #12). Default false => double-tap everywhere,
+  // preserving the accidental-touch protection invariant. _pendingSingleTapWrite
+  // guards the load-timing race: _loadPrefs() runs unawaited, so a toggle made
+  // before it resolves must not be clobbered by the stored default (see setter
+  // and _loadPrefs).
+  bool _singleTapEnabled = false;
+  bool _pendingSingleTapWrite = false;
   SharedPreferences? _prefs;
 
   // ---- Match cold-resume persistence (#45) ----
@@ -128,9 +136,18 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _stateStore = MatchStateStore(_prefs!);
     _periodTime = _prefs!.getInt(_periodTimeKey) ?? 600;
     _halfTimeDuration = _prefs!.getInt(_halfTimeDurationKey) ?? 300;
-    _numberOfPLayers =
+    _numberOfPlayers =
         (_prefs!.getInt(_numberOfPlayersKey) ?? 2).clamp(1, _maxPlayer).toInt();
     _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? 60;
+
+    // Single-tap pref: flush a pre-load toggle if one happened, otherwise adopt
+    // the stored value. Reading unconditionally would clobber an early toggle.
+    if (_pendingSingleTapWrite) {
+      _prefs!.setBool(_singleTapEnabledKey, _singleTapEnabled);
+      _pendingSingleTapWrite = false;
+    } else {
+      _singleTapEnabled = _prefs!.getBool(_singleTapEnabledKey) ?? false;
+    }
 
     // Load any in-progress-match snapshot BEFORE the bootstrap gameInit() so the
     // bootstrap can't clobber it. gameInit() no longer clears the snapshot, and
@@ -185,7 +202,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     for (var team in teams) {
       team.score = 0;
       for (var i = 0; i < _maxPlayer; i++) {
-        i < numberOfPLayers
+        i < numberOfPlayers
             ? team.modules[i].enable()
             : team.modules[i].disable();
         team.modules[i].init();
@@ -760,6 +777,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
+    mqttService.dispose();
+    bleBridgeService.dispose();
+    wakelockService.dispose();
     super.dispose();
   }
 
@@ -899,8 +919,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _numberOfPlaying += add;
 
     if (_numberOfPlaying < 0) _numberOfPlaying = 0;
-    if (_numberOfPlaying > numberOfPLayers * 2) {
-      _numberOfPlaying = numberOfPLayers * 2;
+    if (_numberOfPlaying > numberOfPlayers * 2) {
+      _numberOfPlaying = numberOfPlayers * 2;
     }
 
     if (_numberOfPlaying < 2) notifyListeners();
@@ -944,15 +964,31 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _prefs?.setInt(_periodTimeKey, value);
   }
 
+  // Single-tap gesture mode (issue #12). Unlike periodTime, this setter MUST
+  // notifyListeners() so the Home control buttons swap their gesture recognizer
+  // live on toggle. The pending-write guard handles a toggle made before
+  // _loadPrefs() resolves (see _loadPrefs).
+  bool get singleTapEnabled => _singleTapEnabled;
+  set singleTapEnabled(bool value) {
+    if (_singleTapEnabled == value) return;
+    _singleTapEnabled = value;
+    if (_prefs != null) {
+      _prefs!.setBool(_singleTapEnabledKey, value);
+    } else {
+      _pendingSingleTapWrite = true;
+    }
+    notifyListeners();
+  }
+
   int get halfTimeDuration => _halfTimeDuration;
   set halfTimeDuration(int value) {
     _halfTimeDuration = value;
     _prefs?.setInt(_halfTimeDurationKey, value);
   }
 
-  int get numberOfPLayers => _numberOfPLayers;
-  set numberOfPLayers(int value) {
-    _numberOfPLayers = value;
+  int get numberOfPlayers => _numberOfPlayers;
+  set numberOfPlayers(int value) {
+    _numberOfPlayers = value;
     _prefs?.setInt(_numberOfPlayersKey, value);
   }
 
@@ -1029,12 +1065,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _markDirtyFlush();
   }
 
+  /// Publish team info (names + IDs) to MQTT. Delegates to
+  /// [_broadcastTeamInfo] so the fan-out stays consistent across all call
+  /// sites. Note: team info is MQTT-only — unlike score, it is not mirrored
+  /// to the BLE bridge.
   void notifyMQTT() {
-    // mqttService.publishGameState(currentStage);
-    // mqttService.publishTime(_remainingTime);
-    mqttService.publishTeamNames(teams);
-    // mqttService.publishTeam(teams);
-    // mqttService.publishScore(teams);
+    _broadcastTeamInfo();
   }
 
   GamePreset createPreset(String name) {
