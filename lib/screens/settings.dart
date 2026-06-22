@@ -520,6 +520,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             );
                           },
                         ),
+                        AnimatedBuilder(
+                          animation: widget.game,
+                          builder: (context, child) {
+                            return SettingsSection(
+                              title: 'Controls',
+                              locked: false,
+                              settings: [
+                                SettingSwitch(
+                                  title: 'Single-tap actions',
+                                  subtitle:
+                                      'Off by default. When on, start/stop, '
+                                      'scoring and robot controls fire on a '
+                                      'single tap — removes the accidental-touch '
+                                      'protection.',
+                                  value: widget.game.singleTapEnabled,
+                                  onChanged: (value) {
+                                    widget.game.singleTapEnabled = value;
+                                  },
+                                ),
+                              ],
+                            );
+                          },
+                        ),
                         const SettingsSection(
                           title: 'About',
                           locked: false,
@@ -893,11 +916,13 @@ class SettingSwitch extends StatelessWidget {
   final String title;
   final bool value;
   final ValueChanged<bool> onChanged;
+  final String? subtitle;
 
   const SettingSwitch({
     required this.title,
     required this.value,
     required this.onChanged,
+    this.subtitle,
     super.key,
   });
 
@@ -907,8 +932,26 @@ class SettingSwitch extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 8.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Expanded(flex: 5, child: Text(title)),
+          Expanded(
+            flex: 5,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title),
+                if (subtitle != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4.0),
+                    child: Text(
+                      subtitle!,
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ),
+              ],
+            ),
+          ),
           Expanded(
             flex: 2,
             child: Switch(

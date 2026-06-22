@@ -5,7 +5,7 @@ Cross-platform **Android + iOS (iPhone)** Flutter app (portrait-only) that contr
 
 ## Critical invariants — never violate these
 1. **Robot START/STOP latency**: `bleSendPlayAll()` and `bleSendStopAll()` use `timeout:0` (fire-and-forget) and are launched without `await` so all modules fire simultaneously. Never add awaits, blocking calls, queues, or synchronization that could delay or serialize robot commands.
-2. **Double-tap/long-press safety**: All destructive UI actions (play/stop all, score, timer toggle, disconnect) use `onDoubleTap`. Do not change them to `onTap`.
+2. **Double-tap/long-press safety**: All destructive UI actions (play/stop all, score, timer toggle, disconnect) default to `onDoubleTap`. The gesture is now routed through `CriticalGestureDetector`/`criticalButtonGestures` so a user-facing Settings toggle (`Game.singleTapEnabled`, **default `false`**) can opt into single-tap. Never hardcode these sites back to a bare `onTap`, and never change the default away from double-tap — only the explicit opt-in may relax it.
 3. **Provider tree integrity**: `Game`, both `Team`s, and all 10 `Module`s are registered as `ChangeNotifierProvider` in `main.dart`. The module provider list is static. Do not restructure provider registration without understanding this.
 4. **Portrait-only**: `SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp])` is set in `main()`. Do not remove.
 
@@ -35,6 +35,7 @@ Cross-platform **Android + iOS (iPhone)** Flutter app (portrait-only) that contr
 | `lib/services/ble_bridge_service.dart` | BLE scoreboard bridge: MQTT-over-BLE publish, dedup queue, write-with-response ACK |
 | `lib/models/bridge_message.dart` | `BridgeMessage` framing (`topic\x00value`) + `BridgeTopics` names |
 | `lib/services/match_data.dart` | HTTP fetch of match schedule |
+| `lib/widgets/critical_gesture_detector.dart` | `CriticalGestureDetector` + `criticalButtonGestures` — single/double-tap gating for critical actions |
 | `lib/screens/home.dart` | Main control UI |
 | `lib/screens/settings.dart` | All settings (MQTT, game params, match data) |
 | `lib/screens/module_settings.dart` | Per-module BLE connect/scan/QR |
