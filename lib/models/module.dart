@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/services/error_messages.dart';
+import 'package:rcj_scoreboard/services/match_state_store.dart';
 
 
 enum ModuleState {
@@ -51,6 +52,14 @@ class Module with ChangeNotifier {
   bool _isConnected = false;
   bool _isPlaying = false;
   int _penaltyTime = 0;
+  // One-shot set by [restoreFromSnapshot] on a cold-resume restore. The FIRST
+  // post-restore [bleNotify] (fired seconds later from the reconnect's
+  // connected-event, so a synchronous game-scoped flag would already be cleared)
+  // consumes it and sends at most a STOP — never play/damage — so a robot can't
+  // auto-PLAY or self-release its penalty while the match clock is frozen. It is
+  // per-module so each module's own late reconnect is covered, and one-shot so
+  // it can't linger and suppress the referee's later START.
+  bool _suppressNextRestoreNotify = false;
   String macAddress = '';
   String bleStatus = 'Disconnected';
   // True while we want to be connected (connect tapped, autoConnect active).
@@ -83,6 +92,18 @@ class Module with ChangeNotifier {
   }
 
   void bleNotify() async {
+    if (_suppressNextRestoreNotify) {
+      // First reconnect after a cold-resume restore: keep the robot stopped
+      // regardless of the restored _state (esp. a restored `damage` module),
+      // so its penalty countdown does not start while the match clock is
+      // frozen. The referee's double-tap START re-arms play/damage with time.
+      try {
+        await bleSendStop();
+      } finally {
+        _suppressNextRestoreNotify = false;
+      }
+      return;
+    }
     switch (_state) {
       case ModuleState.play:
         await bleSendPlay();
@@ -594,6 +615,74 @@ class Module with ChangeNotifier {
     setBleDevice(BluetoothDevice.fromId(newMac));
     if (_isEnabled) {
       bleConnect();
+    }
+  }
+
+  // ---- Cold-resume snapshot / restore (#45) ----
+
+  /// Capture this module's recoverable state for the match snapshot.
+  ModuleSnapshot toSnapshot() => ModuleSnapshot(
+        moduleId: moduleId,
+        isEnabled: _isEnabled,
+        macAddress: macAddress,
+        customLabel: hasCustomLabel ? _label : null,
+        state: _state.name,
+        lastState: _lastState.name,
+        penaltyTime: _penaltyTime,
+      );
+
+  /// Restore this module from a cold-resume snapshot. Ordering matters:
+  ///   1. apply `isEnabled` first — `disable()` disconnects and
+  ///      `applyPresetConfig` only reconnects when enabled, so the flag must be
+  ///      correct before the reconnect step;
+  ///   2. set the normalized state/penalty and arm the restore-notify one-shot;
+  ///   3. re-establish the BLE device (a cold kill built a fresh Module with no
+  ///      device), reusing the preset-load path for the auto-reconnect.
+  void restoreFromSnapshot(ModuleSnapshot s) {
+    if (s.isEnabled) {
+      enable();
+    } else {
+      disable();
+    }
+
+    _penaltyTime = s.penaltyTime;
+    // Normalize play/halfTime/fullTime -> stop for BOTH _state and _lastState:
+    // a restored `play` _state would make the reconnect bleNotify() emit
+    // bleSendPlay() (auto-PLAY), and a `play` _lastState would make the
+    // single-tap Module.stop() (switches on _lastState) a silent no-op. Keep
+    // damage/stop as-is.
+    _state = _normalizeRestoredState(_parseState(s.state));
+    _lastState = _normalizeRestoredState(_parseState(s.lastState));
+    _suppressNextRestoreNotify = true;
+
+    if (s.isEnabled && s.macAddress.isNotEmpty) {
+      // applyPresetConfig() sets the label, builds the device and reconnects.
+      // It takes a non-null label, hence `?? ''` (an empty label resolves to
+      // the default name via the `name` getter).
+      applyPresetConfig(s.macAddress, s.customLabel ?? '');
+    } else {
+      // Not reconnecting: still record the MAC (for a later manual connect) and
+      // apply the label, mirroring applyPresetConfig's always-apply-label rule.
+      macAddress = s.macAddress;
+      setLabel(s.customLabel ?? '');
+    }
+    notifyListeners();
+  }
+
+  ModuleState _parseState(String name) => ModuleState.values.firstWhere(
+        (s) => s.name == name,
+        orElse: () => ModuleState.stop,
+      );
+
+  ModuleState _normalizeRestoredState(ModuleState state) {
+    switch (state) {
+      case ModuleState.damage:
+        return ModuleState.damage;
+      case ModuleState.stop:
+      case ModuleState.play:
+      case ModuleState.halfTime:
+      case ModuleState.fullTime:
+        return ModuleState.stop;
     }
   }
 
