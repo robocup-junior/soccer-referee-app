@@ -153,7 +153,7 @@ class ScoreboardResultService with ChangeNotifier {
   /// Returns `null` for unsupported schemes/hosts/formats, and returns the
   /// extracted token + resolved base URI for valid links.
   /// Example (debug only base override):
-  /// rcjrefmate://r/abc123?base_url=http%3A%2F%2F10.0.2.2%3A8080
+  /// rcjrefmate://r/abc123?base_url=http://10.0.2.2:8080
   ({String token, Uri baseUri})? _parseDeepLink(Uri uri) {
     if (uri.scheme == 'https') {
       if (uri.pathSegments.length < 2 || uri.pathSegments.first != 'r') {
@@ -180,10 +180,9 @@ class ScoreboardResultService with ChangeNotifier {
 
     final rawBaseUrl = uri.queryParameters['base_url']?.trim();
     if (kDebugMode && rawBaseUrl != null && rawBaseUrl.isNotEmpty) {
-      final decodedBase = Uri.decodeComponent(rawBaseUrl);
-      if (decodedBase.startsWith('http://') ||
-          decodedBase.startsWith('https://')) {
-        final parsedBase = Uri.tryParse(decodedBase);
+      if (rawBaseUrl.startsWith('http://') ||
+          rawBaseUrl.startsWith('https://')) {
+        final parsedBase = Uri.tryParse(rawBaseUrl);
         if (parsedBase != null &&
             parsedBase.host.isNotEmpty &&
             (parsedBase.scheme == 'http' || parsedBase.scheme == 'https') &&
@@ -203,13 +202,14 @@ class ScoreboardResultService with ChangeNotifier {
     return host == 'localhost' ||
         host == '127.0.0.1' ||
         host == '::1' ||
+        // Android emulator alias for host machine loopback.
         host == '10.0.2.2' ||
         _isPrivateIpv4Host(host);
   }
 
   bool _isAllowedHttpsHost(String host) {
     final normalizedHost = host.toLowerCase();
-    return normalizedHost == _defaultBaseUri.host;
+    return normalizedHost == _defaultBaseUri.host.toLowerCase();
   }
 
   bool _isPrivateIpv4Host(String host) {
