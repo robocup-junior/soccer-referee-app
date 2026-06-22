@@ -30,10 +30,12 @@ class WakelockService with ChangeNotifier {
     notifyListeners();
   }
 
-  void _applyWakelock() {
+  Future<void> _applyWakelock() async {
     if (kIsWeb) return;
+    // WakelockPlus.toggle returns a Future whose PlatformException surfaces
+    // asynchronously, so it must be awaited inside the try to be caught.
     try {
-      WakelockPlus.toggle(enable: _enabled);
+      await WakelockPlus.toggle(enable: _enabled);
     } catch (e) {
       debugPrint('WakelockService: toggle(enable: $_enabled) failed: $e');
     }
@@ -42,11 +44,11 @@ class WakelockService with ChangeNotifier {
   @override
   void dispose() {
     if (!kIsWeb) {
-      try {
-        WakelockPlus.disable();
-      } catch (e) {
-        debugPrint('WakelockService: disable() on dispose failed: $e');
-      }
+      // dispose() can't be async/awaited, so attach catchError to swallow the
+      // asynchronously-delivered PlatformException instead of a sync try/catch.
+      WakelockPlus.disable().catchError(
+        (e) => debugPrint('WakelockService: disable() on dispose failed: $e'),
+      );
     }
     super.dispose();
   }

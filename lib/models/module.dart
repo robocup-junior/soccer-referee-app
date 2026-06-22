@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/models/game.dart';
+import 'package:rcj_scoreboard/services/error_messages.dart';
 
 
 enum ModuleState {
@@ -124,10 +125,10 @@ class Module with ChangeNotifier {
       await bleDevice?.connect(autoConnect:true, mtu: null);
     } catch (e) {
       // Gave up — drop the connect intent (parity with the bridge) so a stray
-      // event can never flip "Connection error" back to "Connecting...".
+      // event can never flip the message back to "Connecting...".
       _connectIntent = false;
-      bleStatus = 'Connection error';
-      debugPrint('BLE connect error');
+      bleStatus = describeError(e).message;
+      debugPrint('BLE connect error: $e');
       subscription?.cancel();
     }
     notifyListeners();
@@ -140,14 +141,14 @@ class Module with ChangeNotifier {
     var service = services.where((element) => element.uuid == Guid.fromString(_serviceUUID));
     if (service.isEmpty) {
       debugPrint('Required service not found');
-      bleDisconnect();
+      bleDisconnect(reason: "Couldn't find robot service");
       return false;
     }
 
     var characteristic = service.firstOrNull?.characteristics.where((element) => element.uuid == Guid.fromString(_characteristicUUIDTX) || element.uuid == Guid.fromString(_characteristicUUIDRX));
     if (characteristic == null || characteristic.isEmpty) {
       debugPrint('Required characteristics not found');
-      bleDisconnect();
+      bleDisconnect(reason: 'Robot is missing expected data channel');
       return false;
     }
 
@@ -316,7 +317,7 @@ class Module with ChangeNotifier {
   }
 
 
-  void bleDisconnect() async {
+  void bleDisconnect({String? reason}) async {
     // Note: no `!isConnected` guard. While autoConnect is still retrying the
     // device is NOT connected, yet we must still call disconnect() to cancel
     // that pending retry loop and clear the connect intent — otherwise a dead
@@ -333,7 +334,7 @@ class Module with ChangeNotifier {
     // reads "Disconnected" rather than "Connecting...".
     _connectIntent = false;
     _isConnected = false;
-    bleStatus = 'Disconnected';
+    bleStatus = reason ?? 'Disconnected';
 
     notifyListeners();
 
