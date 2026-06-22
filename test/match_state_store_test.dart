@@ -151,6 +151,21 @@ void main() {
           reason: 'cleared match must stay cleared even if a stale save lands');
     });
 
+    test('a new save after an unawaited clear wins (latest intent)', () async {
+      final store = MatchStateStore(prefs);
+      await store.save(_sampleSnapshot());
+      // Discard then immediately start a NEW match, both unawaited (as the app
+      // does via _clearMatchState/_persistMatchState). The later save is the
+      // genuine latest intent and must survive — the clear must not wipe it.
+      final clear = store.clear();
+      final save = store.save(_sampleSnapshot(remainingTime: 77));
+      await Future.wait([clear, save]);
+      final loaded = store.load();
+      expect(loaded, isNotNull,
+          reason: 'the newer save must win over the prior clear');
+      expect(loaded!.remainingTime, 77);
+    });
+
     test('tombstone rejects a stale snapshot that beat the clear to disk',
         () async {
       final store = MatchStateStore(prefs);

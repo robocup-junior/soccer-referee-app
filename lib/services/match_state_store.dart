@@ -97,6 +97,11 @@ class MatchSnapshot {
   final int version;
   final String stage; // MatchStage.name
   final int remainingTime; // the freeze point (heartbeat-maintained)
+  // Captured at save time for diagnostics/forward-compat only. The restore path
+  // (Game.resumePendingMatch) deliberately does NOT consult these: a cold resume
+  // always freezes the clock (or resumes the half-time break) and derives the
+  // button label from the stage, so honoring a persisted isTimeRunning=true
+  // would auto-run a half and violate the never-auto-PLAY invariant.
   final bool isTimeRunning; // whether the clock was running at save time
   final bool inGame;
   final String timerButtonText;
@@ -190,18 +195,25 @@ class MatchStateStore {
   }
 
   /// Enqueue a clear in the SAME stream (not a side API): bump the generation,
-  /// persist the tombstone immediately so a crash can't lose it, and drop any
-  /// pending save.
+  /// record the clear intent in the pending slot, persist the tombstone (so a
+  /// crash can't lose it), and drop any pending save.
+  ///
+  /// The intent is recorded **before** the `await`: otherwise a `save()` racing
+  /// in during the tombstone write (the app calls both unawaited) would stamp
+  /// the already-bumped generation, drain a snapshot, and then be wiped when the
+  /// resumed clear set its pending slot — losing a newer match. Recording first
+  /// makes the genuinely-last caller win (latest-intent semantics).
   Future<void> clear() async {
     _generation++;
+    _pendingIsClear = true;
+    _pendingSnapshot = null;
+    _pendingGeneration = _generation;
+    _hasPending = true;
     try {
       await _prefs.setInt(_tombstoneKey, _generation);
     } catch (e) {
       debugPrint('MatchStateStore.clear tombstone write failed: $e');
     }
-    _pendingIsClear = true;
-    _pendingSnapshot = null;
-    _hasPending = true;
     return _drain();
   }
 
