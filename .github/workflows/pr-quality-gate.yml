@@ -72,16 +72,21 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-api34-v1
+          key: avd-api34-pixel6-v1
 
       # First run on a cache miss: create the AVD and save a boot snapshot.
       - name: Create AVD snapshot
         if: steps.avd-cache.outputs.cache-hit != 'true'
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          # API 34 matches the device the harness was verified on in PR #46.
+          # API 34 + Pixel 6 profile match the device the harness was verified
+          # on in PR #46. The profile matters: the default AVD is a short
+          # 320x640 screen on which Home's portrait Column overflows (Flutter
+          # treats an overflow as a thrown error → test failure). A real phone
+          # profile gives the vertical space the layout expects.
           api-level: 34
           arch: x86_64
+          profile: pixel_6
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
@@ -92,6 +97,7 @@ jobs:
         with:
           api-level: 34
           arch: x86_64
+          profile: pixel_6
           force-avd-creation: false
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
