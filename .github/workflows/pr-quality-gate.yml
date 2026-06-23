@@ -87,7 +87,7 @@ jobs:
             ~/.android/avd/*
             ~/.android/adb*
           # Key tracks the AVD config (bump -vN to force a fresh snapshot).
-          key: avd-${{ env.EMULATOR_API_LEVEL }}-${{ env.EMULATOR_PROFILE }}-v1
+          key: avd-${{ env.EMULATOR_API_LEVEL }}-${{ env.EMULATOR_ARCH }}-${{ env.EMULATOR_PROFILE }}-v1
 
       # On a cache miss, create the AVD; android-emulator-runner saves its
       # state on exit, which actions/cache then stores via the `path` above so
