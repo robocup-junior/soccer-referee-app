@@ -101,6 +101,8 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
-          # The booted emulator is the only attached device, so `flutter test`
-          # auto-selects it. Runs everything under integration_test/.
-          script: flutter test integration_test
+          # Pin to the emulator explicitly — android-emulator-runner always
+          # boots it on port 5554 as `emulator-5554`. `flutter test` can prompt
+          # for a target when more than one is selectable (the repo has a web/
+          # target), which would hang this non-interactive step.
+          script: flutter test integration_test -d emulator-5554
