@@ -45,6 +45,17 @@ jobs:
     # Fail fast if the emulator wedges or `flutter test` hangs, rather than
     # holding a runner for GitHub's 6h default job timeout on a stuck gate.
     timeout-minutes: 30
+    # One source of truth for the AVD definition. The snapshot-create and
+    # test-run steps below must describe the SAME device, or the cached
+    # snapshot won't match the AVD the tests boot on — and the cache key is
+    # derived from these so a bump auto-invalidates the old snapshot.
+    # Pixel 6 / API 34 match the device PR #46 was verified on; the default
+    # AVD is a short 320x640 screen on which Home's portrait Column overflows
+    # (Flutter raises an overflow as a thrown error → test failure).
+    env:
+      EMULATOR_API_LEVEL: 34
+      EMULATOR_ARCH: x86_64
+      EMULATOR_PROFILE: pixel_6
     steps:
       - uses: actions/checkout@v4
 
@@ -75,21 +86,19 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-api34-pixel6-v1
+          # Key tracks the AVD config (bump -vN to force a fresh snapshot).
+          key: avd-${{ env.EMULATOR_API_LEVEL }}-${{ env.EMULATOR_PROFILE }}-v1
 
-      # First run on a cache miss: create the AVD and save a boot snapshot.
+      # On a cache miss, create the AVD; android-emulator-runner saves its
+      # state on exit, which actions/cache then stores via the `path` above so
+      # later runs restore it instead of cold-booting.
       - name: Create AVD snapshot
         if: steps.avd-cache.outputs.cache-hit != 'true'
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          # API 34 + Pixel 6 profile match the device the harness was verified
-          # on in PR #46. The profile matters: the default AVD is a short
-          # 320x640 screen on which Home's portrait Column overflows (Flutter
-          # treats an overflow as a thrown error → test failure). A real phone
-          # profile gives the vertical space the layout expects.
-          api-level: 34
-          arch: x86_64
-          profile: pixel_6
+          api-level: ${{ env.EMULATOR_API_LEVEL }}
+          arch: ${{ env.EMULATOR_ARCH }}
+          profile: ${{ env.EMULATOR_PROFILE }}
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
@@ -98,9 +107,9 @@ jobs:
       - name: Run integration tests
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 34
-          arch: x86_64
-          profile: pixel_6
+          api-level: ${{ env.EMULATOR_API_LEVEL }}
+          arch: ${{ env.EMULATOR_ARCH }}
+          profile: ${{ env.EMULATOR_PROFILE }}
           force-avd-creation: false
           emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
