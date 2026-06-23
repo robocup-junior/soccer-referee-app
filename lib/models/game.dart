@@ -212,6 +212,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           stopAll(true);
           timerButtonText = 'REPEAT';
           gameOverAll();
+          // The match is over: stop the OS autoConnect from chasing modules
+          // that are powered down for good (e.g. a unit still off from a
+          // late penalty). In-match these reconnect unbounded on purpose; at
+          // full time we settle the ones still off to "Disconnected".
+          disconnectInactiveModules();
           break;
         default:
           debugPrint('unknown match stage');
@@ -500,6 +505,20 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // later consuming GATT slots after the referee asked to disconnect.
       for (var module in team.modules.where(
           (module) => module.isEnabled && (module.isConnected || module.isConnecting))) {
+        module.bleDisconnect();
+      }
+    }
+  }
+
+  // Tear down modules that are mid-reconnect (off / "Connecting...") so the OS
+  // autoConnect installed by connect(autoConnect:true) stops chasing a unit
+  // that is powered down for good. Connected modules are left alone (they show
+  // game-over until the referee disconnects). Used at the full-time transition
+  // — during a match these reconnects are unbounded on purpose (invariant #5).
+  void disconnectInactiveModules() {
+    for (var team in teams) {
+      for (var module in team.modules.where(
+          (module) => module.isEnabled && module.isConnecting)) {
         module.bleDisconnect();
       }
     }

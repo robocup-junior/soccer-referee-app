@@ -57,12 +57,6 @@ class Module with ChangeNotifier {
   // Lets a device-level disconnect read as "Connecting..." (still trying) rather
   // than "Disconnected", until the user explicitly disconnects.
   bool _connectIntent = false;
-  // Post-match reconnect cap. Reconnection is unbounded DURING a match (modules
-  // are powered off on purpose for penalties/halftime and must come back); this
-  // cap only applies once the match is over (MatchStage.fullTime). See the
-  // reconnect logic in _registerBleSubscriber.
-  static const int _maxReconnectAttempts = 5;
-  int _reconnectAttempts = 0;
   BluetoothDevice? bleDevice;
   StreamSubscription<BluetoothConnectionState>? subscription;
   // RX-notification listener. Held so it can be cancelled before a replacement
@@ -120,12 +114,6 @@ class Module with ChangeNotifier {
     if (bleDevice == null || bleDevice!.isConnected) return;
     //debugPrint('BLE connect222...........................');
 
-    // A fresh user-intended connect (intent not already set) starts the
-    // reconnect budget over. Delayed auto-reconnect calls re-enter bleConnect()
-    // with _connectIntent already true, so they keep counting toward the cap.
-    final bool freshConnect = !_connectIntent;
-    if (freshConnect) _reconnectAttempts = 0;
-
     // Set the intent BEFORE the pre-connect delay so a bleDisconnect() that runs
     // during the delay (user Cancel / disconnectAll) is observable when we
     // re-check below — otherwise this in-flight connect would revive autoConnect
@@ -148,30 +136,14 @@ class Module with ChangeNotifier {
       //bleStatus = 'Connecting...';
       await bleDevice?.connect(autoConnect:true, mtu: null);
     } catch (e) {
+      // The initial connect() failed — drop the connect intent (parity with the
+      // bridge) so a stray event can never flip the message back to
+      // "Connecting...". Reconnection of a module that DID connect is handled by
+      // connect(autoConnect:true) at the OS level, not by re-entering here.
+      _connectIntent = false;
+      bleStatus = describeError(e).message;
       debugPrint('BLE connect error: $e');
-      final bool matchOver = _game.currentStage == MatchStage.fullTime;
-      if (_connectIntent && _isEnabled && !matchOver) {
-        // In-match a transient connect() failure must NOT abandon reconnection
-        // (invariant #5: unbounded in-match reconnect). A thrown connect() may
-        // leave the connection-state stream with no further disconnect event to
-        // re-arm the scheduler, so keep the intent, stay on "Connecting...", and
-        // retry here after 2s. Only an explicit bleDisconnect() or post-fullTime
-        // exhaustion is allowed to give up.
-        bleStatus = 'Connecting...';
-        subscription?.cancel();
-        Future.delayed(const Duration(seconds: 2), () {
-          if (_connectIntent && _isEnabled && !_isConnected) {
-            bleConnect();
-          }
-        });
-      } else {
-        // Match over (or no longer intending/enabled) — drop the connect intent
-        // (parity with the bridge) so a stray event can never flip the message
-        // back to "Connecting...".
-        _connectIntent = false;
-        bleStatus = describeError(e).message;
-        subscription?.cancel();
-      }
+      subscription?.cancel();
     }
     notifyListeners();
 
@@ -369,20 +341,17 @@ class Module with ChangeNotifier {
     // module is stuck on "Connecting..." forever with no way out.
     if (bleDevice == null) return;
 
-    // Clear the connect intent *synchronously* before the async disconnect.
-    // The reconnect callback scheduled in _registerBleSubscriber gates on
-    // _connectIntent; if it fired during the await below it would re-enter
-    // bleConnect() and revive autoConnect after the user asked to disconnect.
-    // Also reset the reconnect budget so the next manual connect starts with a
-    // full set of attempts.
+    // Clear the connect intent *synchronously* before the async disconnect, so
+    // the disconnect event that disconnect() triggers reads as an intended
+    // "Disconnected" (not "Connecting...") and the OS autoConnect is not seen as
+    // something to keep showing as in-progress.
     _connectIntent = false;
     _isConnected = false;
-    _reconnectAttempts = 0;
     bleStatus = reason ?? 'Disconnected';
     notifyListeners();
 
-    // Cancel the connection-state listener BEFORE disconnecting so no
-    // disconnect event can re-enter the reconnect scheduler during teardown.
+    // Cancel the connection-state listener BEFORE disconnecting so the teardown
+    // disconnect event can't drive any further status work.
     // (Same cancel-first ordering as setBleDevice().)
     subscription?.cancel();
     _rxSubscription?.cancel();
@@ -574,12 +543,11 @@ class Module with ChangeNotifier {
     }
 
     // Swapping the device is a fresh-connection boundary: clear the old
-    // device's reconnect lifecycle so the new device starts with a full retry
-    // budget and no stale intent carries over (issue #38). Callers that want a
-    // connection call bleConnect() right after, which re-establishes intent.
+    // device's reconnect lifecycle so no stale intent carries over (issue #38).
+    // Callers that want a connection call bleConnect() right after, which
+    // re-establishes intent.
     _connectIntent = false;
     _isConnected = false;
-    _reconnectAttempts = 0;
 
      bleDevice = device;
 
@@ -593,52 +561,30 @@ class Module with ChangeNotifier {
       debugPrint('BLE device status: $state');
       if (state == BluetoothConnectionState.disconnected) {
         _isConnected = false;
-        // While we still intend to be connected (autoConnect is retrying in the
-        // background), report "Connecting..." instead of "Disconnected" — this
-        // also covers the initial disconnected event right after connect().
-        bleStatus = _connectIntent ? 'Connecting...' : 'Disconnected';
-        notifyListeners();
         debugPrint('disconnect');
 
-        // Auto-reconnect. While we still intend to be connected and the module
-        // is enabled, schedule a reconnect after 2s. A stale scheduled reconnect
-        // racing a user disconnect is prevented by the delayed callback's own
-        // _connectIntent/_isEnabled/!_isConnected gate and by bleConnect()'s
-        // post-delay `!_connectIntent` re-check.
+        // Reconnection is owned entirely by connect(autoConnect:true): the OS
+        // keeps retrying on the SAME GATT client, unbounded, until disconnect()
+        // is called. That is exactly the in-match behavior we need — a penalised
+        // robot (~1 min off) or a halftime power-down (~5 min) rejoins the
+        // instant it returns, with no referee action. We deliberately do NOT
+        // re-enter bleConnect() here: each call registers a fresh GATT clientIf
+        // without close()-ing the previous BluetoothGatt, leaking ~1 client per
+        // reconnect per module (device-verified on a Pixel 10) and exhausting
+        // Android's ~30-client ceiling within minutes of penalty/halftime
+        // cycling across 10 modules — a tournament-killer. See CLAUDE.md
+        // invariant #5 and docs/ai/02_RUNTIME_ARCHITECTURE.md.
         //
-        // Match-aware bounding: during a live match a module is routinely
-        // powered off ON PURPOSE — a penalised robot serves ~1 min off and the
-        // halftime break is ~5 min — and must reconnect the instant it returns
-        // with no referee intervention. So reconnection is UNBOUNDED until the
-        // match is over. The _maxReconnectAttempts cap (and the give-up that
-        // settles the UI to "Disconnected") applies ONLY once the match has
-        // ended (MatchStage.fullTime), so a module powered down for good after
-        // the match eventually stops looping instead of retrying forever. A
-        // genuinely-dead module mid-match is handled by the manual Cancel
-        // button, not by auto-giving-up. The counter is only incremented
-        // post-match so full-time starts with a fresh attempt budget.
-        final bool matchOver = _game.currentStage == MatchStage.fullTime;
-        if (_connectIntent && _isEnabled &&
-            (!matchOver || _reconnectAttempts < _maxReconnectAttempts)) {
-          if (matchOver) _reconnectAttempts++;
-          Future.delayed(const Duration(seconds: 2), () {
-            if (_connectIntent && _isEnabled && !_isConnected) {
-              bleConnect();
-            }
-          });
-        } else if (matchOver && _reconnectAttempts >= _maxReconnectAttempts) {
-          // Match over and the post-match retry budget is spent — give up.
-          // Delegate to bleDisconnect() (fire-and-forget) so there is a single
-          // teardown routine: it tears down the OS-level autoConnect that
-          // connect(autoConnect:true) installed, clears intent, resets the retry
-          // budget, sets "Disconnected", and cancels this subscription. Without
-          // that teardown the module could silently reconnect later behind a
-          // "Disconnected" UI and start obeying play/stop again.
-          debugPrint('reconnect exhausted after $_maxReconnectAttempts post-match attempts');
-          bleDisconnect();
-        }
+        // So this handler only reflects status: while we still intend to be
+        // connected, show "Connecting..." (also covers the initial disconnected
+        // event right after connect()). Post-match teardown of powered-down
+        // modules is a one-shot at the full-time transition
+        // (Game.disconnectInactiveModules), not a per-disconnect action here —
+        // doing it here would also tear down a fresh post-match connect on its
+        // initial disconnected event.
+        bleStatus = _connectIntent ? 'Connecting...' : 'Disconnected';
+        notifyListeners();
       } else if (state == BluetoothConnectionState.connected) {
-        _reconnectAttempts = 0;
         _isConnected = true;
         debugPrint('Connect');
         bleStatus = 'Connected';
