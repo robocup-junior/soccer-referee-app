@@ -68,38 +68,51 @@ BLE connection lifecycle per module:
        └── bleSendCurrentState() → bleSendName() + bleSendScore() + bleNotify()
 5. On disconnected event:
    ├── _isConnected = false
-   ├── bleStatus = _connectIntent ? 'Connecting...' : 'Disconnected'
-   └── auto-reconnect (see "Auto-reconnect policy" below)
+   └── bleStatus = _connectIntent ? 'Connecting...' : 'Disconnected'
+       (status only — reconnection is owned by the OS autoConnect; see policy)
 ```
 
-### Auto-reconnect policy (match-aware) — issues #34/#38
+### Auto-reconnect policy (autoConnect-only) — issues #34/#38
 
-When a connection drops *while we still intend to be connected* (`_connectIntent`
-is true — i.e. the user did not disconnect), the module schedules a reconnect
-after 2 s. The number of attempts is bounded **by match state, not a fixed
-count**:
+Reconnection is delegated entirely to the OS. `bleConnect()` calls
+`bleDevice.connect(autoConnect: true, mtu: null)` **once**; the platform then
+keeps retrying on the **same GATT client**, unbounded, until `disconnect()` is
+called. The `disconnected`-event handler in `_registerBleSubscriber` therefore
+only reflects status — it shows `"Connecting..."` while `_connectIntent` is true
+(the user did not disconnect) and `"Disconnected"` otherwise. **It does not
+schedule any reconnect.**
 
 - **During a match** (`_game.currentStage` is `firstHalf` / `halfTime` /
-  `secondHalf`, and pre-match setup): reconnection is **unbounded** — it retries
-  forever until the module returns. This is essential: a penalised robot is
-  powered off for ~1 min and the halftime break is ~5 min, and the module must
-  reconnect the instant it comes back with no referee action. A module that is
-  genuinely dead mid-match is dismissed via the manual **Cancel** button, not by
-  auto-giving-up.
-- **After the match is over** (`MatchStage.fullTime`): the `_maxReconnectAttempts`
-  (5) cap applies. `_reconnectAttempts` is only incremented post-match, so
-  full-time starts with a fresh budget; once spent, the module calls
-  `bleDisconnect()` (tears down the OS autoConnect, clears intent, shows
-  "Disconnected"). This stops modules powered down for good after the match from
-  looping forever.
+  `secondHalf`, plus pre-match setup): reconnection is **unbounded** — the OS
+  retries forever until the module returns. This is essential: a penalised robot
+  is powered off ~1 min and the halftime break is ~5 min, and the module must
+  reconnect the instant it comes back with no referee action. A genuinely-dead
+  module mid-match is dismissed via the manual **Cancel** button.
+- **At full time** (`MatchStage.fullTime`): `Game.disconnectInactiveModules()`
+  runs once at the `secondHalf → fullTime` transition and calls `bleDisconnect()`
+  on every module that is still off (`isConnecting`), tearing down the OS
+  autoConnect so it stops chasing a unit powered down for good. Connected
+  modules are left alone (they show game-over until the referee disconnects).
 
-> History: PR #42 (issue #38) first added a *fixed* 5-attempt cap that applied
-> always. That broke live use (it abandoned penalised/halftime modules after
-> ~10 s), so the cap was made match-aware — unbounded in-match, bounded only at
-> full time. The robot-stop safety guarantee does **not** depend on this; it
-> lives in the module firmware's BLE supervision timeout (link-layer).
+> History: PR #42 (issue #38) first added a *fixed* 5-attempt manual reconnect
+> cap, then made it *match-aware* (unbounded in-match, capped only at full time)
+> after the fixed cap abandoned penalised/halftime modules after ~10 s. But the
+> manual loop itself — re-calling `bleConnect()` → `connect(autoConnect:true)` on
+> each drop — was then **device-verified** (Pixel 10, 3 physical modules) to leak
+> ~1 GATT client per reconnect per module: each re-`connect()` registers a fresh
+> `clientIf` without `close()`-ing the previous `BluetoothGatt`. Across 10 modules
+> with repeated penalty/halftime power-cycling this exhausts Android's ~30-client
+> ceiling within minutes (`status 133` / "max clients") and fails the whole field
+> mid-match. `connect(autoConnect:true)` alone provides the same unbounded
+> reconnect with a flat, single-client footprint, so the manual loop and the
+> attempt cap were removed. **Do not re-introduce an app-level reconnect loop or
+> a per-attempt cap.** The robot-stop safety guarantee does **not** depend on any
+> of this; it lives in the module firmware's BLE supervision timeout (link-layer).
 
-Implementation: `Module._registerBleSubscriber` in `lib/models/module.dart`.
+Implementation: `Module._registerBleSubscriber` and `Module.bleConnect` in
+`lib/models/module.dart`; post-match teardown in `Game.disconnectInactiveModules`
+(`lib/models/game.dart`). The sibling `BleBridgeService` uses the same
+autoConnect-only model.
 
 ### START/STOP command flow (LATENCY-CRITICAL)
 
