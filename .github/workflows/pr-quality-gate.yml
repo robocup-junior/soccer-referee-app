@@ -32,3 +32,69 @@ jobs:
 
       - name: Build check
         run: flutter build bundle
+
+  # On-device smoke test (integration_test/) on a headless Android emulator.
+  # Gates the double-tap/single-tap safety invariant (CLAUDE.md #2) that the
+  # headless `flutter test` above cannot exercise (real gesture arena + the
+  # Settings → toggle → Home wiring). Gated behind quality-gate so a failed
+  # analyze/test/build never pays the (slower) emulator boot.
+  integration-test:
+    name: Integration Test (Android emulator)
+    runs-on: ubuntu-latest
+    needs: quality-gate
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # KVM hardware acceleration — without it the x86_64 emulator boots far
+      # slower (or falls back to ARM emulation). ubuntu-latest runners expose
+      # /dev/kvm; this just opens its permissions to the runner user.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # Cache the cold-booted AVD so most runs skip the multi-minute first boot.
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-api34-v1
+
+      # First run on a cache miss: create the AVD and save a boot snapshot.
+      - name: Create AVD snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          # API 34 matches the device the harness was verified on in PR #46.
+          api-level: 34
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "Generated AVD snapshot for caching."
+
+      - name: Run integration tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          # The booted emulator is the only attached device, so `flutter test`
+          # auto-selects it. Runs everything under integration_test/.
+          script: flutter test integration_test
