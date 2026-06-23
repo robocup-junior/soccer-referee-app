@@ -65,6 +65,13 @@ class Module with ChangeNotifier {
   int _reconnectAttempts = 0;
   BluetoothDevice? bleDevice;
   StreamSubscription<BluetoothConnectionState>? subscription;
+  // RX-notification listener. Held so it can be cancelled before a replacement
+  // is attached on reconnect (bleInitModule runs on every connected event) and
+  // on teardown — otherwise auto-reconnect would stack duplicate listeners that
+  // each deliver the same inbound message. Cancelling only drops the Dart
+  // subscription; it never turns the characteristic notification off on a live
+  // connection.
+  StreamSubscription<List<int>>? _rxSubscription;
   BluetoothCharacteristic? bleTX;
   BluetoothCharacteristic? bleRX;
 
@@ -141,12 +148,30 @@ class Module with ChangeNotifier {
       //bleStatus = 'Connecting...';
       await bleDevice?.connect(autoConnect:true, mtu: null);
     } catch (e) {
-      // Gave up — drop the connect intent (parity with the bridge) so a stray
-      // event can never flip the message back to "Connecting...".
-      _connectIntent = false;
-      bleStatus = describeError(e).message;
       debugPrint('BLE connect error: $e');
-      subscription?.cancel();
+      final bool matchOver = _game.currentStage == MatchStage.fullTime;
+      if (_connectIntent && _isEnabled && !matchOver) {
+        // In-match a transient connect() failure must NOT abandon reconnection
+        // (invariant #5: unbounded in-match reconnect). A thrown connect() may
+        // leave the connection-state stream with no further disconnect event to
+        // re-arm the scheduler, so keep the intent, stay on "Connecting...", and
+        // retry here after 2s. Only an explicit bleDisconnect() or post-fullTime
+        // exhaustion is allowed to give up.
+        bleStatus = 'Connecting...';
+        subscription?.cancel();
+        Future.delayed(const Duration(seconds: 2), () {
+          if (_connectIntent && _isEnabled && !_isConnected) {
+            bleConnect();
+          }
+        });
+      } else {
+        // Match over (or no longer intending/enabled) — drop the connect intent
+        // (parity with the bridge) so a stray event can never flip the message
+        // back to "Connecting...".
+        _connectIntent = false;
+        bleStatus = describeError(e).message;
+        subscription?.cancel();
+      }
     }
     notifyListeners();
 
@@ -179,7 +204,10 @@ class Module with ChangeNotifier {
     if (bleRX != null) {
       try {
         await bleRX!.setNotifyValue(true);
-        bleRX!.onValueReceived.listen((data) {
+        // Replace any previous listener so reconnects don't accumulate
+        // duplicate handlers for the same characteristic.
+        await _rxSubscription?.cancel();
+        _rxSubscription = bleRX!.onValueReceived.listen((data) {
           handleReceivedData(data);
         });
       } catch (e) {
@@ -357,6 +385,8 @@ class Module with ChangeNotifier {
     // disconnect event can re-enter the reconnect scheduler during teardown.
     // (Same cancel-first ordering as setBleDevice().)
     subscription?.cancel();
+    _rxSubscription?.cancel();
+    _rxSubscription = null;
 
     // Disconnect from device also disables auto connect
     await bleDevice?.disconnect();
@@ -535,9 +565,12 @@ class Module with ChangeNotifier {
     if (bleDevice != null) {
       debugPrint('try disconect previos one');
       bleDevice?.disconnect();
-      // Cancel the old device's connection-state listener so it can't drive
-      // reconnect work against a device we're replacing.
+      // Cancel the old device's connection-state and RX listeners so they can't
+      // drive reconnect work or duplicate-deliver messages against a device
+      // we're replacing.
       subscription?.cancel();
+      _rxSubscription?.cancel();
+      _rxSubscription = null;
     }
 
     // Swapping the device is a fresh-connection boundary: clear the old
