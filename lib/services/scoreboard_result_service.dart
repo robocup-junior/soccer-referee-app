@@ -31,7 +31,6 @@ class ScoreboardResultService with ChangeNotifier {
   ScoreboardMatchConfig? _matchConfig;
   List<ResultOutboxItem> _outbox = [];
   bool _isSubmitting = false;
-  bool _clearLinkedDataAfterProcessing = false;
   String _statusMessage = 'Waiting for referee app link';
 
   String _authValue(String token) => '$_bearerScheme $token';
@@ -328,7 +327,6 @@ class ScoreboardResultService with ChangeNotifier {
     _baseUri = _defaultBaseUri;
     _matchConfig = null;
     _outbox = [];
-    _clearLinkedDataAfterProcessing = false;
     _statusMessage = 'Waiting for referee app link';
 
     final prefs = _prefs;
@@ -357,9 +355,6 @@ class ScoreboardResultService with ChangeNotifier {
         await _submitItem(index, item);
       }
       if (_shouldClearLinkedDataAfterSubmission()) {
-        _clearLinkedDataAfterProcessing = true;
-      }
-      if (_clearLinkedDataAfterProcessing) {
         await clearLinkedMatchData();
       }
     } finally {

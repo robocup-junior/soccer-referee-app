@@ -529,8 +529,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   void _queueFinalResultSubmission() {
-    final homeGoals = _scoreByTeamId(_scoreboardHomeTeamId) ?? teams[0].score;
-    final awayGoals = _scoreByTeamId(_scoreboardAwayTeamId) ?? teams[1].score;
+    final config = scoreboardResultService.matchConfig;
+    if (config == null) return;
+
+    final defaultHomeTeamId = config.homeIsLeft ? 'A' : 'B';
+    final defaultAwayTeamId = config.homeIsLeft ? 'B' : 'A';
+    final homeGoals = _scoreByTeamId(_scoreboardHomeTeamId ?? defaultHomeTeamId) ?? 0;
+    final awayGoals = _scoreByTeamId(_scoreboardAwayTeamId ?? defaultAwayTeamId) ?? 0;
 
     unawaited(scoreboardResultService.enqueueFinalResult(
       homeGoals: homeGoals,
