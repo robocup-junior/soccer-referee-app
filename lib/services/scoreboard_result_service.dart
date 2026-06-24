@@ -31,6 +31,7 @@ class ScoreboardResultService with ChangeNotifier {
   ScoreboardMatchConfig? _matchConfig;
   List<ResultOutboxItem> _outbox = [];
   bool _isSubmitting = false;
+  bool _clearLinkedDataAfterProcessing = false;
   String _statusMessage = 'Waiting for referee app link';
 
   String _authValue(String token) => '$_bearerScheme $token';
@@ -322,6 +323,25 @@ class ScoreboardResultService with ChangeNotifier {
     await processOutbox();
   }
 
+  Future<void> clearLinkedMatchData() async {
+    _token = null;
+    _baseUri = _defaultBaseUri;
+    _matchConfig = null;
+    _outbox = [];
+    _clearLinkedDataAfterProcessing = false;
+    _statusMessage = 'Waiting for referee app link';
+
+    final prefs = _prefs;
+    if (prefs != null) {
+      await prefs.remove(_prefsTokenKey);
+      await prefs.remove(_prefsBaseUrlKey);
+      await prefs.remove(_prefsMatchKey);
+      await prefs.remove(_prefsOutboxKey);
+    }
+
+    notifyListeners();
+  }
+
   Future<void> processOutbox() async {
     if (_isSubmitting) return;
     _isSubmitting = true;
@@ -335,6 +355,9 @@ class ScoreboardResultService with ChangeNotifier {
       for (final index in pendingIndexes) {
         final item = _outbox[index];
         await _submitItem(index, item);
+      }
+      if (_clearLinkedDataAfterProcessing) {
+        await clearLinkedMatchData();
       }
     } finally {
       _isSubmitting = false;
@@ -389,6 +412,11 @@ class ScoreboardResultService with ChangeNotifier {
         );
         _statusMessage = 'Final result submitted';
         _updateMatchVersionFromResponse(body);
+        if (!_outbox.any((entry) =>
+            entry.state == ResultSubmissionState.pending ||
+            entry.state == ResultSubmissionState.conflict)) {
+          _clearLinkedDataAfterProcessing = true;
+        }
       } else if (response.statusCode == 409) {
         _outbox[index] = item.copyWith(
           state: ResultSubmissionState.conflict,

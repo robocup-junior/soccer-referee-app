@@ -69,6 +69,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   WakelockService wakelockService = WakelockService();
   ScoreboardResultService scoreboardResultService = ScoreboardResultService();
   String? _lastAppliedScoreboardSignature;
+  String? _scoreboardHomeTeamId;
+  String? _scoreboardAwayTeamId;
 
   // Callback to request showing the dialog
   void Function()? onRequestSwitchTeamOrderDialog;
@@ -512,6 +514,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       return;
     }
     _lastAppliedScoreboardSignature = signature;
+    _scoreboardHomeTeamId = homeIsLeft ? 'A' : 'B';
+    _scoreboardAwayTeamId = homeIsLeft ? 'B' : 'A';
 
     teams[0].name = homeIsLeft ? config.homeTeamName : config.awayTeamName;
     teams[1].name = homeIsLeft ? config.awayTeamName : config.homeTeamName;
@@ -525,20 +529,22 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   void _queueFinalResultSubmission() {
-    final config = scoreboardResultService.matchConfig;
-    if (config == null) return;
-
-    final homeIsLeft = config.homeIsLeft;
-    // Server-side final-result contract currently expects inverted mapping:
-    // with homeIsLeft=true, team[1] maps to home_goals and team[0] to away_goals.
-    final homeGoals = homeIsLeft ? teams[1].score : teams[0].score;
-    final awayGoals = homeIsLeft ? teams[0].score : teams[1].score;
+    final homeGoals = _scoreByTeamId(_scoreboardHomeTeamId) ?? teams[0].score;
+    final awayGoals = _scoreByTeamId(_scoreboardAwayTeamId) ?? teams[1].score;
 
     unawaited(scoreboardResultService.enqueueFinalResult(
       homeGoals: homeGoals,
       awayGoals: awayGoals,
       comment: 'Submitted via RCJ Soccer RefMate',
     ));
+  }
+
+  int? _scoreByTeamId(String? teamId) {
+    if (teamId == null) return null;
+    for (final team in teams) {
+      if (team.id == teamId) return team.score;
+    }
+    return null;
   }
 
 
@@ -719,6 +725,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   set periodTime(int value) {
     _periodTime = value;
     _prefs?.setInt(_periodTimeKey, value);
+    if (!inGame || currentStage == MatchStage.fullTime) {
+      _remainingTime = value;
+      notifyListeners();
+      _broadcastStageAndTime();
+    }
   }
 
   // Single-tap gesture mode (issue #12). Unlike periodTime, this setter MUST

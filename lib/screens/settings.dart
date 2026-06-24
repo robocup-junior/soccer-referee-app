@@ -180,6 +180,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     service.retryPendingNow();
                                   },
                                 ),
+                                SettingButton(
+                                  title: 'Clear linked match',
+                                  buttonText: 'Clear',
+                                  onPressed: () {
+                                    service.clearLinkedMatchData();
+                                  },
+                                ),
                               ],
                             );
                           },
