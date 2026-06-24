@@ -287,9 +287,16 @@ class ScoreboardResultService with ChangeNotifier {
       return false;
     }
 
+    // Treat a retry-exhausted (revivable) failed item as tracked: it still
+    // represents this match and can be re-sent via retryPendingNow, so a second
+    // enqueue would create a second outbox item with a fresh idempotency_key and
+    // allow two distinct final-result submissions for the same match. Only
+    // genuinely rejected items (401/422, different errorMessage) remain
+    // non-tracked so they can be replaced by a fresh enqueue.
     final alreadyTracked = _outbox.any((item) =>
         item.matchCode == matchConfig.matchCode &&
-        item.state != ResultSubmissionState.failed);
+        (item.state != ResultSubmissionState.failed ||
+            item.errorMessage == 'max_retries_reached'));
     if (alreadyTracked) {
       _statusMessage = 'Result already queued or submitted';
       notifyListeners();
