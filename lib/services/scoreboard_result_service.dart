@@ -324,6 +324,27 @@ class ScoreboardResultService with ChangeNotifier {
   }
 
   Future<void> retryPendingNow() async {
+    // Revive submissions that exhausted their automatic transient-failure
+    // retries so the operator can re-attempt them manually after, e.g., a long
+    // network outage. Terminal rejections (401/422) carry a different
+    // errorMessage and deliberately stay failed.
+    var revived = false;
+    for (var i = 0; i < _outbox.length; i++) {
+      final item = _outbox[i];
+      if (item.state == ResultSubmissionState.failed &&
+          item.errorMessage == 'max_retries_reached') {
+        _outbox[i] = item.copyWith(
+          state: ResultSubmissionState.pending,
+          retryCount: 0,
+        );
+        revived = true;
+      }
+    }
+    if (revived) {
+      _statusMessage = 'Retrying final result sync';
+      await _persistOutbox();
+      notifyListeners();
+    }
     await processOutbox();
   }
 
