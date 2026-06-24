@@ -725,7 +725,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   set periodTime(int value) {
     _periodTime = value;
     _prefs?.setInt(_periodTimeKey, value);
-    if (!inGame || currentStage == MatchStage.fullTime) {
+    if (currentStage == MatchStage.fullTime) {
       _remainingTime = value;
       notifyListeners();
       _broadcastStageAndTime();

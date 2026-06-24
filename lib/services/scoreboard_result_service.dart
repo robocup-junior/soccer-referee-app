@@ -356,6 +356,12 @@ class ScoreboardResultService with ChangeNotifier {
         final item = _outbox[index];
         await _submitItem(index, item);
       }
+      if (_outbox.any((entry) => entry.state == ResultSubmissionState.submitted) &&
+          !_outbox.any((entry) =>
+              entry.state == ResultSubmissionState.pending ||
+              entry.state == ResultSubmissionState.conflict)) {
+        _clearLinkedDataAfterProcessing = true;
+      }
       if (_clearLinkedDataAfterProcessing) {
         await clearLinkedMatchData();
       }
@@ -412,11 +418,6 @@ class ScoreboardResultService with ChangeNotifier {
         );
         _statusMessage = 'Final result submitted';
         _updateMatchVersionFromResponse(body);
-        if (!_outbox.any((entry) =>
-            entry.state == ResultSubmissionState.pending ||
-            entry.state == ResultSubmissionState.conflict)) {
-          _clearLinkedDataAfterProcessing = true;
-        }
       } else if (response.statusCode == 409) {
         _outbox[index] = item.copyWith(
           state: ResultSubmissionState.conflict,
