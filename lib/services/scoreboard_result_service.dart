@@ -141,9 +141,20 @@ class ScoreboardResultService with ChangeNotifier {
     final rawToken = parsed.token;
     if (rawToken.isEmpty) return;
 
+    final tokenChanged = rawToken != _token;
     _token = rawToken;
     _baseUri = parsed.baseUri;
     _statusMessage = 'Referee link received';
+
+    if (tokenChanged) {
+      // Drop the previous match config the moment a different link arrives, so a
+      // slow or failing fetch under the new token cannot leave the new token
+      // paired with the old match's matchCode/version (which enqueueFinalResult
+      // would otherwise submit). The new config is repopulated by the fetch
+      // below on success.
+      _matchConfig = null;
+      await _prefs?.remove(_prefsMatchKey);
+    }
 
     await _prefs?.setString(_prefsTokenKey, rawToken);
     await _prefs?.setString(_prefsBaseUrlKey, _baseUri.toString());
@@ -242,7 +253,8 @@ class ScoreboardResultService with ChangeNotifier {
       return;
     }
 
-    final endpoint = _baseUri.replace(path: '/api/v1/soccer/match');
+    final requestBase = _baseUri;
+    final endpoint = requestBase.replace(path: '/api/v1/soccer/match');
 
     try {
       final response = await http
@@ -251,6 +263,13 @@ class ScoreboardResultService with ChangeNotifier {
             headers: {'Authorization': _authValue(token)},
           )
           .timeout(_requestTimeout);
+
+      // Discard a stale response: a newer link or a clear may have changed the
+      // active token/base URL while this request was in flight. Applying it now
+      // would pair the current token with a different (or cleared) match.
+      if (_token != token || _baseUri != requestBase) {
+        return;
+      }
 
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body);
