@@ -344,15 +344,18 @@ class ScoreboardResultService with ChangeNotifier {
     if (_isSubmitting) return;
     _isSubmitting = true;
     try {
-      // Process a snapshot; items added/changed while submitting are handled by
-      // the next periodic/manual outbox run.
-      final pendingIndexes = [
-        for (var index = 0; index < _outbox.length; index++)
-          if (_outbox[index].state == ResultSubmissionState.pending) index,
+      // Snapshot pending item *ids*, not list indexes: the outbox list can be
+      // replaced while a submission is suspended on an awaited HTTP call (e.g.
+      // the Settings "Clear linked match" action calling clearLinkedMatchData,
+      // or enqueueFinalResult appending a new item). A captured index would then
+      // point at the wrong item or be out of range. Items added/changed mid-run
+      // are handled by the next periodic/manual outbox run.
+      final pendingIds = [
+        for (final item in _outbox)
+          if (item.state == ResultSubmissionState.pending) item.id,
       ];
-      for (final index in pendingIndexes) {
-        final item = _outbox[index];
-        await _submitItem(index, item);
+      for (final id in pendingIds) {
+        await _submitItem(id);
       }
       if (_shouldClearLinkedDataAfterSubmission()) {
         await clearLinkedMatchData();
@@ -371,7 +374,11 @@ class ScoreboardResultService with ChangeNotifier {
     );
   }
 
-  Future<void> _submitItem(int index, ResultOutboxItem item) async {
+  Future<void> _submitItem(String id) async {
+    final startIndex = _outbox.indexWhere((entry) => entry.id == id);
+    if (startIndex == -1) return;
+    final item = _outbox[startIndex];
+
     final endpoint = Uri.parse(item.baseUrl).replace(
       path: '/api/v1/soccer/match/result/',
     );
@@ -400,6 +407,11 @@ class ScoreboardResultService with ChangeNotifier {
       } catch (e) {
         debugPrint('ScoreboardResultService: response parse failed: $e');
       }
+
+      // Re-find the item by id: the outbox may have been replaced while awaiting
+      // the response (e.g. a manual clear). If it is gone, drop this result.
+      final index = _outbox.indexWhere((entry) => entry.id == id);
+      if (index == -1) return;
 
       if (response.statusCode == 200) {
         _outbox[index] = item.copyWith(
@@ -436,11 +448,16 @@ class ScoreboardResultService with ChangeNotifier {
         );
       }
     } catch (e) {
-      _markRetriableFailure(
-        index: index,
-        item: item,
-        errorMessage: 'network_error',
-      );
+      // Re-find the item by id after the awaited request threw (the outbox may
+      // have been cleared meanwhile).
+      final index = _outbox.indexWhere((entry) => entry.id == id);
+      if (index != -1) {
+        _markRetriableFailure(
+          index: index,
+          item: item,
+          errorMessage: 'network_error',
+        );
+      }
       debugPrint('ScoreboardResultService: submit failed: $e');
     }
 
