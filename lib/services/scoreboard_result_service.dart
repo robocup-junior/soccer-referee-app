@@ -356,10 +356,7 @@ class ScoreboardResultService with ChangeNotifier {
         final item = _outbox[index];
         await _submitItem(index, item);
       }
-      if (_outbox.any((entry) => entry.state == ResultSubmissionState.submitted) &&
-          !_outbox.any((entry) =>
-              entry.state == ResultSubmissionState.pending ||
-              entry.state == ResultSubmissionState.conflict)) {
+      if (_shouldClearLinkedDataAfterSubmission()) {
         _clearLinkedDataAfterProcessing = true;
       }
       if (_clearLinkedDataAfterProcessing) {
@@ -512,5 +509,12 @@ class ScoreboardResultService with ChangeNotifier {
       status: 'COMPLETED',
     );
     _prefs?.setString(_prefsMatchKey, jsonEncode(_matchConfig!.toJson()));
+  }
+
+  bool _shouldClearLinkedDataAfterSubmission() {
+    return _outbox.any((entry) => entry.state == ResultSubmissionState.submitted) &&
+        !_outbox.any((entry) =>
+            entry.state == ResultSubmissionState.pending ||
+            entry.state == ResultSubmissionState.conflict);
   }
 }
