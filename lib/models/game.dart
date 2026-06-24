@@ -520,9 +520,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     teams[0].name = homeIsLeft ? config.homeTeamName : config.awayTeamName;
     teams[1].name = homeIsLeft ? config.awayTeamName : config.homeTeamName;
 
-    if (!inGame || currentStage == MatchStage.fullTime) {
-      // Only apply remote timing presets while no active period is running.
-      // Full-time is treated as safe because the match already ended.
+    // Apply remote timing presets only before a match starts (between matches,
+    // after a reset). Never call gameInit() at full-time: a version-only update
+    // from a successful result submission would otherwise zero the just-played
+    // scores and broadcast a reset 0-0/first-half state over MQTT and the BLE
+    // bridge. The full-time clock display stays in sync separately via the
+    // periodTime setter when settings change.
+    if (!inGame) {
       periodTime = config.durationSeconds;
       gameInit();
     }
