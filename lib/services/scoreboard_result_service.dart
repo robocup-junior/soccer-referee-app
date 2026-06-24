@@ -536,15 +536,7 @@ class ScoreboardResultService with ChangeNotifier {
     final nextVersion = (body['version'] as num?)?.toInt();
     if (nextVersion == null) return;
 
-    _matchConfig = ScoreboardMatchConfig(
-      matchCode: matchConfig.matchCode,
-      homeTeamName: matchConfig.homeTeamName,
-      awayTeamName: matchConfig.awayTeamName,
-      homeIsLeft: matchConfig.homeIsLeft,
-      venueShortName: matchConfig.venueShortName,
-      scheduledStart: matchConfig.scheduledStart,
-      durationSeconds: matchConfig.durationSeconds,
-      timezone: matchConfig.timezone,
+    _matchConfig = matchConfig.copyWith(
       version: nextVersion,
       status: 'COMPLETED',
     );

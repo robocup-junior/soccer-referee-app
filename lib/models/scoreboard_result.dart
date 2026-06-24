@@ -27,6 +27,32 @@ class ScoreboardMatchConfig {
     required this.status,
   });
 
+  ScoreboardMatchConfig copyWith({
+    String? matchCode,
+    String? homeTeamName,
+    String? awayTeamName,
+    bool? homeIsLeft,
+    String? venueShortName,
+    DateTime? scheduledStart,
+    int? durationSeconds,
+    String? timezone,
+    int? version,
+    String? status,
+  }) {
+    return ScoreboardMatchConfig(
+      matchCode: matchCode ?? this.matchCode,
+      homeTeamName: homeTeamName ?? this.homeTeamName,
+      awayTeamName: awayTeamName ?? this.awayTeamName,
+      homeIsLeft: homeIsLeft ?? this.homeIsLeft,
+      venueShortName: venueShortName ?? this.venueShortName,
+      scheduledStart: scheduledStart ?? this.scheduledStart,
+      durationSeconds: durationSeconds ?? this.durationSeconds,
+      timezone: timezone ?? this.timezone,
+      version: version ?? this.version,
+      status: status ?? this.status,
+    );
+  }
+
   factory ScoreboardMatchConfig.fromJson(Map<String, dynamic> json) {
     final sideOrder = json['side_order'];
     bool? homeIsLeft;
