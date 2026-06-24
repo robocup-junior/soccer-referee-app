@@ -97,6 +97,7 @@ class ResultOutboxItem {
   final int version;
   final String idempotencyKey;
   final String? comment;
+  final int retryCount;
   final ResultSubmissionState state;
   final int? responseStatus;
   final Map<String, dynamic>? responseBody;
@@ -114,6 +115,7 @@ class ResultOutboxItem {
     required this.version,
     required this.idempotencyKey,
     this.comment,
+    this.retryCount = 0,
     required this.state,
     this.responseStatus,
     this.responseBody,
@@ -127,6 +129,7 @@ class ResultOutboxItem {
     int? responseStatus,
     Map<String, dynamic>? responseBody,
     String? errorMessage,
+    int? retryCount,
   }) {
     return ResultOutboxItem(
       id: id,
@@ -138,6 +141,7 @@ class ResultOutboxItem {
       version: version,
       idempotencyKey: idempotencyKey,
       comment: comment,
+      retryCount: retryCount ?? this.retryCount,
       state: state ?? this.state,
       responseStatus: responseStatus ?? this.responseStatus,
       responseBody: responseBody ?? this.responseBody,
@@ -178,6 +182,7 @@ class ResultOutboxItem {
       version: (json['version'] as num?)?.toInt() ?? 0,
       idempotencyKey: json['idempotency_key'] as String,
       comment: json['comment'] as String?,
+      retryCount: (json['retry_count'] as num?)?.toInt() ?? 0,
       state: parseState(json['state'] as String?),
       responseStatus: (json['response_status'] as num?)?.toInt(),
       responseBody: parseBody(json['response_body']),
@@ -199,6 +204,7 @@ class ResultOutboxItem {
         'version': version,
         'idempotency_key': idempotencyKey,
         'comment': comment,
+        'retry_count': retryCount,
         'state': state.name,
         'response_status': responseStatus,
         'response_body': responseBody,

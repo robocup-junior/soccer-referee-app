@@ -53,6 +53,7 @@ void main() {
         version: 5,
         idempotencyKey: 'idem-1',
         comment: 'via app',
+        retryCount: 2,
         state: ResultSubmissionState.pending,
         responseStatus: null,
         responseBody: null,
@@ -67,7 +68,26 @@ void main() {
       expect(decoded.homeGoals, item.homeGoals);
       expect(decoded.awayGoals, item.awayGoals);
       expect(decoded.idempotencyKey, item.idempotencyKey);
+      expect(decoded.retryCount, item.retryCount);
       expect(decoded.state, ResultSubmissionState.pending);
+    });
+
+    test('defaults retry_count to zero for old payloads', () {
+      final decoded = ResultOutboxItem.fromJson({
+        'id': 'id-legacy',
+        'base_url': 'https://scoreboard.junior.robocup.org',
+        'token': 'selector.secret',
+        'match_code': 'M-2',
+        'home_goals': 1,
+        'away_goals': 0,
+        'version': 1,
+        'idempotency_key': 'idem-legacy',
+        'state': 'pending',
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      });
+
+      expect(decoded.retryCount, 0);
     });
   });
 }

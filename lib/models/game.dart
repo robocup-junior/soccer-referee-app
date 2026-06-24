@@ -529,8 +529,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (config == null) return;
 
     final homeIsLeft = config.homeIsLeft;
-    final homeGoals = homeIsLeft ? teams[0].score : teams[1].score;
-    final awayGoals = homeIsLeft ? teams[1].score : teams[0].score;
+    // Server-side final-result contract currently expects inverted mapping:
+    // with homeIsLeft=true, team[1] maps to home_goals and team[0] to away_goals.
+    final homeGoals = homeIsLeft ? teams[1].score : teams[0].score;
+    final awayGoals = homeIsLeft ? teams[0].score : teams[1].score;
 
     unawaited(scoreboardResultService.enqueueFinalResult(
       homeGoals: homeGoals,

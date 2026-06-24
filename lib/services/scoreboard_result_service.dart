@@ -17,6 +17,7 @@ class ScoreboardResultService with ChangeNotifier {
   static const _customLinkScheme = 'rcjrefmate';
   static final Uri _defaultBaseUri = Uri.https('scoreboard.junior.robocup.org');
   static const _retryInterval = Duration(seconds: 20);
+  static const _maxSubmissionRetries = 5;
 
   final AppLinks _appLinks = AppLinks();
   final Uuid _uuid = const Uuid();
@@ -325,12 +326,15 @@ class ScoreboardResultService with ChangeNotifier {
     if (_isSubmitting) return;
     _isSubmitting = true;
     try {
-      while (true) {
-        final pendingIndex = _outbox
-            .indexWhere((item) => item.state == ResultSubmissionState.pending);
-        if (pendingIndex < 0) break;
-        final pendingItem = _outbox[pendingIndex];
-        await _submitItem(pendingIndex, pendingItem);
+      // Process a snapshot; items added/changed while submitting are handled by
+      // the next periodic/manual outbox run.
+      final pendingIndexes = [
+        for (var index = 0; index < _outbox.length; index++)
+          if (_outbox[index].state == ResultSubmissionState.pending) index,
+      ];
+      for (final index in pendingIndexes) {
+        final item = _outbox[index];
+        await _submitItem(index, item);
       }
     } finally {
       _isSubmitting = false;
@@ -348,7 +352,7 @@ class ScoreboardResultService with ChangeNotifier {
 
   Future<void> _submitItem(int index, ResultOutboxItem item) async {
     final endpoint = Uri.parse(item.baseUrl).replace(
-      path: '/api/v1/soccer/match/result',
+      path: '/api/v1/soccer/match/result/',
     );
     final payload = {
       'home_goals': item.homeGoals,
@@ -402,20 +406,20 @@ class ScoreboardResultService with ChangeNotifier {
         );
         _statusMessage = 'Final result rejected (${response.statusCode})';
       } else {
-        _outbox[index] = item.copyWith(
-          state: ResultSubmissionState.pending,
+        _markRetriableFailure(
+          index: index,
+          item: item,
           responseStatus: response.statusCode,
           responseBody: body,
           errorMessage: 'temporary_error_${response.statusCode}',
         );
-        _statusMessage = 'Final result sync will retry';
       }
     } catch (e) {
-      _outbox[index] = item.copyWith(
-        state: ResultSubmissionState.pending,
+      _markRetriableFailure(
+        index: index,
+        item: item,
         errorMessage: 'network_error',
       );
-      _statusMessage = 'Final result sync offline; retrying';
       debugPrint('ScoreboardResultService: submit failed: $e');
     }
 
@@ -428,6 +432,36 @@ class ScoreboardResultService with ChangeNotifier {
     if (prefs == null) return;
     final encoded = jsonEncode(_outbox.map((item) => item.toJson()).toList());
     await prefs.setString(_prefsOutboxKey, encoded);
+  }
+
+  void _markRetriableFailure({
+    required int index,
+    required ResultOutboxItem item,
+    int? responseStatus,
+    Map<String, dynamic>? responseBody,
+    required String errorMessage,
+  }) {
+    final nextRetryCount = item.retryCount + 1;
+    if (nextRetryCount >= _maxSubmissionRetries) {
+      _outbox[index] = item.copyWith(
+        state: ResultSubmissionState.failed,
+        retryCount: nextRetryCount,
+        responseStatus: responseStatus,
+        responseBody: responseBody,
+        errorMessage: 'max_retries_reached',
+      );
+      _statusMessage = 'Final result sync failed after $nextRetryCount attempts';
+      return;
+    }
+
+    _outbox[index] = item.copyWith(
+      state: ResultSubmissionState.pending,
+      retryCount: nextRetryCount,
+      responseStatus: responseStatus,
+      responseBody: responseBody,
+      errorMessage: errorMessage,
+    );
+    _statusMessage = 'Final result sync will retry ($nextRetryCount/$_maxSubmissionRetries)';
   }
 
   void _updateMatchVersionFromResponse(Map<String, dynamic>? body) {
