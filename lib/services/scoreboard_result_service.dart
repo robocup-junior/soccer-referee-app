@@ -95,6 +95,14 @@ class ScoreboardResultService with ChangeNotifier {
     _startRetryLoop();
 
     if (hasToken) {
+      // Surface a stored match immediately so Game applies the persisted
+      // names/timing on a cold start (including offline), instead of showing
+      // defaults until the background refresh returns or times out. The
+      // stale-response guard in refreshMatchConfig keeps the eventual network
+      // result authoritative.
+      if (_matchConfig != null) {
+        notifyListeners();
+      }
       unawaited(refreshMatchConfig().catchError((error) {
         debugPrint('ScoreboardResultService: initial refresh failed: $error');
       }));
@@ -309,13 +317,14 @@ class ScoreboardResultService with ChangeNotifier {
     // Treat a retry-exhausted (revivable) failed item as tracked: it still
     // represents this match and can be re-sent via retryPendingNow, so a second
     // enqueue would create a second outbox item with a fresh idempotency_key and
-    // allow two distinct final-result submissions for the same match. Only
-    // genuinely rejected items (401/422, different errorMessage) remain
-    // non-tracked so they can be replaced by a fresh enqueue.
+    // allow two distinct final-result submissions for the same match. "Exhausted"
+    // is identified by the internal retryCount, not the free-text errorMessage
+    // (which on 401/422 comes from server-controlled body['reason']), so genuine
+    // rejections stay non-tracked and replaceable by a fresh enqueue.
     final alreadyTracked = _outbox.any((item) =>
         item.matchCode == matchConfig.matchCode &&
         (item.state != ResultSubmissionState.failed ||
-            item.errorMessage == 'max_retries_reached'));
+            item.retryCount >= _maxSubmissionRetries));
     if (alreadyTracked) {
       _statusMessage = 'Result already queued or submitted';
       notifyListeners();
@@ -352,13 +361,14 @@ class ScoreboardResultService with ChangeNotifier {
   Future<void> retryPendingNow() async {
     // Revive submissions that exhausted their automatic transient-failure
     // retries so the operator can re-attempt them manually after, e.g., a long
-    // network outage. Terminal rejections (401/422) carry a different
-    // errorMessage and deliberately stay failed.
+    // network outage. "Exhausted" is keyed on the internal retryCount, not the
+    // server-influenced errorMessage; terminal rejections (401/422) keep their
+    // low retryCount and deliberately stay failed.
     var revived = false;
     for (var i = 0; i < _outbox.length; i++) {
       final item = _outbox[i];
       if (item.state == ResultSubmissionState.failed &&
-          item.errorMessage == 'max_retries_reached') {
+          item.retryCount >= _maxSubmissionRetries) {
         _outbox[i] = item.copyWith(
           state: ResultSubmissionState.pending,
           retryCount: 0,
