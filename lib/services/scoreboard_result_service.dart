@@ -18,6 +18,9 @@ class ScoreboardResultService with ChangeNotifier {
   static final Uri _defaultBaseUri = Uri.https('scoreboard.junior.robocup.org');
   static const _retryInterval = Duration(seconds: 20);
   static const _maxSubmissionRetries = 5;
+  // Bounded per-request timeout, kept below _retryInterval so a hung request
+  // releases _isSubmitting before the next periodic retry tick fires.
+  static const _requestTimeout = Duration(seconds: 15);
 
   final AppLinks _appLinks = AppLinks();
   final Uuid _uuid = const Uuid();
@@ -242,10 +245,12 @@ class ScoreboardResultService with ChangeNotifier {
     final endpoint = _baseUri.replace(path: '/api/v1/soccer/match');
 
     try {
-      final response = await http.get(
-        endpoint,
-        headers: {'Authorization': _authValue(token)},
-      );
+      final response = await http
+          .get(
+            endpoint,
+            headers: {'Authorization': _authValue(token)},
+          )
+          .timeout(_requestTimeout);
 
       if (response.statusCode == 200) {
         final json = jsonDecode(response.body);
@@ -391,14 +396,16 @@ class ScoreboardResultService with ChangeNotifier {
     };
 
     try {
-      final response = await http.post(
-        endpoint,
-        headers: {
-          'Authorization': _authValue(item.token),
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode(payload),
-      );
+      final response = await http
+          .post(
+            endpoint,
+            headers: {
+              'Authorization': _authValue(item.token),
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode(payload),
+          )
+          .timeout(_requestTimeout);
 
       Map<String, dynamic>? body;
       try {
