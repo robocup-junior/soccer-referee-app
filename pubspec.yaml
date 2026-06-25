@@ -35,7 +35,6 @@ dependencies:
   flutter_blue_plus: ^1.35.5
   mask_text_input_formatter: ^2.9.0
   mobile_scanner: ^7.2.0
-  flutter_settings_ui: ^3.0.1
   mqtt_client: ^10.3.0
   uuid: ^4.0.0
   shared_preferences: ^2.2.2
@@ -52,6 +51,8 @@ dependencies:
 
 dev_dependencies:
   flutter_test:
+    sdk: flutter
+  integration_test:
     sdk: flutter
 
   # The "flutter_lints" package below contains a set of recommended lints to
