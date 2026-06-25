@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/services/error_messages.dart';
+import 'package:rcj_scoreboard/services/match_state_store.dart';
 
 
 enum ModuleState {
@@ -51,6 +52,14 @@ class Module with ChangeNotifier {
   bool _isConnected = false;
   bool _isPlaying = false;
   int _penaltyTime = 0;
+  // One-shot set by [restoreFromSnapshot] on a cold-resume restore. The FIRST
+  // post-restore [bleNotify] (fired seconds later from the reconnect's
+  // connected-event, so a synchronous game-scoped flag would already be cleared)
+  // consumes it and sends at most a STOP — never play/damage — so a robot can't
+  // auto-PLAY or self-release its penalty while the match clock is frozen. It is
+  // per-module so each module's own late reconnect is covered, and one-shot so
+  // it can't linger and suppress the referee's later START.
+  bool _suppressNextRestoreNotify = false;
   String macAddress = '';
   String bleStatus = 'Disconnected';
   // True while we want to be connected (connect tapped, autoConnect active).
@@ -83,6 +92,18 @@ class Module with ChangeNotifier {
   }
 
   void bleNotify() async {
+    if (_suppressNextRestoreNotify) {
+      // First reconnect after a cold-resume restore: keep the robot stopped
+      // regardless of the restored _state (esp. a restored `damage` module),
+      // so its penalty countdown does not start while the match clock is
+      // frozen. The referee's double-tap START re-arms play/damage with time.
+      try {
+        await bleSendStop();
+      } finally {
+        _suppressNextRestoreNotify = false;
+      }
+      return;
+    }
     switch (_state) {
       case ModuleState.play:
         await bleSendPlay();
@@ -349,6 +370,7 @@ class Module with ChangeNotifier {
   }
 
   void playOrDamage() {
+    _clearRestoreSuppress();
     _lastState = _state;
     if (_penaltyTime > 0) {
       _playStatus(false);
@@ -361,9 +383,14 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    // Single-module action (not the simultaneous START/STOP fan-out), so a
+    // scheduled flush is latency-safe and persists it even when the clock is
+    // stopped (e.g. a robot toggled while the cold-resumed clock is frozen).
+    _game.markMatchStateDirtyAndFlush();
   }
 
   void play() async {
+    _clearRestoreSuppress();
     _lastState = _state;
     _playStatus(true);
     _penaltyTime = 0;
@@ -371,9 +398,11 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    _game.markMatchStateDirtyAndFlush();
   }
 
   void playOrDamageAll() async {
+    _clearRestoreSuppress();
     _lastState = _state;
     if (_penaltyTime > 0) {
       _playStatus(false);
@@ -391,9 +420,11 @@ class Module with ChangeNotifier {
       // Send it one more time with acknowledgment to ensure all modules are in play state
       bleSendPlay();
     }
+    _game.markMatchStateDirty();
   }
 
   void playAll() async {
+    _clearRestoreSuppress();
     _lastState = _state;
     _playStatus(true);
     _penaltyTime = 0;
@@ -407,6 +438,16 @@ class Module with ChangeNotifier {
     }
     // Send it one more time with acknowledgment to ensure all modules are in play state
     bleSendPlay();
+    _game.markMatchStateDirty();
+  }
+
+  // Cancel a pending cold-resume restore suppression: once the referee starts a
+  // robot (any START path), subsequent reconnect bleNotify()s must reflect the
+  // real state, not a lingering STOP. Without this a late reconnect after START
+  // would STOP an already-playing robot (the play START path does not itself
+  // call bleNotify, so it would not otherwise consume the one-shot).
+  void _clearRestoreSuppress() {
+    _suppressNextRestoreNotify = false;
   }
 
   void stopAll(bool removePenalty, {bool force = false}) async {
@@ -426,6 +467,7 @@ class Module with ChangeNotifier {
           await Future.delayed(const Duration(milliseconds: 100));
         }
     }
+    _game.markMatchStateDirty();
   }
 
   void stop() {
@@ -449,6 +491,7 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    _game.markMatchStateDirty();
   }
 
   void penalty(int seconds) {
@@ -458,6 +501,9 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    // Penalty given is a discrete recoverable event; flush it (off the hot path)
+    // so it survives a crash even if the clock isn't running to drive a heartbeat.
+    _game.markMatchStateDirtyAndFlush();
   }
 
   void _askForPenalty() {
@@ -476,6 +522,7 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    _game.markMatchStateDirty();
   }
 
   void halfTimeSyncTime() {
@@ -492,6 +539,7 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    _game.markMatchStateDirty();
   }
 
 
@@ -568,6 +616,10 @@ class Module with ChangeNotifier {
   bool get hasCustomLabel => _label != null && _label!.isNotEmpty;
   int get penaltyTime => _penaltyTime;
   ModuleState get state => _state;
+  @visibleForTesting
+  ModuleState get lastState => _lastState;
+  @visibleForTesting
+  bool get suppressNextRestoreNotify => _suppressNextRestoreNotify;
 
   void setLabel(String label) {
     _label = label.trim();
@@ -576,6 +628,11 @@ class Module with ChangeNotifier {
     // bleSendName() self-guards on connection, so this is a no-op otherwise.
     // (Not in the START/STOP critical path — fire-and-forget is fine.)
     unawaited(bleSendName());
+    // A module label is recoverable state. Schedule a flush (not just a dirty
+    // flag): labels are typically edited pre-match while the clock is stopped,
+    // when the heartbeat isn't running, so a bare flag could be lost on a crash.
+    // Off the START/STOP hot path, so the scheduled flush is fine.
+    _game.markMatchStateDirtyAndFlush();
   }
 
   void applyPresetConfig(String macAddress, String label) {
@@ -594,6 +651,74 @@ class Module with ChangeNotifier {
     setBleDevice(BluetoothDevice.fromId(newMac));
     if (_isEnabled) {
       bleConnect();
+    }
+  }
+
+  // ---- Cold-resume snapshot / restore (#45) ----
+
+  /// Capture this module's recoverable state for the match snapshot.
+  ModuleSnapshot toSnapshot() => ModuleSnapshot(
+        moduleId: moduleId,
+        isEnabled: _isEnabled,
+        macAddress: macAddress,
+        customLabel: hasCustomLabel ? _label : null,
+        state: _state.name,
+        lastState: _lastState.name,
+        penaltyTime: _penaltyTime,
+      );
+
+  /// Restore this module from a cold-resume snapshot. Ordering matters:
+  ///   1. apply `isEnabled` first — `disable()` disconnects and
+  ///      `applyPresetConfig` only reconnects when enabled, so the flag must be
+  ///      correct before the reconnect step;
+  ///   2. set the normalized state/penalty and arm the restore-notify one-shot;
+  ///   3. re-establish the BLE device (a cold kill built a fresh Module with no
+  ///      device), reusing the preset-load path for the auto-reconnect.
+  void restoreFromSnapshot(ModuleSnapshot s) {
+    if (s.isEnabled) {
+      enable();
+    } else {
+      disable();
+    }
+
+    _penaltyTime = s.penaltyTime;
+    // Normalize play/halfTime/fullTime -> stop for BOTH _state and _lastState:
+    // a restored `play` _state would make the reconnect bleNotify() emit
+    // bleSendPlay() (auto-PLAY), and a `play` _lastState would make the
+    // single-tap Module.stop() (switches on _lastState) a silent no-op. Keep
+    // damage/stop as-is.
+    _state = _normalizeRestoredState(_parseState(s.state));
+    _lastState = _normalizeRestoredState(_parseState(s.lastState));
+    _suppressNextRestoreNotify = true;
+
+    if (s.isEnabled && s.macAddress.isNotEmpty) {
+      // applyPresetConfig() sets the label, builds the device and reconnects.
+      // It takes a non-null label, hence `?? ''` (an empty label resolves to
+      // the default name via the `name` getter).
+      applyPresetConfig(s.macAddress, s.customLabel ?? '');
+    } else {
+      // Not reconnecting: still record the MAC (for a later manual connect) and
+      // apply the label, mirroring applyPresetConfig's always-apply-label rule.
+      macAddress = s.macAddress;
+      setLabel(s.customLabel ?? '');
+    }
+    notifyListeners();
+  }
+
+  ModuleState _parseState(String name) => ModuleState.values.firstWhere(
+        (s) => s.name == name,
+        orElse: () => ModuleState.stop,
+      );
+
+  ModuleState _normalizeRestoredState(ModuleState state) {
+    switch (state) {
+      case ModuleState.damage:
+        return ModuleState.damage;
+      case ModuleState.stop:
+      case ModuleState.play:
+      case ModuleState.halfTime:
+      case ModuleState.fullTime:
+        return ModuleState.stop;
     }
   }
 
