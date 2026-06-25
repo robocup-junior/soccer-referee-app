@@ -488,6 +488,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           stopAll(true);
           timerButtonText = 'REPEAT';
           gameOverAll();
+          // The match is over: stop the OS autoConnect from chasing modules
+          // that are powered down for good (e.g. a unit still off from a
+          // late penalty). In-match these reconnect unbounded on purpose; at
+          // full time we settle the ones still off to "Disconnected".
+          disconnectInactiveModules();
           // Match just ended: clear the snapshot rather than persisting a
           // fullTime one (item 2 made this transition a persist point).
           _clearMatchState();
@@ -809,8 +814,27 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   void disconnectAll() {
     for (var team in teams) {
-      for (var module in team.modules
-          .where((module) => module.isEnabled && module.isConnected)) {
+      // Include modules that are mid-reconnect (isConnecting), not just
+      // currently-connected ones: issue #38 added a reconnecting state where
+      // isConnected is false while autoConnect keeps retrying. Without this a
+      // "disconnect all" would skip those modules, leaving them retrying and
+      // later consuming GATT slots after the referee asked to disconnect.
+      for (var module in team.modules.where(
+          (module) => module.isEnabled && (module.isConnected || module.isConnecting))) {
+        module.bleDisconnect();
+      }
+    }
+  }
+
+  // Tear down modules that are mid-reconnect (off / "Connecting...") so the OS
+  // autoConnect installed by connect(autoConnect:true) stops chasing a unit
+  // that is powered down for good. Connected modules are left alone (they show
+  // game-over until the referee disconnects). Used at the full-time transition
+  // — during a match these reconnects are unbounded on purpose (invariant #5).
+  void disconnectInactiveModules() {
+    for (var team in teams) {
+      for (var module in team.modules.where(
+          (module) => module.isEnabled && module.isConnecting)) {
         module.bleDisconnect();
       }
     }

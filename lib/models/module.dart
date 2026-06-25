@@ -68,6 +68,13 @@ class Module with ChangeNotifier {
   bool _connectIntent = false;
   BluetoothDevice? bleDevice;
   StreamSubscription<BluetoothConnectionState>? subscription;
+  // RX-notification listener. Held so it can be cancelled before a replacement
+  // is attached on reconnect (bleInitModule runs on every connected event) and
+  // on teardown — otherwise auto-reconnect would stack duplicate listeners that
+  // each deliver the same inbound message. Cancelling only drops the Dart
+  // subscription; it never turns the characteristic notification off on a live
+  // connection.
+  StreamSubscription<List<int>>? _rxSubscription;
   BluetoothCharacteristic? bleTX;
   BluetoothCharacteristic? bleRX;
 
@@ -128,25 +135,32 @@ class Module with ChangeNotifier {
     if (bleDevice == null || bleDevice!.isConnected) return;
     //debugPrint('BLE connect222...........................');
 
-
-    // don't know why but without this delay sometimes it cannot connect more than 5 modules
-    await Future.delayed(const Duration(milliseconds: 100));
-
-    subscription?.cancel();
-    //bleDevice?.disconnect();
-
+    // Set the intent BEFORE the pre-connect delay so a bleDisconnect() that runs
+    // during the delay (user Cancel / disconnectAll) is observable when we
+    // re-check below — otherwise this in-flight connect would revive autoConnect
+    // after the user asked to stop.
     _connectIntent = true;
     bleStatus = 'Connecting...';
     notifyListeners();
 
+    // don't know why but without this delay sometimes it cannot connect more than 5 modules
+    await Future.delayed(const Duration(milliseconds: 100));
+
+    // Abort if the user disconnected (intent cleared) or the device connected
+    // during the delay.
+    if (!_connectIntent || (bleDevice?.isConnected ?? false)) return;
+
+    subscription?.cancel();
     _registerBleSubscriber(bleDevice!);
 
     try {
       //bleStatus = 'Connecting...';
       await bleDevice?.connect(autoConnect:true, mtu: null);
     } catch (e) {
-      // Gave up — drop the connect intent (parity with the bridge) so a stray
-      // event can never flip the message back to "Connecting...".
+      // The initial connect() failed — drop the connect intent (parity with the
+      // bridge) so a stray event can never flip the message back to
+      // "Connecting...". Reconnection of a module that DID connect is handled by
+      // connect(autoConnect:true) at the OS level, not by re-entering here.
       _connectIntent = false;
       bleStatus = describeError(e).message;
       debugPrint('BLE connect error: $e');
@@ -183,7 +197,10 @@ class Module with ChangeNotifier {
     if (bleRX != null) {
       try {
         await bleRX!.setNotifyValue(true);
-        bleRX!.onValueReceived.listen((data) {
+        // Replace any previous listener so reconnects don't accumulate
+        // duplicate handlers for the same characteristic.
+        await _rxSubscription?.cancel();
+        _rxSubscription = bleRX!.onValueReceived.listen((data) {
           handleReceivedData(data);
         });
       } catch (e) {
@@ -345,19 +362,24 @@ class Module with ChangeNotifier {
     // module is stuck on "Connecting..." forever with no way out.
     if (bleDevice == null) return;
 
-    // Disconnect from device also disable auto connect
-    await bleDevice?.disconnect();
-
-    // cancel to prevent duplicate listeners
-    subscription?.cancel();
-
-    // Explicit user disconnect — stop intending to be connected so the status
-    // reads "Disconnected" rather than "Connecting...".
+    // Clear the connect intent *synchronously* before the async disconnect, so
+    // the disconnect event that disconnect() triggers reads as an intended
+    // "Disconnected" (not "Connecting...") and the OS autoConnect is not seen as
+    // something to keep showing as in-progress.
     _connectIntent = false;
     _isConnected = false;
     bleStatus = reason ?? 'Disconnected';
-
     notifyListeners();
+
+    // Cancel the connection-state listener BEFORE disconnecting so the teardown
+    // disconnect event can't drive any further status work.
+    // (Same cancel-first ordering as setBleDevice().)
+    subscription?.cancel();
+    _rxSubscription?.cancel();
+    _rxSubscription = null;
+
+    // Disconnect from device also disables auto connect
+    await bleDevice?.disconnect();
 
 
 
@@ -560,8 +582,21 @@ class Module with ChangeNotifier {
     if (bleDevice != null) {
       debugPrint('try disconect previos one');
       bleDevice?.disconnect();
+      // Cancel the old device's connection-state and RX listeners so they can't
+      // drive reconnect work or duplicate-deliver messages against a device
+      // we're replacing.
+      subscription?.cancel();
+      _rxSubscription?.cancel();
+      _rxSubscription = null;
     }
-    
+
+    // Swapping the device is a fresh-connection boundary: clear the old
+    // device's reconnect lifecycle so no stale intent carries over (issue #38).
+    // Callers that want a connection call bleConnect() right after, which
+    // re-establishes intent.
+    _connectIntent = false;
+    _isConnected = false;
+
      bleDevice = device;
 
      if (bleDevice == null) return;
@@ -574,27 +609,37 @@ class Module with ChangeNotifier {
       debugPrint('BLE device status: $state');
       if (state == BluetoothConnectionState.disconnected) {
         _isConnected = false;
-        // 1. typically, start a periodic timer that tries to
-        //    reconnect, or just call connect() again right now
-        // 2. you must always re-discover services after disconnection!
-        // While we still intend to be connected (autoConnect is retrying in the
-        // background), report "Connecting..." instead of "Disconnected" — this
-        // also covers the initial disconnected event right after connect().
+        debugPrint('disconnect');
+
+        // Reconnection is owned entirely by connect(autoConnect:true): the OS
+        // keeps retrying on the SAME GATT client, unbounded, until disconnect()
+        // is called. That is exactly the in-match behavior we need — a penalised
+        // robot (~1 min off) or a halftime power-down (~5 min) rejoins the
+        // instant it returns, with no referee action. We deliberately do NOT
+        // re-enter bleConnect() here: each call registers a fresh GATT clientIf
+        // without close()-ing the previous BluetoothGatt, leaking ~1 client per
+        // reconnect per module (device-verified on a Pixel 10) and exhausting
+        // Android's ~30-client ceiling within minutes of penalty/halftime
+        // cycling across 10 modules — a tournament-killer. See CLAUDE.md
+        // invariant #5 and docs/ai/02_RUNTIME_ARCHITECTURE.md.
+        //
+        // So this handler only reflects status: while we still intend to be
+        // connected, show "Connecting..." (also covers the initial disconnected
+        // event right after connect()). Post-match teardown of powered-down
+        // modules is a one-shot at the full-time transition
+        // (Game.disconnectInactiveModules), not a per-disconnect action here —
+        // doing it here would also tear down a fresh post-match connect on its
+        // initial disconnected event.
         bleStatus = _connectIntent ? 'Connecting...' : 'Disconnected';
         notifyListeners();
-        debugPrint("disconnect");
       } else if (state == BluetoothConnectionState.connected) {
-        //bleCheckServicesAndGetCharacteristics();
         _isConnected = true;
-        debugPrint("Connect");
+        debugPrint('Connect');
         bleStatus = 'Connected';
-        //bleSendTest();
         notifyListeners();
-        //bleSendCurrentState();
         bleInitModule();
       }
     });
-    //device.cancelWhenDisconnected(subscription, delayed:true, next:true);
   }
 
 
