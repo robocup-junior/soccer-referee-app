@@ -13,6 +13,7 @@ import 'package:rcj_scoreboard/services/vibration_service.dart';
 import 'package:rcj_scoreboard/services/wakelock_service.dart';
 import 'package:rcj_scoreboard/services/preset_service.dart';
 import 'package:rcj_scoreboard/services/scoreboard_result_service.dart';
+import 'package:rcj_scoreboard/services/match_state_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum MatchStage {
@@ -60,6 +61,23 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   bool _singleTapEnabled = false;
   bool _pendingSingleTapWrite = false;
   SharedPreferences? _prefs;
+
+  // ---- Match cold-resume persistence (#45) ----
+  MatchStateStore? _stateStore;
+  // Coalesced persist marker: set on any recoverable change (trivial bool, safe
+  // on the robot-command path); the snapshot build + jsonEncode happen later in
+  // a flush, never inline on the START/STOP fan-out.
+  bool _dirty = false;
+  // Suppresses persistence during bootstrap/reset and during the multi-step
+  // cold-resume restore, so an internal (non-referee) reset can't overwrite the
+  // on-disk snapshot and a restore can't write a dozen partial snapshots.
+  bool _suppressPersist = false;
+  // The snapshot of an in-progress match found at cold launch, awaiting the
+  // referee's Resume/Discard choice. Null when there is nothing to resume.
+  MatchSnapshot? _pendingResume;
+  // One-shot so the resume prompt fires exactly once (guards the
+  // snapshot-stashed vs callback-registered race in _maybeFireResumePrompt).
+  bool _resumePrompted = false;
   //MQTT
   MqttService mqttService = MqttService();
   BleBridgeService bleBridgeService = BleBridgeService();
@@ -74,6 +92,22 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   // Callback to request showing the dialog
   void Function()? onRequestSwitchTeamOrderDialog;
+
+  // Callback to request showing the cold-resume prompt. A DRAINING setter:
+  // main.dart constructs Game() before runApp and _loadPrefs() is async, so the
+  // snapshot may be stashed before OR after Home registers this callback. On
+  // assignment we fire immediately if a resume is already pending, so whichever
+  // happens last triggers the prompt (guarded once by _resumePrompted).
+  void Function()? _onRequestResumeMatch;
+  void Function()? get onRequestResumeMatch => _onRequestResumeMatch;
+  set onRequestResumeMatch(void Function()? callback) {
+    _onRequestResumeMatch = callback;
+    _maybeFireResumePrompt();
+  }
+
+  /// The match awaiting a Resume/Discard decision (null if none). Read by the
+  /// home screen to render the prompt body (teams, score, stage, staleness).
+  MatchSnapshot? get pendingResume => _pendingResume;
 
   Game() {
     WidgetsBinding.instance.addObserver(this);
@@ -107,6 +141,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   Future<void> _loadPrefs() async {
     _prefs = await SharedPreferences.getInstance();
+    _stateStore = MatchStateStore(_prefs!);
     _periodTime = _prefs!.getInt(_periodTimeKey) ?? 600;
     _halfTimeDuration = _prefs!.getInt(_halfTimeDurationKey) ?? 300;
     _numberOfPlayers =
@@ -122,13 +157,43 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       _singleTapEnabled = _prefs!.getBool(_singleTapEnabledKey) ?? false;
     }
 
+    // Load any in-progress-match snapshot BEFORE the bootstrap gameInit() so the
+    // bootstrap can't clobber it. gameInit() no longer clears the snapshot, and
+    // its internal stopTimer() is a persist chokepoint, so wrap the bootstrap in
+    // _suppressPersist — otherwise it would overwrite the snapshot with the
+    // default (inGame=false) state via that indirect path.
+    final snapshot = _stateStore!.load();
     if (!inGame) {
-      gameInit();
+      _suppressPersist = true;
+      try {
+        gameInit();
+      } finally {
+        _suppressPersist = false;
+      }
     }
+
+    // A usable in-progress match (not already finished) → stash and prompt the
+    // referee. Stage fullTime means the match was over, so nothing to resume.
+    if (snapshot != null &&
+        snapshot.inGame &&
+        _stageFromName(snapshot.stage) != MatchStage.fullTime) {
+      _pendingResume = snapshot;
+      _maybeFireResumePrompt();
+    }
+
     // Prompt for notification permission once on first launch (one-shot), now
     // that _prefs is available — keeps the OS dialog off the match-start path.
     _maybeRequestNotificationPermission();
     notifyListeners();
+  }
+
+  void _maybeFireResumePrompt() {
+    if (_resumePrompted) return;
+    if (_pendingResume == null) return;
+    final callback = _onRequestResumeMatch;
+    if (callback == null) return;
+    _resumePrompted = true;
+    callback();
   }
 
   void gameInit() {
@@ -160,6 +225,189 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void gameRefresh() {
     // refresh all values on every sink (mqtt + bridge)
     _broadcastFullState();
+  }
+
+  // ---- Match cold-resume persistence (#45) ----
+
+  /// Mark the match state dirty. Trivial bool set, intentionally cheap so it is
+  /// safe to call from anywhere — including the robot-command fan-out — without
+  /// touching the START/STOP latency invariant. No snapshot build, no JSON.
+  /// No-op before the store exists (constructor bootstrap) or while suppressed.
+  void markMatchStateDirty() {
+    if (_suppressPersist || _stateStore == null) return;
+    _dirty = true;
+  }
+
+  /// Mark dirty and schedule a coalesced flush AFTER the current synchronous
+  /// work has run, via scheduleMicrotask — so the snapshot build + jsonEncode
+  /// never run inline on the caller's frame. This is deliberate: callers like
+  /// [Module.setLabel]/[Module.play] are reached from within larger synchronous
+  /// operations, and the microtask hop keeps the build off that frame even
+  /// though no current caller sits on the START/STOP fan-out itself (those use
+  /// the bare flag [markMatchStateDirty]). Use [_flushMatchStateNow] when an
+  /// immediate synchronous flush is wanted (heartbeat tick / resume commit).
+  void _markDirtyFlush() {
+    if (_suppressPersist || _stateStore == null) return;
+    _dirty = true;
+    scheduleMicrotask(_persistMatchState);
+  }
+
+  /// Public entry for off-hot-path collaborators (e.g. [Module.setLabel]) that
+  /// want a change scheduled to disk now, not merely flagged for the next
+  /// heartbeat. Never call from a robot-command path.
+  void markMatchStateDirtyAndFlush() => _markDirtyFlush();
+
+  /// Force an immediate, synchronous flush of the current state. `_dirty` alone
+  /// is not enough — [_persistMatchState] no-ops unless dirty — so the two are
+  /// always paired; this helper makes that contract explicit at every call site.
+  void _flushMatchStateNow() {
+    markMatchStateDirty();
+    _persistMatchState();
+  }
+
+  /// Public clear for intentional fresh-start paths outside the resume flow
+  /// (e.g. Settings "Reset current game"). gameInit() deliberately does not
+  /// clear the snapshot, so those paths must clear it explicitly or a killed
+  /// app would re-offer the reset match on next launch. Awaitable so a caller
+  /// can confirm the clear landed (the destructive intent should not be lost on
+  /// an immediate kill).
+  Future<void> clearMatchSnapshot() => _clearMatchStateAndWait();
+
+  /// Build the snapshot (if dirty) and enqueue the save. A no-op unless dirty,
+  /// the store exists, and persistence isn't suppressed.
+  void _persistMatchState() {
+    if (_suppressPersist) return;
+    if (!_dirty) return;
+    final store = _stateStore;
+    if (store == null) return;
+    _dirty = false;
+    unawaited(store.save(_buildSnapshot()));
+  }
+
+  /// Clear the persisted match (end of match / fresh start / discard). Drops the
+  /// dirty flag so a pending flush can't immediately re-save, and tombstones the
+  /// snapshot in the store.
+  void _clearMatchState() {
+    _dirty = false;
+    unawaited(_stateStore?.clear());
+  }
+
+  /// Same as [_clearMatchState] but awaitable, for destructive UI paths that
+  /// want to confirm the clear landed before dismissing.
+  Future<void> _clearMatchStateAndWait() async {
+    _dirty = false;
+    await _stateStore?.clear();
+  }
+
+  MatchSnapshot _buildSnapshot() {
+    return MatchSnapshot(
+      stage: currentStage.name,
+      remainingTime: _remainingTime,
+      isTimeRunning: isTimeRunning,
+      inGame: inGame,
+      timerButtonText: timerButtonText,
+      savedAtMs: DateTime.now().millisecondsSinceEpoch,
+      teams: teams
+          .map((t) => TeamSnapshot(id: t.id, name: t.name, score: t.score))
+          .toList(),
+      modules:
+          teams.expand((t) => t.modules).map((m) => m.toSnapshot()).toList(),
+    );
+  }
+
+  MatchStage _stageFromName(String name) => MatchStage.values.firstWhere(
+        (s) => s.name == name,
+        orElse: () => MatchStage.firstHalf,
+      );
+
+  /// Restore the match the referee chose to resume: full state, clock FROZEN at
+  /// the persisted freeze point (no dead-time subtraction), robots STOPPED.
+  /// Runs under _suppressPersist so it writes no partial snapshots; the single
+  /// committed save happens after the scope closes.
+  void resumePendingMatch() {
+    final snapshot = _pendingResume;
+    if (snapshot == null) return;
+
+    _suppressPersist = true;
+    try {
+      final stage = _stageFromName(snapshot.stage);
+      currentStage = stage;
+      inGame = true;
+
+      _restoreTeamOrderAndInfo(snapshot.teams);
+
+      // Restore full per-module state (matched by stable moduleId). Late async
+      // reconnects mutate only connection status (not a persisted field), so
+      // they don't each trigger a save.
+      final byId = {for (final m in snapshot.modules) m.moduleId: m};
+      for (final team in teams) {
+        for (final module in team.modules) {
+          final moduleSnap = byId[module.moduleId];
+          if (moduleSnap != null) module.restoreFromSnapshot(moduleSnap);
+        }
+      }
+
+      _remainingTime = snapshot.remainingTime;
+
+      if (stage == MatchStage.halfTime) {
+        // Resume the break RUNNING (option i): the half-time break drives no
+        // robot play, so freezing it would strand the remaining break with no
+        // way to continue. SKIP still lets the referee jump to the second half.
+        timerButtonText = 'SKIP';
+        startTimer();
+      } else {
+        // firstHalf / secondHalf: freeze where it died, robots stopped. The
+        // referee resumes play manually via the existing double-tap START.
+        isTimeRunning = false;
+        _isGameRunning = false;
+        _runClockStartedAt = null;
+        _runClockStartRemainingTime = null;
+        timerButtonText = 'START';
+      }
+
+      _broadcastFullState();
+    } finally {
+      _suppressPersist = false;
+    }
+
+    _pendingResume = null;
+    // Commit the restored state ONCE, now that the suppress scope has closed (a
+    // flush while suppressed is a no-op).
+    _flushMatchStateNow();
+    notifyListeners();
+  }
+
+  /// Referee chose Discard: fresh match and clear the persisted snapshot.
+  /// Awaits the clear so the destructive flow doesn't dismiss while a failed/
+  /// pending tombstone could still re-offer the match on next launch (this is a
+  /// dialog action, not a robot-command path, so the await is safe).
+  Future<void> discardPendingMatch() async {
+    _pendingResume = null;
+    gameInit();
+    setTeamToDefaultOrder();
+    await _clearMatchStateAndWait();
+    notifyListeners();
+  }
+
+  void _restoreTeamOrderAndInfo(List<TeamSnapshot> teamSnaps) {
+    // Game() always builds teams as [A, B]. A swapped match was reordered by
+    // toggleTeamOrder() reversing the list, and _teamColorHex + the UI color
+    // bars are keyed on team.id, so reverse the live list first when the
+    // snapshot's first team is 'B', THEN assign names/scores by matching id
+    // (never positionally) so they land on the correct physical side.
+    if (teamSnaps.isNotEmpty &&
+        teamSnaps.first.id == 'B' &&
+        teams.length == 2 &&
+        teams.first.id == 'A') {
+      teams = teams.reversed.toList();
+    }
+    for (final snap in teamSnaps) {
+      final matches = teams.where((t) => t.id == snap.id);
+      if (matches.isEmpty) continue;
+      final team = matches.first;
+      team.name = snap.name;
+      team.score = snap.score;
+    }
   }
 
   // Timer
@@ -199,6 +447,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         _tickTimer();
       }
     });
+    _markDirtyFlush();
   }
 
   void _tickTimer() {
@@ -207,6 +456,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       _checkGameTimerVibration();
       notifyAllModulesTimer();
       mqttService.publishTime(_remainingTime);
+      // ~5 s heartbeat for the clock freeze point. Placed only in the normal
+      // decrement branch (before any stage-transition reset below), so the % 5
+      // test never samples a freshly-reset boundary value. Skipped during the
+      // warm-resume replay burst. Direct flush (not microtask): the 1 Hz tick is
+      // a low-frequency callback, not a command path.
+      if (!_replaying && _remainingTime % 5 == 0) {
+        _flushMatchStateNow();
+      }
     }
 
     if (_remainingTime <= 0) {
@@ -221,6 +478,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           startTimer();
           timerButtonText = 'SKIP';
           halfTimeAll();
+          _markDirtyFlush();
           // Trigger the callback to show the dialog
           if (onRequestSwitchTeamOrderDialog != null) {
             onRequestSwitchTeamOrderDialog!();
@@ -231,6 +489,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           _remainingTime = periodTime;
           stopAll(true, force: true);
           timerButtonText = 'START';
+          _markDirtyFlush();
           break;
         case MatchStage.secondHalf:
           currentStage = MatchStage.fullTime;
@@ -238,6 +497,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           timerButtonText = 'REPEAT';
           gameOverAll();
           _queueFinalResultSubmission();
+          // The match is over: stop the OS autoConnect from chasing modules
+          // that are powered down for good (e.g. a unit still off from a
+          // late penalty). In-match these reconnect unbounded on purpose; at
+          // full time we settle the ones still off to "Disconnected".
+          disconnectInactiveModules();
+          // Match just ended: clear the snapshot rather than persisting a
+          // fullTime one (item 2 made this transition a persist point).
+          _clearMatchState();
           break;
         default:
           debugPrint('unknown match stage');
@@ -299,12 +566,18 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       _broadcastStageAndTime();
 
       notifyListeners();
+      _markDirtyFlush();
     } else {
-      // GAME OVER
+      // GAME OVER — starting a brand-new match, so clear the (fullTime)
+      // snapshot. gameInit() must NOT clear it itself (it also runs on every
+      // cold launch, before the resume path reads the snapshot). Clear LAST so
+      // the scheduled flushes from gameInit()/notifyModulesScore() see a clean
+      // dirty flag and don't re-write a snapshot after the clear.
       gameInit();
       setTeamToDefaultOrder();
       notifyListeners();
       notifyModulesScore();
+      _clearMatchState();
     }
   }
 
@@ -317,6 +590,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // the bridge only reflects the new sides on the next goal.
     _broadcastTeamInfo();
     _broadcastScore();
+
+    _markDirtyFlush();
   }
 
   /// Toggles all modules based on the current game stage.
@@ -325,6 +600,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       disconnectAll();
     } else if (_numberOfPlaying > 0) {
       stopAll(true);
+      // Master STOP clears penalties and changes module state without touching
+      // the match clock, so the heartbeat may not be running; schedule a flush
+      // (off the command path) so a crash right after STOP can't restore stale
+      // penalties.
+      _markDirtyFlush();
     } else {
       if (!_isGameRunning &&
           (currentStage == MatchStage.firstHalf ||
@@ -332,7 +612,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         startTimer();
         timerButtonText = 'STOP';
       }
-      playAll(true);
+      // Penalty-preserve fix (#45): penalty-aware start, matching the central
+      // timer START (toggleTimer -> playAll(false)). playAll(true) ->
+      // Module.playAll()/play() would ZERO an active/restored _penaltyTime; the
+      // master STOP still clears penalties (intended post-goal reset).
+      playAll(false);
     }
   }
 
@@ -345,6 +629,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   void notifyAllModulesTimer() {
+    // Penalties are a match-time concept; robots are off-field during the
+    // half-time break, so never count a penalty down (and never auto-release it
+    // via play()) while in halfTime. Normally modules are in halfTime state here
+    // so the loop is a no-op anyway, but a cold resume can restore a module in
+    // damage (a penalty given during the break) — guard against auto-PLAY there.
+    if (currentStage == MatchStage.halfTime) return;
+
     // Use a flag so that at most one vibration fires per timer tick even if
     // multiple modules hit a threshold simultaneously.
     bool vibrateTriggered = false;
@@ -386,6 +677,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _runClockStartedAt = null;
     _runClockStartRemainingTime = null;
     notifyListeners();
+    _markDirtyFlush();
   }
 
   @override
@@ -435,6 +727,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         if (ticksToProcess == 0) {
           _broadcastStageAndTime();
           notifyListeners();
+        }
+        // The per-tick heartbeat was suppressed during the replay burst, so
+        // flush ONCE now — otherwise a crash right after a warm resume would
+        // persist the stale pre-background freeze point and over-credit time on
+        // the next cold resume. But if the replay reached fullTime, the
+        // secondHalf->fullTime tick already CLEARED the snapshot; don't re-save a
+        // terminal match (it would undo the clear-on-fullTime contract).
+        if (currentStage != MatchStage.fullTime) {
+          _flushMatchStateNow();
         }
       }
     }
@@ -582,8 +883,27 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   void disconnectAll() {
     for (var team in teams) {
-      for (var module in team.modules
-          .where((module) => module.isEnabled && module.isConnected)) {
+      // Include modules that are mid-reconnect (isConnecting), not just
+      // currently-connected ones: issue #38 added a reconnecting state where
+      // isConnected is false while autoConnect keeps retrying. Without this a
+      // "disconnect all" would skip those modules, leaving them retrying and
+      // later consuming GATT slots after the referee asked to disconnect.
+      for (var module in team.modules.where(
+          (module) => module.isEnabled && (module.isConnected || module.isConnecting))) {
+        module.bleDisconnect();
+      }
+    }
+  }
+
+  // Tear down modules that are mid-reconnect (off / "Connecting...") so the OS
+  // autoConnect installed by connect(autoConnect:true) stops chasing a unit
+  // that is powered down for good. Connected modules are left alone (they show
+  // game-over until the referee disconnects). Used at the full-time transition
+  // — during a match these reconnects are unbounded on purpose (invariant #5).
+  void disconnectInactiveModules() {
+    for (var team in teams) {
+      for (var module in team.modules.where(
+          (module) => module.isEnabled && module.isConnecting)) {
         module.bleDisconnect();
       }
     }
@@ -647,6 +967,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       }
     }
     _broadcastScore();
+    _markDirtyFlush();
   }
 
   String _teamColorHex(Team team) => team.id == 'A' ? '77FF00' : 'FF00FF';
@@ -796,6 +1117,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _remainingTime = seconds.clamp(1, periodTime);
     notifyListeners();
     _broadcastStageAndTime();
+    // A manual clock correction changes the exact freeze point cold resume
+    // restores; persist it (off the hot path — the editor is only open while
+    // the clock is stopped) so a crash before the next event can't lose it.
+    _markDirtyFlush();
   }
 
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;
@@ -821,11 +1146,21 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (match != null) {
       teams[0].name = match.team1;
       teams[1].name = match.team2;
-      
+
       mqttService.topicField = match.field;
-      
+
       _broadcastTeamInfo();
+      _markDirtyFlush();
     }
+  }
+
+  /// Set a team's name from the UI. Routes through here (instead of a direct
+  /// `team.name =` + `notifyMQTT()`) so the change also persists into the
+  /// cold-resume snapshot.
+  void setTeamName(Team team, String value) {
+    team.name = value;
+    notifyMQTT();
+    _markDirtyFlush();
   }
 
   /// Publish team info (names + IDs) to MQTT. Delegates to

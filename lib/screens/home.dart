@@ -14,6 +14,7 @@ import 'package:rcj_scoreboard/utils/colors.dart';
 import 'package:rcj_scoreboard/widgets/critical_gesture_detector.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/services/ble_adapter_monitor.dart';
+import 'package:rcj_scoreboard/services/match_state_store.dart';
 import 'package:rcj_scoreboard/screens/widgets/bluetooth_banner.dart';
 
 class Home extends StatefulWidget {
@@ -27,6 +28,7 @@ class _HomeState extends State<Home> {
   bool _didSetupCallbacks = false;
   Game? _game;
   void Function()? _switchOrderCallback;
+  void Function()? _resumeCallback;
 
   @override
   void didChangeDependencies() {
@@ -40,17 +42,22 @@ class _HomeState extends State<Home> {
     if (!_didSetupCallbacks) {
       _didSetupCallbacks = true;
       _game = Provider.of<Game>(context, listen: false);
-      _switchOrderCallback = setupGameCallbacks(_game!, context);
+      final callbacks = setupGameCallbacks(_game!, context);
+      _switchOrderCallback = callbacks.switchOrder;
+      _resumeCallback = callbacks.resume;
     }
   }
 
   @override
   void dispose() {
-    // Clear the dialog callback we installed so the long-lived Game does not
-    // retain a closure capturing this disposed State's context. Guard on
+    // Clear the dialog callbacks we installed so the long-lived Game does not
+    // retain closures capturing this disposed State's context. Guard on
     // identity so we never clear a newer Home's callback.
     if (identical(_game?.onRequestSwitchTeamOrderDialog, _switchOrderCallback)) {
       _game?.onRequestSwitchTeamOrderDialog = null;
+    }
+    if (identical(_game?.onRequestResumeMatch, _resumeCallback)) {
+      _game?.onRequestResumeMatch = null;
     }
     super.dispose();
   }
@@ -568,8 +575,10 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
                   fillColor: Colors.grey[800],
                 ),
                 onSubmitted: (value) {
-                  team.name = value;
-                  game.notifyMQTT();
+                  // Route through Game.setTeamName so the edit also persists
+                  // into the cold-resume snapshot (a direct team.name = bypasses
+                  // every persistence chokepoint).
+                  game.setTeamName(team, value);
                 },
               ),
             ),
@@ -741,10 +750,11 @@ class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
   }
 }
 
-/// Installs the half-time "switch team order" dialog callback on [game] and
-/// returns the exact closure assigned, so the caller can clear it on dispose
-/// (the closure captures [context]).
-void Function() setupGameCallbacks(Game game, BuildContext context) {
+/// Installs the half-time "switch team order" dialog and the cold-resume prompt
+/// callbacks on [game], returning the exact closures assigned so the caller can
+/// clear them on dispose (both capture [context]).
+({void Function() switchOrder, void Function() resume}) setupGameCallbacks(
+    Game game, BuildContext context) {
   // A local function declaration (not a `final ... = () {}` variable) to satisfy
   // the analyzer's prefer_function_declarations_over_variables lint, which CI
   // runs as fatal (`flutter analyze --fatal-infos`).
@@ -793,7 +803,154 @@ void Function() setupGameCallbacks(Game game, BuildContext context) {
     }
   }
   game.onRequestSwitchTeamOrderDialog = callback;
-  return callback;
+
+  // Cold-resume prompt (#45). Non-destructive: Resume is the prominent default;
+  // Discard requires a deliberate second confirmation so a stray tap can never
+  // wipe an in-progress match (double-tap safety invariant). The dialog is
+  // non-dismissible (no barrier/back-button escape into neither path). A named
+  // function declaration (not a `final x = () {}` variable) to satisfy the
+  // analyzer's prefer_function_declarations_over_variables lint (fatal in CI).
+  void resumeCallback() {
+    // The draining setter may invoke this synchronously while callbacks are
+    // installed in didChangeDependencies, so defer to after the frame —
+    // showDialog() during build throws.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final snapshot = game.pendingResume;
+      if (snapshot == null) return;
+      if (!context.mounted) return;
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+      builder: (dialogContext) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          backgroundColor: Colors.grey[800],
+          title: const Text('Resume match in progress?',
+              style: TextStyle(color: Colors.white)),
+          content: Text(_resumeMatchBody(snapshot),
+              style: const TextStyle(color: Colors.white)),
+          actions: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                Expanded(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.grey[600],
+                    ),
+                    onPressed: () async {
+                      final confirmed = await _confirmDiscardMatch(dialogContext);
+                      if (confirmed == true) {
+                        await game.discardPendingMatch();
+                        if (dialogContext.mounted) {
+                          Navigator.of(dialogContext).pop();
+                        }
+                      }
+                    },
+                    child: const Text('Discard',
+                        style: TextStyle(color: Colors.white)),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green[600],
+                    ),
+                    onPressed: () {
+                      game.resumePendingMatch();
+                      Navigator.of(dialogContext).pop();
+                    },
+                    child: const Text('Resume',
+                        style: TextStyle(color: Colors.white)),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+      );
+    });
+  }
+  game.onRequestResumeMatch = resumeCallback;
+
+  return (switchOrder: callback, resume: resumeCallback);
+}
+
+String _resumeMatchBody(MatchSnapshot snapshot) {
+  final teams = snapshot.teams;
+  final leftName = teams.isNotEmpty ? teams[0].name : 'Team A';
+  final rightName = teams.length > 1 ? teams[1].name : 'Team B';
+  final leftScore = teams.isNotEmpty ? teams[0].score : 0;
+  final rightScore = teams.length > 1 ? teams[1].score : 0;
+  final ageMin =
+      ((DateTime.now().millisecondsSinceEpoch - snapshot.savedAtMs) / 60000)
+          .floor();
+  final saved = ageMin <= 0 ? 'saved just now' : 'saved $ageMin min ago';
+  return '$leftName $leftScore – $rightScore $rightName\n'
+      '${_resumeStageLabel(snapshot.stage)}, $saved';
+}
+
+String _resumeStageLabel(String stageName) {
+  switch (stageName) {
+    case 'firstHalf':
+      return '1st half';
+    case 'halfTime':
+      return 'Half-time';
+    case 'secondHalf':
+      return '2nd half';
+    case 'fullTime':
+      return 'Full-time';
+    default:
+      return stageName;
+  }
+}
+
+Future<bool?> _confirmDiscardMatch(BuildContext context) {
+  return showDialog<bool>(
+    context: context,
+    barrierDismissible: false,
+    builder: (context) => PopScope(
+      canPop: false,
+      child: AlertDialog(
+        backgroundColor: Colors.grey[800],
+        title: const Text('Discard match?',
+            style: TextStyle(color: Colors.white)),
+        content: const Text(
+            'This permanently deletes the saved match and cannot be undone.',
+            style: TextStyle(color: Colors.white)),
+        actions: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              Expanded(
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey[600],
+                  ),
+                  onPressed: () => Navigator.of(context).pop(false),
+                  child: const Text('Cancel',
+                      style: TextStyle(color: Colors.white)),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red[600],
+                  ),
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('Discard',
+                      style: TextStyle(color: Colors.white)),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 Future<bool> _showExitDialog(BuildContext context) async {

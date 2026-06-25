@@ -207,12 +207,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             SettingButton(
                               title: 'Reset current game',
                               buttonText: 'Reset',
-                              onPressed: () {
+                              onPressed: () async {
                                 setState(() {
                                   widget.game.setTeamToDefaultOrder();
                                   widget.game.gameInit();
                                   widget.game.resetModuleNames();
                                 });
+                                // gameInit() deliberately does not clear the
+                                // cold-resume snapshot; an intentional reset
+                                // must, or a kill would re-offer this match.
+                                // Awaited so the clear lands before a possible
+                                // immediate kill (off the robot-command path).
+                                await widget.game.clearMatchSnapshot();
                               },
                             ),
                             SettingButton(
