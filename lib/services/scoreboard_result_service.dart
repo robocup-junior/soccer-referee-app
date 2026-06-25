@@ -372,6 +372,8 @@ class ScoreboardResultService with ChangeNotifier {
         _outbox[i] = item.copyWith(
           state: ResultSubmissionState.pending,
           retryCount: 0,
+          clearError: true,
+          clearResponse: true,
         );
         revived = true;
       }
@@ -482,7 +484,7 @@ class ScoreboardResultService with ChangeNotifier {
           state: ResultSubmissionState.submitted,
           responseStatus: response.statusCode,
           responseBody: body,
-          errorMessage: null,
+          clearError: true,
         );
         _statusMessage = 'Final result submitted';
         _updateMatchVersionFromResponse(body);
@@ -580,9 +582,12 @@ class ScoreboardResultService with ChangeNotifier {
   }
 
   bool _shouldClearLinkedDataAfterSubmission() {
-    return _outbox.any((entry) => entry.state == ResultSubmissionState.submitted) &&
-        !_outbox.any((entry) =>
-            entry.state == ResultSubmissionState.pending ||
-            entry.state == ResultSubmissionState.conflict);
+    // Only auto-clear once EVERY queued result is submitted. The previous check
+    // (any submitted && none pending/conflict) ignored terminal `failed` items,
+    // so a different match's rejected result would be silently wiped — and the
+    // outbox is its only persisted copy — the moment any other item succeeded.
+    return _outbox.isNotEmpty &&
+        _outbox.every(
+            (entry) => entry.state == ResultSubmissionState.submitted);
   }
 }

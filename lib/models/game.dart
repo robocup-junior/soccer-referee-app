@@ -809,8 +809,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   void _applyScoreboardMatchConfig(ScoreboardMatchConfig config) {
     final homeIsLeft = config.homeIsLeft;
+    // Team names are part of the signature so a corrected schedule payload that
+    // changes only a name (without bumping version/duration/side) still updates
+    // the displayed names; the `if (!inGame)` guard below still gates timing.
     final signature =
-        '${config.matchCode}:${config.version}:${config.durationSeconds}:${homeIsLeft ? 'L' : 'R'}';
+        '${config.matchCode}:${config.version}:${config.durationSeconds}:${homeIsLeft ? 'L' : 'R'}:${config.homeTeamName}:${config.awayTeamName}';
     if (_lastAppliedScoreboardSignature == signature) {
       return;
     }

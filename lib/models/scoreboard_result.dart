@@ -156,6 +156,13 @@ class ResultOutboxItem {
     Map<String, dynamic>? responseBody,
     String? errorMessage,
     int? retryCount,
+    // A plain nullable parameter cannot distinguish "leave unchanged" from "set
+    // to null" (both arrive as null), so an explicit flag is needed to actively
+    // clear the response/error fields — e.g. on a successful submit or when a
+    // failed item is revived for a fresh retry, so stale failure details do not
+    // linger on a now-submitted/pending item.
+    bool clearResponse = false,
+    bool clearError = false,
   }) {
     return ResultOutboxItem(
       id: id,
@@ -169,9 +176,10 @@ class ResultOutboxItem {
       comment: comment,
       retryCount: retryCount ?? this.retryCount,
       state: state ?? this.state,
-      responseStatus: responseStatus ?? this.responseStatus,
-      responseBody: responseBody ?? this.responseBody,
-      errorMessage: errorMessage ?? this.errorMessage,
+      responseStatus:
+          clearResponse ? null : (responseStatus ?? this.responseStatus),
+      responseBody: clearResponse ? null : (responseBody ?? this.responseBody),
+      errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
       createdAt: createdAt,
       updatedAt: DateTime.now().toUtc(),
     );
