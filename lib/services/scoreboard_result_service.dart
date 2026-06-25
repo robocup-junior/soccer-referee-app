@@ -262,7 +262,7 @@ class ScoreboardResultService with ChangeNotifier {
     }
 
     final requestBase = _baseUri;
-    final endpoint = requestBase.replace(path: '/api/v1/soccer/match');
+    final endpoint = requestBase.replace(path: '/api/v1/soccer/match/');
 
     try {
       final response = await http
