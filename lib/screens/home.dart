@@ -194,6 +194,7 @@ Widget buildModuleButton(Module module, Game game) {
         return Expanded(
           child: GestureDetector(
             onDoubleTap: () {
+              if (game.noShowPenaltyGoalsActive) return;
               if (module.isPlaying) {
                 if (game.isGameRunning) {
                   module.penalty(game.penaltyTime);
@@ -263,7 +264,9 @@ Widget buildTeamContainer(Team team, Game game) {
         return GestureDetector(
           onDoubleTap: () {
             team.addScore(1);
-            game.stopAll(true);
+            if (!game.noShowPenaltyGoalsActive) {
+              game.stopAll(true);
+            }
             game.notifyModulesScore();
           },
           onLongPress: () {

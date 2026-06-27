@@ -76,8 +76,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
       builder: (context) => AlertDialog(
         title: const Text('Start no-show penalty goals?'),
         content: Text(
-          '${scoringTeam.name} will receive one goal every minute while the '
-          'game timer runs. The current game will be reset.',
+          '${scoringTeam.name} will receive ${widget.game.noShowPenaltyGoalIntervalLabel} '
+          'while the game timer runs. The current game will be reset.',
         ),
         actions: [
           TextButton(
@@ -183,17 +183,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                     });
                                   },
                                 ),
-                                SettingButton(
-                                  title: 'Reset current game',
-                                  buttonText: 'Reset',
-                                  onPressed: () {
-                                    setState(() {
-                                      widget.game.setTeamToDefaultOrder();
-                                      widget.game.gameInit();
-                                      widget.game.resetModuleNames();
-                                    });
-                                  },
-                                ),
+                                if (!noShowActive)
+                                  SettingButton(
+                                    title: 'Reset current game',
+                                    buttonText: 'Reset',
+                                    onPressed: () {
+                                      setState(() {
+                                        widget.game.setTeamToDefaultOrder();
+                                        widget.game.gameInit();
+                                        widget.game.resetModuleNames();
+                                      });
+                                    },
+                                  ),
                                 SettingStatus(
                                   title: 'No-show penalty goals',
                                   status: noShowActive

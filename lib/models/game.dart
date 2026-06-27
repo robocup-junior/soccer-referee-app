@@ -108,27 +108,27 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     notifyListeners();
   }
 
-  void gameInit() {
+  void gameInit({bool resetModules = true}) {
     currentStage = MatchStage.firstHalf;
     _remainingTime = periodTime;
     isTimeRunning = false;
     _isGameRunning = false;
     timerButtonText = 'START';
     inGame = false;
-    _noShowPenaltyGoalsActive = false;
-    _noShowPenaltyScoringTeamId = null;
-    _lastNoShowPenaltyGoalElapsed = 0;
+    _resetNoShowPenaltyGoals();
 
     stopTimer();
 
     // enable or disable players based on player number;
     for (var team in teams) {
       team.score = 0;
-      for (var i = 0; i < _maxPlayer; i++) {
-        i < numberOfPLayers
-            ? team.modules[i].enable()
-            : team.modules[i].disable();
-        team.modules[i].init();
+      if (resetModules) {
+        for (var i = 0; i < _maxPlayer; i++) {
+          i < numberOfPLayers
+              ? team.modules[i].enable()
+              : team.modules[i].disable();
+          team.modules[i].init();
+        }
       }
     }
     notifyListeners();
@@ -221,7 +221,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           break;
         case MatchStage.secondHalf:
           currentStage = MatchStage.fullTime;
-          _noShowPenaltyGoalsActive = false;
+          _resetNoShowPenaltyGoals();
           if (!noShowModeActive) {
             stopAll(true);
             gameOverAll();
@@ -371,22 +371,24 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   void startNoShowPenaltyGoals(Team scoringTeam) {
-    gameInit();
+    gameInit(resetModules: false);
     _noShowPenaltyGoalsActive = true;
     _noShowPenaltyScoringTeamId = scoringTeam.id;
     _lastNoShowPenaltyGoalElapsed = 0;
     timerButtonText = 'STOP';
     startTimer();
-    notifyListeners();
   }
 
   void stopNoShowPenaltyGoals() {
+    _resetNoShowPenaltyGoals();
+    timerButtonText = 'START';
+    stopTimer();
+  }
+
+  void _resetNoShowPenaltyGoals() {
     _noShowPenaltyGoalsActive = false;
     _noShowPenaltyScoringTeamId = null;
     _lastNoShowPenaltyGoalElapsed = 0;
-    timerButtonText = 'START';
-    stopTimer();
-    notifyListeners();
   }
 
   Team? get _noShowPenaltyScoringTeam {
@@ -747,7 +749,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   int get remainingTime => _remainingTime;
   bool get noShowPenaltyGoalsActive => _noShowPenaltyGoalsActive;
-  String get noShowPenaltyGoalIntervalLabel => '1 goal/min';
+  String get noShowPenaltyGoalIntervalLabel {
+    if (_noShowPenaltyGoalIntervalSeconds % 60 == 0) {
+      final minutes = _noShowPenaltyGoalIntervalSeconds ~/ 60;
+      return minutes == 1 ? '1 goal/min' : '1 goal/$minutes min';
+    }
+    return '1 goal/$_noShowPenaltyGoalIntervalSeconds sec';
+  }
   String get noShowPenaltyScoringTeamName =>
       _noShowPenaltyScoringTeam?.name ?? '';
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;
