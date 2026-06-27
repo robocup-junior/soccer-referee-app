@@ -900,7 +900,17 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // the displayed names; the `if (!inGame)` guard below still gates timing.
     final signature =
         '${config.matchCode}:${config.version}:${config.durationSeconds}:${homeIsLeft ? 'L' : 'R'}:${config.homeTeamName}:${config.awayTeamName}';
-    if (_lastAppliedScoreboardSignature == signature) {
+    // Dedupe on an unchanged signature - EXCEPT while a resumed match is still
+    // suppressed. `_lastAppliedScoreboardSignature` is in-memory and is never
+    // cleared when the service drops `_matchConfig` to null (a token-changing
+    // deep link or clearLinkedMatchData), so a suppressed resume can carry a
+    // stale signature for its own fixture. If that same fixture's config then
+    // re-arrives, an early dedupe return here would skip the re-arm below and
+    // leave the final result suppressed forever (#53). While suppressed, fall
+    // through to the re-arm guard, which re-arms the bound fixture or rejects a
+    // different one.
+    if (!(inGame && _suppressScoreboardFinalResult) &&
+        _lastAppliedScoreboardSignature == signature) {
       return;
     }
     var reArmedFromSuppression = false;

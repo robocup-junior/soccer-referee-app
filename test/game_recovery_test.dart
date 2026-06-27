@@ -662,6 +662,13 @@ void main() {
       expect(result.homeGoals, 4, reason: 'home is team A');
       expect(result.awayGoals, 2, reason: 'away is team B');
       expect(result.version, 3);
+      expect(
+        game.scoreboardResultService.outbox
+            .where((i) => i.matchCode == 'M-LFT')
+            .length,
+        1,
+        reason: 'exactly one submission - the re-arm must not double-queue',
+      );
 
       await tester.pump(const Duration(milliseconds: 1500));
       game.dispose();
