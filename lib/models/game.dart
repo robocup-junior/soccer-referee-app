@@ -903,6 +903,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (_lastAppliedScoreboardSignature == signature) {
       return;
     }
+    var reArmedFromSuppression = false;
     if (inGame && _suppressScoreboardFinalResult) {
       // A resumed match's final result is suppressed until its bound fixture's
       // config arrives. Re-arm ONLY for that same fixture (the unawaited config
@@ -914,6 +915,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           config.matchCode != resumedCode) {
         return;
       }
+      reArmedFromSuppression = true;
     }
     _lastAppliedScoreboardSignature = signature;
     _suppressScoreboardFinalResult = false;
@@ -932,6 +934,17 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (!inGame) {
       periodTime = config.durationSeconds;
       gameInit();
+    } else if (reArmedFromSuppression &&
+        currentStage == MatchStage.fullTime) {
+      // The bound fixture's config only surfaced AFTER this resumed match had
+      // already run to full-time while suppressed. The sole
+      // _queueFinalResultSubmission() call site (the secondHalf -> fullTime
+      // tick) returned early because the result was suppressed and the config
+      // was absent, so nothing was ever queued and the snapshot was already
+      // cleared - the result would be lost forever (#53). Now that the bound
+      // fixture's config is here, submit it. enqueueFinalResult is idempotent
+      // per match_code, so this is safe even if an item somehow already exists.
+      _queueFinalResultSubmission();
     }
   }
 

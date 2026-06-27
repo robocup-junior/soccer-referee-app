@@ -614,6 +614,59 @@ void main() {
       game.dispose();
     });
 
+    testWidgets(
+        'late config after full-time still submits a suppressed resume (#53)',
+        (tester) async {
+      // Regression: a resumed referee match can reach full-time WHILE STILL
+      // suppressed (its fixture config has not surfaced yet). The sole
+      // _queueFinalResultSubmission() call site is the secondHalf->fullTime
+      // tick, which returns early under suppression, and the same tick clears
+      // the snapshot - so without re-submitting on late config arrival the
+      // result is lost forever. The late config must drive the POST.
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        scoreA: 4,
+        scoreB: 2,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-LFT',
+        scoreboardVersion: 3,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      // No scoreboard config seeded yet -> matchConfig is null at resume time.
+      expect(game.scoreboardResultService.matchConfig, isNull);
+
+      game.resumePendingMatch(); // suppressed: bound fixture remembered as M-LFT
+
+      // Drive to full-time BEFORE the config surfaces. The suppressed full-time
+      // tick must NOT queue anything yet.
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+      expect(game.currentStage, MatchStage.fullTime);
+      await expectNoOutboxItem(tester, game, 'M-LFT');
+
+      // Now the bound fixture's config finally arrives, after full-time.
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-LFT', version: 3),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+
+      final result = await waitForOutboxItem(tester, game, 'M-LFT');
+      expect(result.homeGoals, 4, reason: 'home is team A');
+      expect(result.awayGoals, 2, reason: 'away is team B');
+      expect(result.version, 3);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
     testWidgets('suppressed resume re-persists the binding for a 2nd kill (#53)',
         (tester) async {
       // Config not loaded at resume → binding is suppressed. The snapshot it
