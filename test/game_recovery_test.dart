@@ -8,11 +8,14 @@
 // delays) by either not starting the clock or cancelling/draining it before the
 // test returns.
 
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/module.dart';
+import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
 
 ModuleSnapshot _moduleSnap({
@@ -35,6 +38,42 @@ ModuleSnapshot _moduleSnap({
   );
 }
 
+Map<String, dynamic> _scoreboardConfig({
+  required String matchCode,
+  required int version,
+  bool homeIsLeft = true,
+  int durationSeconds = 600,
+  String homeTeamName = 'Home',
+  String awayTeamName = 'Away',
+}) =>
+    {
+      'match_code': matchCode,
+      'home_team': homeTeamName,
+      'away_team': awayTeamName,
+      'home_is_left': homeIsLeft,
+      'venue': 'Field 1',
+      'scheduled_start': null,
+      'duration_seconds': durationSeconds,
+      'timezone': 'Europe/Prague',
+      'version': version,
+      'status': 'SCHEDULED',
+    };
+
+Future<void> _seedScoreboardPrefs(
+  SharedPreferences prefs,
+  Map<String, dynamic> config, {
+  String? token,
+  Uri? baseUri,
+}) async {
+  await prefs.setString('scoreboard_match_config', jsonEncode(config));
+  if (token != null) {
+    await prefs.setString('scoreboard_token', token);
+  }
+  if (baseUri != null) {
+    await prefs.setString('scoreboard_base_url', baseUri.toString());
+  }
+}
+
 MatchSnapshot _snap({
   String stage = 'firstHalf',
   bool inGame = true,
@@ -45,6 +84,11 @@ MatchSnapshot _snap({
   String nameB = 'Team B',
   List<ModuleSnapshot> modules = const [],
   String firstTeamId = 'A',
+  bool isRefereeMatch = false,
+  String? scoreboardMatchCode,
+  int? scoreboardVersion,
+  String? scoreboardHomeTeamId,
+  String? scoreboardAwayTeamId,
 }) {
   final teamA = TeamSnapshot(id: 'A', name: nameA, score: scoreA);
   final teamB = TeamSnapshot(id: 'B', name: nameB, score: scoreB);
@@ -55,6 +99,11 @@ MatchSnapshot _snap({
     inGame: inGame,
     timerButtonText: 'START',
     savedAtMs: 1000,
+    isRefereeMatch: isRefereeMatch,
+    scoreboardMatchCode: scoreboardMatchCode,
+    scoreboardVersion: scoreboardVersion,
+    scoreboardHomeTeamId: scoreboardHomeTeamId,
+    scoreboardAwayTeamId: scoreboardAwayTeamId,
     teams: firstTeamId == 'A' ? [teamA, teamB] : [teamB, teamA],
     modules: modules,
   );
@@ -79,6 +128,53 @@ void main() {
   Future<void> settleLoad(WidgetTester tester) async {
     await tester.pump();
     await tester.pump();
+  }
+
+  Future<void> settleScoreboardConfig(WidgetTester tester, Game game) async {
+    for (var i = 0; i < 20; i++) {
+      if (game.scoreboardResultService.matchConfig != null) return;
+      await tester.pump(const Duration(milliseconds: 1));
+    }
+    fail('scoreboard match config did not load');
+  }
+
+  Future<MatchSnapshot> waitForSavedSnapshot(
+    WidgetTester tester,
+    bool Function(MatchSnapshot snapshot) matches,
+  ) async {
+    for (var i = 0; i < 20; i++) {
+      await tester.pump();
+      final snapshot = MatchStateStore(prefs).load();
+      if (snapshot != null && matches(snapshot)) return snapshot;
+    }
+    fail('expected saved snapshot was not written');
+  }
+
+  Future<ResultOutboxItem> waitForOutboxItem(
+    WidgetTester tester,
+    Game game,
+    String matchCode,
+  ) async {
+    for (var i = 0; i < 20; i++) {
+      await tester.pump();
+      final matches = game.scoreboardResultService.outbox
+          .where((item) => item.matchCode == matchCode);
+      if (matches.isNotEmpty) return matches.first;
+    }
+    fail('expected final result outbox item was not queued');
+  }
+
+  Future<void> expectNoOutboxItem(
+    WidgetTester tester,
+    Game game,
+    String matchCode,
+  ) async {
+    for (var i = 0; i < 20; i++) {
+      await tester.pump();
+      final hasMatch = game.scoreboardResultService.outbox
+          .any((item) => item.matchCode == matchCode);
+      expect(hasMatch, isFalse);
+    }
   }
 
   group('cold-launch detection', () {
@@ -135,8 +231,8 @@ void main() {
   group('resumePendingMatch', () {
     testWidgets('freezes the clock at the persisted freeze point (firstHalf)',
         (tester) async {
-      await persist(_snap(
-          stage: 'firstHalf', remainingTime: 137, scoreA: 2, scoreB: 1));
+      await persist(
+          _snap(stage: 'firstHalf', remainingTime: 137, scoreA: 2, scoreB: 1));
       final game = Game();
       await settleLoad(tester);
 
@@ -161,8 +257,7 @@ void main() {
         remainingTime: 300,
         modules: [
           _moduleSnap(id: 0, state: 'play', lastState: 'play'),
-          _moduleSnap(
-              id: 1, state: 'damage', lastState: 'play', penalty: 20),
+          _moduleSnap(id: 1, state: 'damage', lastState: 'play', penalty: 20),
         ],
       ));
       final game = Game();
@@ -197,7 +292,8 @@ void main() {
       await tester.pump();
       final m0 = game.teams[0].modules[0];
       expect(m0.suppressNextRestoreNotify, isTrue,
-          reason: 'armed by restore so a frozen-window reconnect stays stopped');
+          reason:
+              'armed by restore so a frozen-window reconnect stays stopped');
 
       // A referee START path must cancel the suppression synchronously, so a
       // LATE reconnect after START reflects the real (playing) state instead of
@@ -280,6 +376,453 @@ void main() {
       expect(game.teams[0].score, 4);
       expect(game.getScore('A'), 1);
       expect(game.getScore('B'), 4);
+      game.dispose();
+    });
+
+    testWidgets('resume re-arms scoreboard binding for final result mapping',
+        (tester) async {
+      final config = _scoreboardConfig(matchCode: 'M-53', version: 4);
+      await _seedScoreboardPrefs(
+        prefs,
+        config,
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        scoreA: 2,
+        scoreB: 5,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-53',
+        scoreboardVersion: 4,
+        scoreboardHomeTeamId: 'B',
+        scoreboardAwayTeamId: 'A',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      await settleScoreboardConfig(tester, game);
+
+      game.resumePendingMatch();
+      // savedAtMs > 1000 proves this is the snapshot RE-SAVED by resume, not the
+      // seeded one (savedAtMs == 1000) that already had the binding.
+      final saved = await waitForSavedSnapshot(
+        tester,
+        (snapshot) => snapshot.isRefereeMatch && snapshot.savedAtMs > 1000,
+      );
+      expect(saved.scoreboardMatchCode, 'M-53');
+      expect(saved.scoreboardVersion, 4);
+      expect(saved.scoreboardHomeTeamId, 'B');
+      expect(saved.scoreboardAwayTeamId, 'A');
+
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+      final result = await waitForOutboxItem(tester, game, 'M-53');
+
+      expect(result.homeGoals, 5,
+          reason: 'home score comes from restored team id B');
+      expect(result.awayGoals, 2,
+          reason: 'away score comes from restored team id A');
+      expect(result.version, 4);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('swapped resume keeps scoreboard mapping by stable team id',
+        (tester) async {
+      final config = _scoreboardConfig(
+        matchCode: 'M-SWAP',
+        version: 2,
+        homeIsLeft: false,
+      );
+      await _seedScoreboardPrefs(
+        prefs,
+        config,
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        firstTeamId: 'B',
+        scoreA: 3,
+        scoreB: 1,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-SWAP',
+        scoreboardVersion: 2,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      await settleScoreboardConfig(tester, game);
+
+      game.resumePendingMatch();
+      final saved = await waitForSavedSnapshot(
+        tester,
+        (snapshot) =>
+            snapshot.isRefereeMatch &&
+            snapshot.savedAtMs > 1000 &&
+            snapshot.teams.first.id == 'B',
+      );
+      expect(saved.scoreboardHomeTeamId, 'A');
+      expect(saved.scoreboardAwayTeamId, 'B');
+      expect(game.teams[0].id, 'B');
+
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+      final result = await waitForOutboxItem(tester, game, 'M-SWAP');
+
+      expect(result.homeGoals, 3,
+          reason: 'home score follows team A even after side swap');
+      expect(result.awayGoals, 1,
+          reason: 'away score follows team B even after side swap');
+      expect(result.version, 2);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('drift guard drops stale scoreboard binding on resume',
+        (tester) async {
+      await _seedScoreboardPrefs(
+        prefs,
+        _scoreboardConfig(matchCode: 'Y', version: 2),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'X',
+        scoreboardVersion: 1,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      await settleScoreboardConfig(tester, game);
+
+      game.resumePendingMatch();
+      final saved = await waitForSavedSnapshot(
+        tester,
+        (snapshot) => !snapshot.isRefereeMatch,
+      );
+
+      expect(saved.scoreboardMatchCode, isNull);
+      expect(saved.scoreboardVersion, isNull);
+      expect(saved.scoreboardHomeTeamId, isNull);
+      expect(saved.scoreboardAwayTeamId, isNull);
+
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+      await expectNoOutboxItem(tester, game, 'Y');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('resume re-arms on a same-fixture version bump (#53)',
+        (tester) async {
+      // Organizer edited the fixture during the kill window: same match_code,
+      // newer version. The drift guard keys on match_code only, so this must
+      // re-arm and submit the LIVE config version, not drift-suppress.
+      await _seedScoreboardPrefs(
+        prefs,
+        _scoreboardConfig(matchCode: 'M-VER', version: 9),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        scoreA: 1,
+        scoreB: 4,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-VER',
+        scoreboardVersion: 4,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      await settleScoreboardConfig(tester, game);
+
+      game.resumePendingMatch();
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+      final result = await waitForOutboxItem(tester, game, 'M-VER');
+
+      expect(result.homeGoals, 1);
+      expect(result.awayGoals, 4);
+      expect(result.version, 9,
+          reason: 'submits the live config version, not the snapshot version');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('late-arriving fixture config re-arms a suppressed resume (#53)',
+        (tester) async {
+      // The scoreboard config loads via a separate unawaited initialize() and
+      // may not have surfaced before the referee taps Resume. Resume then
+      // suppresses; when the SAME fixture's config arrives it must re-arm (the
+      // suppress latch is not one-way), and the final POST must fire.
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        scoreA: 6,
+        scoreB: 0,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-LATE',
+        scoreboardVersion: 3,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      // No scoreboard config seeded yet → matchConfig is null at resume time.
+      expect(game.scoreboardResultService.matchConfig, isNull);
+
+      game.resumePendingMatch(); // suppressed: bound fixture remembered as M-LATE
+
+      // Now the fixture's config arrives and notifies listeners. A dead local
+      // base URL makes the resulting submit network call fail instantly
+      // (connection refused) instead of hitting the real host.
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-LATE', version: 3),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+      final result = await waitForOutboxItem(tester, game, 'M-LATE');
+
+      expect(result.homeGoals, 6,
+          reason: 're-armed mapping: home is team A');
+      expect(result.awayGoals, 0,
+          reason: 're-armed mapping: away is team B');
+      expect(result.version, 3);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('suppressed resume re-persists the binding for a 2nd kill (#53)',
+        (tester) async {
+      // Config not loaded at resume → binding is suppressed. The snapshot it
+      // RE-SAVES must still be a referee match with the binding intact, so a
+      // second kill before the config surfaces recovers it (not a plain match).
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        scoreA: 2,
+        scoreB: 2,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-PEND',
+        scoreboardVersion: 5,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      expect(game.scoreboardResultService.matchConfig, isNull);
+
+      game.resumePendingMatch(); // suppressed (no config yet)
+      final saved = await waitForSavedSnapshot(
+        tester,
+        (snapshot) => snapshot.isRefereeMatch && snapshot.savedAtMs > 1000,
+      );
+      expect(saved.scoreboardMatchCode, 'M-PEND',
+          reason: 'binding survives the suppressed window for a second kill');
+      expect(saved.scoreboardVersion, 5);
+      expect(saved.scoreboardHomeTeamId, 'A');
+      expect(saved.scoreboardAwayTeamId, 'B');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('late config re-arms a swapped resumed match correctly (#53)',
+        (tester) async {
+      // Swapped team order (firstTeamId B → teams[0] is B) but home is team A
+      // (homeIsLeft true). home != teams[0], so a positional (teams[0]) mapping
+      // bug would give the wrong score and fail this test. The late-config
+      // re-arm must map home/away by STABLE team id, not position.
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        firstTeamId: 'B',
+        scoreA: 1,
+        scoreB: 7,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-LSWAP',
+        scoreboardVersion: 2,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      expect(game.scoreboardResultService.matchConfig, isNull);
+
+      game.resumePendingMatch(); // suppressed
+
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-LSWAP', version: 2, homeIsLeft: true),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      expect(game.teams[0].id, 'B', reason: 'team order stayed swapped');
+
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+      final result = await waitForOutboxItem(tester, game, 'M-LSWAP');
+
+      expect(result.homeGoals, 1,
+          reason: 'home is team A (id), not teams[0] which is B');
+      expect(result.awayGoals, 7, reason: 'away is team B');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('a different fixture mid-suppressed-resume cannot hijack it (#53)',
+        (tester) async {
+      // Resume bound to M-HX with no config yet (suppressed). Then a DIFFERENT
+      // fixture M-HY opens mid-match. It must be rejected: the re-saved snapshot
+      // must still be M-HX (a 2nd kill must NOT resume bound to M-HY), and no
+      // result may be POSTed against M-HY.
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        scoreA: 3,
+        scoreB: 2,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-HX',
+        scoreboardVersion: 1,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      game.resumePendingMatch(); // suppressed, bound to M-HX
+
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-HY', version: 9),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+
+      // Force a fresh snapshot save now that the foreign config is loaded.
+      game.notifyModulesScore();
+      await tester.pump();
+      await tester.pump();
+      final saved = MatchStateStore(prefs).load();
+      expect(saved, isNotNull);
+      expect(saved!.isRefereeMatch, isTrue);
+      expect(saved.scoreboardMatchCode, 'M-HX',
+          reason: 'foreign fixture must not overwrite the bound one');
+
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+      await expectNoOutboxItem(tester, game, 'M-HY');
+      await expectNoOutboxItem(tester, game, 'M-HX');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('a live referee match persists its binding on first kill (#53)',
+        (tester) async {
+      // First-kill path (no prior snapshot): a deep-link config is applied to a
+      // fresh match, the match starts, and the persisted snapshot must carry the
+      // referee binding so it can be resumed + submitted.
+      final game = Game();
+      await settleLoad(tester);
+
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-FIRST', version: 4),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+
+      game.startTimer(); // inGame = true
+      game.notifyModulesScore();
+      await tester.pump();
+      await tester.pump();
+
+      final saved = MatchStateStore(prefs).load();
+      expect(saved, isNotNull);
+      expect(saved!.inGame, isTrue);
+      expect(saved.isRefereeMatch, isTrue);
+      expect(saved.scoreboardMatchCode, 'M-FIRST');
+      expect(saved.scoreboardVersion, 4);
+      expect(saved.scoreboardHomeTeamId, 'A');
+      expect(saved.scoreboardAwayTeamId, 'B');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'non-referee swapped match resumes and never submits a result (#53)',
+        (tester) async {
+      // Regression guard: #53 touches the shared _buildSnapshot/resume paths.
+      // A plain (non-deep-link) match with a SWAPPED team order must still
+      // resume with its order+score intact AND must never enter the scoreboard
+      // result path (no binding, no POST). No scoreboard prefs are seeded.
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        firstTeamId: 'B', // swapped: teams[0] is B
+        scoreA: 3,
+        scoreB: 1,
+        // isRefereeMatch defaults to false (plain match).
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      expect(game.scoreboardResultService.matchConfig, isNull);
+
+      game.resumePendingMatch();
+
+      // Team order + scores restored by stable id (not position).
+      expect(game.teams[0].id, 'B', reason: 'swapped order restored');
+      expect(game.teams.firstWhere((t) => t.id == 'A').score, 3);
+      expect(game.teams.firstWhere((t) => t.id == 'B').score, 1);
+
+      // The re-saved snapshot is a plain match: no referee binding leaks in.
+      final saved = await waitForSavedSnapshot(
+        tester,
+        (snapshot) => snapshot.savedAtMs > 1000,
+      );
+      expect(saved.isRefereeMatch, isFalse);
+      expect(saved.scoreboardMatchCode, isNull);
+      expect(saved.scoreboardHomeTeamId, isNull);
+      expect(saved.scoreboardAwayTeamId, isNull);
+
+      // Drive to full-time: a non-referee match must POST nothing.
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump();
+      expect(game.scoreboardResultService.outbox, isEmpty,
+          reason: 'a plain match must never queue a scoreboard result');
+
+      await tester.pump(const Duration(milliseconds: 1500));
       game.dispose();
     });
 

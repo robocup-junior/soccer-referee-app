@@ -17,6 +17,11 @@ MatchSnapshot _sampleSnapshot({
   int remainingTime = 312,
   bool inGame = true,
   String stage = 'firstHalf',
+  bool isRefereeMatch = false,
+  String? scoreboardMatchCode,
+  int? scoreboardVersion,
+  String? scoreboardHomeTeamId,
+  String? scoreboardAwayTeamId,
 }) {
   return MatchSnapshot(
     stage: stage,
@@ -25,6 +30,11 @@ MatchSnapshot _sampleSnapshot({
     inGame: inGame,
     timerButtonText: 'START',
     savedAtMs: 1000,
+    isRefereeMatch: isRefereeMatch,
+    scoreboardMatchCode: scoreboardMatchCode,
+    scoreboardVersion: scoreboardVersion,
+    scoreboardHomeTeamId: scoreboardHomeTeamId,
+    scoreboardAwayTeamId: scoreboardAwayTeamId,
     teams: const [
       TeamSnapshot(id: 'A', name: 'Reds', score: 2),
       TeamSnapshot(id: 'B', name: 'Blues', score: 1),
@@ -86,6 +96,49 @@ void main() {
       expect(m1.isEnabled, isFalse);
       expect(m1.customLabel, isNull);
       expect(m1.macAddress, '');
+    });
+
+    test('round-trips scoreboard referee binding fields', () {
+      final back = MatchSnapshot.fromJson(_sampleSnapshot(
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-53',
+        scoreboardVersion: 7,
+        scoreboardHomeTeamId: 'B',
+        scoreboardAwayTeamId: 'A',
+      ).toJson());
+
+      expect(back.isRefereeMatch, isTrue);
+      expect(back.scoreboardMatchCode, 'M-53');
+      expect(back.scoreboardVersion, 7);
+      expect(back.scoreboardHomeTeamId, 'B');
+      expect(back.scoreboardAwayTeamId, 'A');
+    });
+
+    test('round-trips non-referee binding defaults', () {
+      final back = MatchSnapshot.fromJson(_sampleSnapshot().toJson());
+
+      expect(back.isRefereeMatch, isFalse);
+      expect(back.scoreboardMatchCode, isNull);
+      expect(back.scoreboardVersion, isNull);
+      expect(back.scoreboardHomeTeamId, isNull);
+      expect(back.scoreboardAwayTeamId, isNull);
+    });
+
+    test('defaults missing scoreboard binding keys defensively', () {
+      final json = _sampleSnapshot().toJson()
+        ..remove('isRefereeMatch')
+        ..remove('scoreboardMatchCode')
+        ..remove('scoreboardVersion')
+        ..remove('scoreboardHomeTeamId')
+        ..remove('scoreboardAwayTeamId');
+
+      final back = MatchSnapshot.fromJson(json);
+
+      expect(back.isRefereeMatch, isFalse);
+      expect(back.scoreboardMatchCode, isNull);
+      expect(back.scoreboardVersion, isNull);
+      expect(back.scoreboardHomeTeamId, isNull);
+      expect(back.scoreboardAwayTeamId, isNull);
     });
   });
 
@@ -178,8 +231,8 @@ void main() {
       await prefs.setString(
         _kSnapshotKey,
         '{"version":$kMatchSnapshotVersion,"generation":0,"stage":"firstHalf",'
-            '"remainingTime":312,"isTimeRunning":false,"inGame":true,'
-            '"timerButtonText":"START","teams":[],"modules":[],"savedAtMs":1}',
+        '"remainingTime":312,"isTimeRunning":false,"inGame":true,'
+        '"timerButtonText":"START","teams":[],"modules":[],"savedAtMs":1}',
       );
       expect(MatchStateStore(prefs).load(), isNull);
     });
