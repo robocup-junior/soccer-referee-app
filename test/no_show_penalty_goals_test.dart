@@ -38,6 +38,8 @@ void main() {
       await tester.pump(const Duration(seconds: 60));
       expect(scoreFor(game, 'A'), 2);
       expect(scoreFor(game, 'B'), 0);
+
+      game.stopNoShowPenaltyGoals();
     });
 
     testWidgets('keeps scoring by team id after team order switches',
@@ -51,6 +53,8 @@ void main() {
       expect(game.teams.first.id, 'B');
       expect(scoreFor(game, 'A'), 1);
       expect(scoreFor(game, 'B'), 0);
+
+      game.stopNoShowPenaltyGoals();
     });
 
     testWidgets('stopping no-show mode stops future automatic goals',
