@@ -751,7 +751,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   bool get noShowPenaltyGoalsActive => _noShowPenaltyGoalsActive;
   String get noShowPenaltyGoalIntervalLabel {
     if (_noShowPenaltyGoalIntervalSeconds % 60 == 0) {
-      final minutes = _noShowPenaltyGoalIntervalSeconds ~/ 60;
+      const minutes = _noShowPenaltyGoalIntervalSeconds ~/ 60;
       return minutes == 1 ? '1 goal/min' : '1 goal/$minutes min';
     }
     return '1 goal/$_noShowPenaltyGoalIntervalSeconds sec';
