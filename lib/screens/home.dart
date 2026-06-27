@@ -188,16 +188,32 @@ class _HomeState extends State<Home> {
                               onLongPress: () => _editRemainingTime(context, game),
                               child: Text(
                                   '${(game.remainingTime ~/ 60).toString().padLeft(2, '0')}:${(game.remainingTime % 60).toString().padLeft(2, '0')}',
-                                  style: const TextStyle(fontSize: 40.0)),
+                                  style: const TextStyle(fontSize: 36.0)),
                             ),
                             Text(game.gameStageString),
+                            Text(
+                              game.scoreboardResultService.statusMessage,
+                              textAlign: TextAlign.center,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: game.scoreboardResultService.hasConflict
+                                    ? Colors.orangeAccent
+                                    : Colors.white70,
+                              ),
+                            ),
                             SizedBox(
                               width: double.infinity,
                               child: CriticalButton(
                                 singleTap: game.singleTapEnabled,
                                 onAction: () => game.toggleTimer(),
                                 style: ElevatedButton.styleFrom(
-                                  //minimumSize: const Size(120, 50),
+                                  minimumSize: const Size(0, 36),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 12,
+                                    vertical: 8,
+                                  ),
                                   backgroundColor: (game.isGameRunning
                                       ? (game.isTimerRunning
                                           ? AppColors.red

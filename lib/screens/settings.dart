@@ -136,6 +136,61 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 ],
                               );
                             }),
+                        AnimatedBuilder(
+                          animation: widget.game.scoreboardResultService,
+                          builder: (context, child) {
+                            final service = widget.game.scoreboardResultService;
+                            final config = service.matchConfig;
+                            return SettingsSection(
+                              title: 'Scoreboard Result API',
+                              locked: false,
+                              settings: [
+                                SettingStatus(
+                                  title: 'Link status',
+                                  status: service.statusMessage,
+                                ),
+                                SettingStatus(
+                                  title: 'Match code',
+                                  status: config?.matchCode.isNotEmpty == true
+                                      ? config!.matchCode
+                                      : 'Not loaded',
+                                ),
+                                SettingStatus(
+                                  title: 'Venue',
+                                  status: config?.venueShortName.isNotEmpty == true
+                                      ? config!.venueShortName
+                                      : 'Not loaded',
+                                ),
+                                SettingStatus(
+                                  title: 'Outbox',
+                                  status:
+                                      'Pending ${service.pendingCount}, conflict ${service.conflictCount}, submitted ${service.submittedCount}',
+                                ),
+                                SettingButton(
+                                  title: 'Refresh linked match',
+                                  buttonText: 'Refresh',
+                                  onPressed: () {
+                                    service.refreshMatchConfig();
+                                  },
+                                ),
+                                SettingButton(
+                                  title: 'Retry pending result',
+                                  buttonText: 'Retry',
+                                  onPressed: () {
+                                    service.retryPendingNow();
+                                  },
+                                ),
+                                SettingButton(
+                                  title: 'Clear linked match',
+                                  buttonText: 'Clear',
+                                  onPressed: () {
+                                    service.clearLinkedMatchData();
+                                  },
+                                ),
+                              ],
+                            );
+                          },
+                        ),
                         SettingsSection(
                           title: 'Current Game',
                           locked: false,

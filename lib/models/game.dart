@@ -1,6 +1,7 @@
 import 'package:flutter/widgets.dart';
 import 'package:rcj_scoreboard/models/bridge_message.dart';
 import 'package:rcj_scoreboard/models/module.dart';
+import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'dart:async';
 import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/services/ble_adapter_monitor.dart';
@@ -11,6 +12,7 @@ import 'package:rcj_scoreboard/services/notification_service.dart';
 import 'package:rcj_scoreboard/services/vibration_service.dart';
 import 'package:rcj_scoreboard/services/wakelock_service.dart';
 import 'package:rcj_scoreboard/services/preset_service.dart';
+import 'package:rcj_scoreboard/services/scoreboard_result_service.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -83,6 +85,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   MatchDataService matchDataService = MatchDataService();
   VibrationService vibrationService = VibrationService();
   WakelockService wakelockService = WakelockService();
+  ScoreboardResultService scoreboardResultService = ScoreboardResultService();
+  String? _lastAppliedScoreboardSignature;
+  String? _scoreboardHomeTeamId;
+  String? _scoreboardAwayTeamId;
 
   // Callback to request showing the dialog
   void Function()? onRequestSwitchTeamOrderDialog;
@@ -128,6 +134,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
 
     gameInit();
+    scoreboardResultService.addListener(_onScoreboardServiceUpdate);
+    unawaited(scoreboardResultService.initialize());
     unawaited(_loadPrefs());
   }
 
@@ -488,6 +496,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           stopAll(true);
           timerButtonText = 'REPEAT';
           gameOverAll();
+          _queueFinalResultSubmission();
           // The match is over: stop the OS autoConnect from chasing modules
           // that are powered down for good (e.g. a unit still off from a
           // late penalty). In-match these reconnect unbounded on purpose; at
@@ -785,7 +794,70 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     mqttService.dispose();
     bleBridgeService.dispose();
     wakelockService.dispose();
+    scoreboardResultService.removeListener(_onScoreboardServiceUpdate);
+    scoreboardResultService.disposeService();
     super.dispose();
+  }
+
+  void _onScoreboardServiceUpdate() {
+    final config = scoreboardResultService.matchConfig;
+    if (config != null) {
+      _applyScoreboardMatchConfig(config);
+    }
+    notifyListeners();
+  }
+
+  void _applyScoreboardMatchConfig(ScoreboardMatchConfig config) {
+    final homeIsLeft = config.homeIsLeft;
+    // Team names are part of the signature so a corrected schedule payload that
+    // changes only a name (without bumping version/duration/side) still updates
+    // the displayed names; the `if (!inGame)` guard below still gates timing.
+    final signature =
+        '${config.matchCode}:${config.version}:${config.durationSeconds}:${homeIsLeft ? 'L' : 'R'}:${config.homeTeamName}:${config.awayTeamName}';
+    if (_lastAppliedScoreboardSignature == signature) {
+      return;
+    }
+    _lastAppliedScoreboardSignature = signature;
+    _scoreboardHomeTeamId = homeIsLeft ? 'A' : 'B';
+    _scoreboardAwayTeamId = homeIsLeft ? 'B' : 'A';
+
+    teams[0].name = homeIsLeft ? config.homeTeamName : config.awayTeamName;
+    teams[1].name = homeIsLeft ? config.awayTeamName : config.homeTeamName;
+
+    // Apply remote timing presets only before a match starts (between matches,
+    // after a reset). Never call gameInit() at full-time: a version-only update
+    // from a successful result submission would otherwise zero the just-played
+    // scores and broadcast a reset 0-0/first-half state over MQTT and the BLE
+    // bridge. The full-time clock display stays in sync separately via the
+    // periodTime setter when settings change.
+    if (!inGame) {
+      periodTime = config.durationSeconds;
+      gameInit();
+    }
+  }
+
+  void _queueFinalResultSubmission() {
+    final config = scoreboardResultService.matchConfig;
+    if (config == null) return;
+
+    final defaultHomeTeamId = config.homeIsLeft ? 'A' : 'B';
+    final defaultAwayTeamId = config.homeIsLeft ? 'B' : 'A';
+    final homeGoals = _scoreByTeamId(_scoreboardHomeTeamId ?? defaultHomeTeamId) ?? 0;
+    final awayGoals = _scoreByTeamId(_scoreboardAwayTeamId ?? defaultAwayTeamId) ?? 0;
+
+    unawaited(scoreboardResultService.enqueueFinalResult(
+      homeGoals: homeGoals,
+      awayGoals: awayGoals,
+      comment: 'Submitted via RCJ Soccer RefMate',
+    ));
+  }
+
+  int? _scoreByTeamId(String? teamId) {
+    if (teamId == null) return null;
+    for (final team in teams) {
+      if (team.id == teamId) return team.score;
+    }
+    return null;
   }
 
 
@@ -986,6 +1058,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   set periodTime(int value) {
     _periodTime = value;
     _prefs?.setInt(_periodTimeKey, value);
+    if (currentStage == MatchStage.fullTime) {
+      _remainingTime = value;
+      notifyListeners();
+      _broadcastStageAndTime();
+    }
   }
 
   // Single-tap gesture mode (issue #12). Unlike periodTime, this setter MUST
