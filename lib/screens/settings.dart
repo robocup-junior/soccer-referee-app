@@ -69,6 +69,35 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.dispose();
   }
 
+  Future<void> _confirmStartNoShowPenaltyGoals(int scoringTeamIndex) async {
+    final scoringTeam = widget.game.teams[scoringTeamIndex];
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Start no-show penalty goals?'),
+        content: Text(
+          '${scoringTeam.name} will receive one goal every minute while the '
+          'game timer runs. The current game will be reset.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Start'),
+          ),
+        ],
+      ),
+    );
+
+    if (!mounted || confirmed != true) return;
+    setState(() {
+      widget.game.startNoShowPenaltyGoals(scoringTeam);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -136,38 +165,77 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 ],
                               );
                             }),
-                        SettingsSection(
-                          title: 'Current Game',
-                          locked: false,
-                          settings: [
-                            SettingButton(
-                              title: 'Switch team order',
-                              buttonText: 'Switch',
-                              onPressed: () {
-                                setState(() {
-                                  widget.game.toggleTeamOrder();
-                                });
-                              },
-                            ),
-                            SettingButton(
-                              title: 'Reset current game',
-                              buttonText: 'Reset',
-                              onPressed: () {
-                                setState(() {
-                                  widget.game.setTeamToDefaultOrder();
-                                  widget.game.gameInit();
-                                  widget.game.resetModuleNames();
-                                });
-                              },
-                            ),
-                            SettingButton(
-                              title: 'Disconnect all robots',
-                              buttonText: 'Disconnect',
-                              onPressed: () {
-                                widget.game.disconnectAll();
-                              },
-                            ),
-                          ],
+                        AnimatedBuilder(
+                          animation: widget.game,
+                          builder: (context, child) {
+                            final noShowActive =
+                                widget.game.noShowPenaltyGoalsActive;
+                            return SettingsSection(
+                              title: 'Current Game',
+                              locked: false,
+                              settings: [
+                                SettingButton(
+                                  title: 'Switch team order',
+                                  buttonText: 'Switch',
+                                  onPressed: () {
+                                    setState(() {
+                                      widget.game.toggleTeamOrder();
+                                    });
+                                  },
+                                ),
+                                SettingButton(
+                                  title: 'Reset current game',
+                                  buttonText: 'Reset',
+                                  onPressed: () {
+                                    setState(() {
+                                      widget.game.setTeamToDefaultOrder();
+                                      widget.game.gameInit();
+                                      widget.game.resetModuleNames();
+                                    });
+                                  },
+                                ),
+                                SettingStatus(
+                                  title: 'No-show penalty goals',
+                                  status: noShowActive
+                                      ? '${widget.game.noShowPenaltyScoringTeamName}: ${widget.game.noShowPenaltyGoalIntervalLabel}'
+                                      : 'Off',
+                                ),
+                                if (!noShowActive) ...[
+                                  SettingButton(
+                                    title:
+                                        '${widget.game.teams[0].name} scores no-show goals',
+                                    buttonText: 'Start',
+                                    onPressed: () =>
+                                        _confirmStartNoShowPenaltyGoals(0),
+                                  ),
+                                  SettingButton(
+                                    title:
+                                        '${widget.game.teams[1].name} scores no-show goals',
+                                    buttonText: 'Start',
+                                    onPressed: () =>
+                                        _confirmStartNoShowPenaltyGoals(1),
+                                  ),
+                                ],
+                                if (noShowActive)
+                                  SettingButton(
+                                    title: 'Stop no-show penalty goals',
+                                    buttonText: 'Stop',
+                                    onPressed: () {
+                                      setState(() {
+                                        widget.game.stopNoShowPenaltyGoals();
+                                      });
+                                    },
+                                  ),
+                                SettingButton(
+                                  title: 'Disconnect all robots',
+                                  buttonText: 'Disconnect',
+                                  onPressed: () {
+                                    widget.game.disconnectAll();
+                                  },
+                                ),
+                              ],
+                            );
+                          },
                         ),
                         ValueListenableBuilder<BridgeConnectionState>(
                             valueListenable: widget
