@@ -665,8 +665,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   int get remainingTime => _remainingTime;
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;
-  bool get anyModuleConnected =>
-      teams.any((team) => team.modules.any((module) => module.isConnected));
+  bool get anyModuleConnected => teams.any((team) =>
+      team.modules.any((module) => module.isEnabled && module.isConnected));
   bool get noModuleConnected => !anyModuleConnected;
   bool get isTimerRunning => isTimeRunning;
   bool get isGameRunning => _isGameRunning;
