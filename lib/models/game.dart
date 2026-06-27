@@ -26,16 +26,21 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   static const String _penaltyTimeKey = 'game_penalty_time';
   static const String _notifPermissionRequestedKey =
       'notif_permission_requested';
-  static const int _noShowPenaltyGoalIntervalSeconds = 60;
+  static const int _defaultPeriodTimeSeconds = 600;
+  static const int _defaultHalfTimeDurationSeconds = 300;
+  static const int _defaultPenaltyTimeSeconds = 60;
+  static const int _defaultPlayersPerTeam = 2;
+  static const int _noShowPenaltyGoalIntervalSeconds = 30;
+  static const int _maxNoShowPenaltyGoalDifference = 10;
 
   String timerButtonText = 'START';
   final int _maxPlayer = 5;
   List<Team> teams = [];
-  int _numberOfPLayers = 2;
+  int _numberOfPLayers = _defaultPlayersPerTeam;
   int _remainingTime = 0;
-  int _penaltyTime = 60;
-  int _periodTime = 600;
-  int _halfTimeDuration = 300;
+  int _penaltyTime = _defaultPenaltyTimeSeconds;
+  int _periodTime = _defaultPeriodTimeSeconds;
+  int _halfTimeDuration = _defaultHalfTimeDurationSeconds;
   bool _isGameRunning = false;
   bool inGame = false;
   bool isTimeRunning = false;
@@ -93,11 +98,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   Future<void> _loadPrefs() async {
     _prefs = await SharedPreferences.getInstance();
-    _periodTime = _prefs!.getInt(_periodTimeKey) ?? 600;
-    _halfTimeDuration = _prefs!.getInt(_halfTimeDurationKey) ?? 300;
-    _numberOfPLayers =
-        (_prefs!.getInt(_numberOfPlayersKey) ?? 2).clamp(1, _maxPlayer).toInt();
-    _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? 60;
+    _periodTime = _prefs!.getInt(_periodTimeKey) ?? _defaultPeriodTimeSeconds;
+    _halfTimeDuration =
+        _prefs!.getInt(_halfTimeDurationKey) ?? _defaultHalfTimeDurationSeconds;
+    _numberOfPLayers = (_prefs!.getInt(_numberOfPlayersKey) ??
+            _defaultPlayersPerTeam)
+        .clamp(1, _maxPlayer)
+        .toInt();
+    _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
 
     if (!inGame) {
       gameInit();
@@ -365,7 +373,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
 
     final scoringTeam = _noShowPenaltyScoringTeam;
-    if (scoringTeam == null) return;
+    if (scoringTeam == null || !_canAwardNoShowPenaltyGoal(scoringTeam)) {
+      return;
+    }
 
     scoringTeam.addScore(1);
     _lastNoShowPenaltyGoalElapsed = elapsed;
@@ -400,6 +410,19 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       if (team.id == scoringTeamId) return team;
     }
     return null;
+  }
+
+  bool _canAwardNoShowPenaltyGoal(Team scoringTeam) {
+    Team? opposingTeam;
+    for (final team in teams) {
+      if (team.id != scoringTeam.id) {
+        opposingTeam = team;
+        break;
+      }
+    }
+    if (opposingTeam == null) return true;
+    return scoringTeam.score - opposingTeam.score <
+        _maxNoShowPenaltyGoalDifference;
   }
 
   void notifyAllModulesTimer() {

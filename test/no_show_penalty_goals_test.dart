@@ -22,12 +22,12 @@ void main() {
   }
 
   group('No-show penalty goals', () {
-    testWidgets('awards one goal per elapsed minute to the selected team',
+    testWidgets('awards one goal per elapsed 30 seconds to the selected team',
         (tester) async {
       final game = await createGame(tester);
       game.startNoShowPenaltyGoals(game.teams[0]);
 
-      await tester.pump(const Duration(seconds: 59));
+      await tester.pump(const Duration(seconds: 29));
       expect(scoreFor(game, 'A'), 0);
       expect(scoreFor(game, 'B'), 0);
 
@@ -35,7 +35,7 @@ void main() {
       expect(scoreFor(game, 'A'), 1);
       expect(scoreFor(game, 'B'), 0);
 
-      await tester.pump(const Duration(seconds: 60));
+      await tester.pump(const Duration(seconds: 30));
       expect(scoreFor(game, 'A'), 2);
       expect(scoreFor(game, 'B'), 0);
 
@@ -48,7 +48,7 @@ void main() {
       game.startNoShowPenaltyGoals(game.teams[0]);
       game.toggleTeamOrder();
 
-      await tester.pump(const Duration(seconds: 60));
+      await tester.pump(const Duration(seconds: 30));
 
       expect(game.teams.first.id, 'B');
       expect(scoreFor(game, 'A'), 1);
@@ -62,7 +62,7 @@ void main() {
       final game = await createGame(tester);
       game.startNoShowPenaltyGoals(game.teams[0]);
 
-      await tester.pump(const Duration(seconds: 60));
+      await tester.pump(const Duration(seconds: 30));
       expect(scoreFor(game, 'A'), 1);
 
       game.stopNoShowPenaltyGoals();
@@ -73,18 +73,31 @@ void main() {
       expect(scoreFor(game, 'A'), 1);
     });
 
+    testWidgets('caps automatic goals at a 10-goal difference', (tester) async {
+      final game = await createGame(tester);
+      game.periodTime = 600;
+      game.startNoShowPenaltyGoals(game.teams[0]);
+
+      await tester.pump(const Duration(seconds: 330));
+
+      expect(scoreFor(game, 'A'), 10);
+      expect(scoreFor(game, 'B'), 0);
+
+      game.stopNoShowPenaltyGoals();
+    });
+
     testWidgets('deactivates automatically at full time', (tester) async {
       final game = await createGame(tester);
-      game.periodTime = 60;
+      game.periodTime = 30;
       game.halfTimeDuration = 1;
       game.startNoShowPenaltyGoals(game.teams[0]);
 
-      await tester.pump(const Duration(seconds: 61));
+      await tester.pump(const Duration(seconds: 31));
       expect(game.currentStage, MatchStage.secondHalf);
       expect(game.noShowPenaltyGoalsActive, isTrue);
 
       game.toggleTimer();
-      await tester.pump(const Duration(seconds: 60));
+      await tester.pump(const Duration(seconds: 30));
 
       expect(game.currentStage, MatchStage.fullTime);
       expect(game.noShowPenaltyGoalsActive, isFalse);
