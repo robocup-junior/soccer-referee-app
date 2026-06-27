@@ -185,7 +185,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (_remainingTime > 0) {
       _remainingTime--;
       _checkGameTimerVibration();
-      notifyAllModulesTimer();
+      if (!_noShowPenaltyGoalsActive) {
+        notifyAllModulesTimer();
+      }
       mqttService.publishTime(_remainingTime);
       _maybeAwardNoShowPenaltyGoal();
     }
