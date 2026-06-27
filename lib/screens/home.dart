@@ -194,7 +194,9 @@ Widget buildModuleButton(Module module, Game game) {
         return Expanded(
           child: GestureDetector(
             onDoubleTap: () {
-              if (module.isPlaying) {
+              if (game.noModuleConnected && game.isGameRunning) {
+                module.penalty(game.penaltyTime);
+              } else if (module.isPlaying) {
                 if (game.isGameRunning) {
                   module.penalty(game.penaltyTime);
                 } else {
