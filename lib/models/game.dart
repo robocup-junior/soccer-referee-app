@@ -413,14 +413,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         _resumedFixtureMatchCode = resumedCode;
         _resumedFixtureVersion = snapshot.scoreboardVersion;
         if (config != null) {
-          // Matching config is present → arm the POST now. Keep this string
-          // identical to the signature built in _applyScoreboardMatchConfig
-          // (incl. the trailing venue) or a resumed match re-applies spuriously.
+          // Matching config is present → arm the POST now. Use the shared
+          // signature builder so this stays in lock-step with
+          // _applyScoreboardMatchConfig; a drift here re-applies spuriously.
           _lastAppliedScoreboardSignature =
-              '${config.matchCode}:${config.version}:${config.durationSeconds}:'
-              '${config.homeIsLeft ? 'L' : 'R'}:'
-              '${config.homeTeamName}:${config.awayTeamName}:'
-              '${config.venueShortName}';
+              _scoreboardConfigSignature(config);
           _suppressScoreboardFinalResult = false;
           // Apply the venue field here too. Seeding the signature above means a
           // later scoreboard-service notification dedupe-returns in
@@ -909,16 +906,21 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Dedupe key for an applied scoreboard config. Includes team names and venue
+  /// so a corrected schedule payload that changes only a name or the venue
+  /// (without bumping version/duration/side) is still applied (names + MQTT
+  /// field). Single source of truth for both `_applyScoreboardMatchConfig` and
+  /// the cold-resume re-arm in `resumePendingMatch`, which must agree exactly or
+  /// the dedupe desyncs.
+  String _scoreboardConfigSignature(ScoreboardMatchConfig config) =>
+      '${config.matchCode}:${config.version}:${config.durationSeconds}:'
+      '${config.homeIsLeft ? 'L' : 'R'}:'
+      '${config.homeTeamName}:${config.awayTeamName}:'
+      '${config.venueShortName}';
+
   void _applyScoreboardMatchConfig(ScoreboardMatchConfig config) {
     final homeIsLeft = config.homeIsLeft;
-    // Team names and venue are part of the signature so a corrected schedule
-    // payload that changes only a name or the venue (without bumping
-    // version/duration/side) still updates the displayed names and the MQTT
-    // field below; the `if (!inGame)` guard below still gates timing. Keep this
-    // string identical to the one written on the resume path (see
-    // resumePendingMatch) or the dedupe desyncs.
-    final signature =
-        '${config.matchCode}:${config.version}:${config.durationSeconds}:${homeIsLeft ? 'L' : 'R'}:${config.homeTeamName}:${config.awayTeamName}:${config.venueShortName}';
+    final signature = _scoreboardConfigSignature(config);
     // Dedupe on an unchanged signature - EXCEPT while a resumed match is still
     // suppressed. `_lastAppliedScoreboardSignature` is in-memory and is never
     // cleared when the service drops `_matchConfig` to null (a token-changing
