@@ -49,15 +49,17 @@ class _ScrollingStatusTextState extends State<ScrollingStatusText>
 
   Size _measure() {
     // Measure with the same effective text scaler the rendered `Text` uses
-    // (it inherits MediaQuery.textScalerOf when none is set). Without this the
+    // (it inherits the ambient scaler when none is set). Without this the
     // measurement is unscaled while the rendered text scales with the user's
     // accessibility font size, so at large scales a string could be judged to
-    // fit and then clip on the static path instead of scrolling.
+    // fit and then clip on the static path instead of scrolling. Use the
+    // `maybe*` lookup so the widget still works (unscaled) without a
+    // MediaQuery ancestor, e.g. in a bare widget test.
     final painter = TextPainter(
       text: TextSpan(text: widget.text, style: widget.style),
       maxLines: 1,
       textDirection: Directionality.of(context),
-      textScaler: MediaQuery.textScalerOf(context),
+      textScaler: MediaQuery.maybeTextScalerOf(context) ?? TextScaler.noScaling,
     )..layout();
     return painter.size;
   }
