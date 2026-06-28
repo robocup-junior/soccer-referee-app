@@ -7,9 +7,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Schema version of the persisted match snapshot. A snapshot with any other
 /// version is ignored on load (treated as "no match"), so an old/incompatible
 /// snapshot can never crash startup or restore garbage. Bump this whenever the
-/// serialized shape changes incompatibly (e.g. when PR #15's web-match binding
-/// fields are added).
-const int kMatchSnapshotVersion = 1;
+/// serialized shape changes incompatibly. v2 adds scoreboard binding fields.
+const int kMatchSnapshotVersion = 2;
 
 /// Per-team recoverable state. Order is preserved by [MatchSnapshot.teams] so a
 /// swapped team order can be restored onto the correct physical side.
@@ -108,6 +107,15 @@ class MatchSnapshot {
   final List<TeamSnapshot> teams; // order preserved (captures team swap)
   final List<ModuleSnapshot> modules;
   final int savedAtMs; // epoch ms, for staleness display
+  /// Scoreboard binding (#53). Non-null only for a referee/deep-link match.
+  /// Lets a resumed match re-arm the correct final-result POST and lets the
+  /// resume path cross-check against the separately-persisted match config
+  /// (drift guard) before treating the match as a live referee match.
+  final bool isRefereeMatch;
+  final String? scoreboardMatchCode;
+  final int? scoreboardVersion;
+  final String? scoreboardHomeTeamId; // 'A' or 'B'
+  final String? scoreboardAwayTeamId; // 'A' or 'B'
 
   const MatchSnapshot({
     this.version = kMatchSnapshotVersion,
@@ -119,6 +127,11 @@ class MatchSnapshot {
     required this.teams,
     required this.modules,
     required this.savedAtMs,
+    this.isRefereeMatch = false,
+    this.scoreboardMatchCode,
+    this.scoreboardVersion,
+    this.scoreboardHomeTeamId,
+    this.scoreboardAwayTeamId,
   });
 
   Map<String, dynamic> toJson() => {
@@ -131,6 +144,11 @@ class MatchSnapshot {
         'teams': teams.map((t) => t.toJson()).toList(),
         'modules': modules.map((m) => m.toJson()).toList(),
         'savedAtMs': savedAtMs,
+        'isRefereeMatch': isRefereeMatch,
+        'scoreboardMatchCode': scoreboardMatchCode,
+        'scoreboardVersion': scoreboardVersion,
+        'scoreboardHomeTeamId': scoreboardHomeTeamId,
+        'scoreboardAwayTeamId': scoreboardAwayTeamId,
       };
 
   factory MatchSnapshot.fromJson(Map<String, dynamic> json) => MatchSnapshot(
@@ -147,6 +165,11 @@ class MatchSnapshot {
             .map((e) => ModuleSnapshot.fromJson(e as Map<String, dynamic>))
             .toList(),
         savedAtMs: (json['savedAtMs'] as num).toInt(),
+        isRefereeMatch: json['isRefereeMatch'] as bool? ?? false,
+        scoreboardMatchCode: json['scoreboardMatchCode'] as String?,
+        scoreboardVersion: (json['scoreboardVersion'] as num?)?.toInt(),
+        scoreboardHomeTeamId: json['scoreboardHomeTeamId'] as String?,
+        scoreboardAwayTeamId: json['scoreboardAwayTeamId'] as String?,
       );
 }
 

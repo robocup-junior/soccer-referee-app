@@ -40,6 +40,23 @@ class ScoreboardResultService with ChangeNotifier {
 
   ScoreboardMatchConfig? get matchConfig => _matchConfig;
   String get statusMessage => _statusMessage;
+
+  /// Test-only seam: simulate a match config (and its credentials) surfacing
+  /// — as a deep link / persisted load would — and notify listeners, WITHOUT
+  /// the real [initialize] path. Unit tests can't run that path: it awaits the
+  /// app_links method channel (`getInitialLink`), which has no handler under
+  /// `flutter test` and never returns, and it performs real network I/O.
+  @visibleForTesting
+  void debugApplyMatchConfig(
+    ScoreboardMatchConfig config, {
+    String? token,
+    Uri? baseUri,
+  }) {
+    _matchConfig = config;
+    if (token != null) _token = token;
+    if (baseUri != null) _baseUri = baseUri;
+    notifyListeners();
+  }
   bool get hasToken => _token != null && _token!.isNotEmpty;
   bool get hasConflict => conflictCount > 0;
   int get pendingCount =>

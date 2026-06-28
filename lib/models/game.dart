@@ -89,6 +89,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   String? _lastAppliedScoreboardSignature;
   String? _scoreboardHomeTeamId;
   String? _scoreboardAwayTeamId;
+  bool _suppressScoreboardFinalResult = false;
+  // Identity of the fixture a RESUMED referee match is bound to (#53). Set on
+  // resume (even when the binding is suppressed because the config has not
+  // surfaced yet) so (a) a later-arriving config for the SAME fixture can re-arm
+  // the final-result POST instead of being blocked forever by the suppress
+  // latch, and (b) _buildSnapshot keeps re-persisting the binding through the
+  // suppressed window, so a second kill before the config loads doesn't lose it.
+  String? _resumedFixtureMatchCode;
+  int? _resumedFixtureVersion;
 
   // Callback to request showing the dialog
   void Function()? onRequestSwitchTeamOrderDialog;
@@ -203,6 +212,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _isGameRunning = false;
     timerButtonText = 'START';
     inGame = false;
+    _suppressScoreboardFinalResult = false;
+    _resumedFixtureMatchCode = null;
+    _resumedFixtureVersion = null;
 
     stopTimer();
 
@@ -300,6 +312,28 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   MatchSnapshot _buildSnapshot() {
+    final config = scoreboardResultService.matchConfig;
+    final resumedCode = _resumedFixtureMatchCode;
+    final boundToResumed = resumedCode != null && resumedCode.isNotEmpty;
+    // For a RESUMED match the bound fixture is authoritative: the live config may
+    // be a DIFFERENT fixture opened mid-match (rejected by the suppress guard in
+    // _applyScoreboardMatchConfig but still held by the service), so it must NOT
+    // define the persisted binding — otherwise a second kill would resume bound
+    // to the wrong fixture and POST this match's scores against it.
+    // A referee binding also needs a non-empty match code: it is the stable
+    // fixture identity the drift guard and final-result POST key on. An empty
+    // code (server omitted match_code) is not a submittable fixture.
+    final configUsable = config != null &&
+        config.matchCode.isNotEmpty &&
+        (!boundToResumed || config.matchCode == resumedCode);
+    final liveReferee = configUsable && _scoreboardHomeTeamId != null;
+    // A resumed match whose fixture config hasn't surfaced yet is still a
+    // referee match: persist its binding so a second kill in that load window
+    // doesn't downgrade it to a plain match (which would silently drop the POST).
+    final pendingReferee = boundToResumed && _scoreboardHomeTeamId != null;
+    final isReferee = liveReferee || pendingReferee;
+    final boundCode = liveReferee ? config.matchCode : resumedCode;
+    final boundVersion = liveReferee ? config.version : _resumedFixtureVersion;
     return MatchSnapshot(
       stage: currentStage.name,
       remainingTime: _remainingTime,
@@ -307,6 +341,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       inGame: inGame,
       timerButtonText: timerButtonText,
       savedAtMs: DateTime.now().millisecondsSinceEpoch,
+      isRefereeMatch: isReferee,
+      scoreboardMatchCode: isReferee ? boundCode : null,
+      scoreboardVersion: isReferee ? boundVersion : null,
+      scoreboardHomeTeamId: isReferee ? _scoreboardHomeTeamId : null,
+      scoreboardAwayTeamId: isReferee ? _scoreboardAwayTeamId : null,
       teams: teams
           .map((t) => TeamSnapshot(id: t.id, name: t.name, score: t.score))
           .toList(),
@@ -345,6 +384,53 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           final moduleSnap = byId[module.moduleId];
           if (moduleSnap != null) module.restoreFromSnapshot(moduleSnap);
         }
+      }
+
+      // Restore the scoreboard binding (#53) so a resumed referee match still
+      // fires the correct final-result POST at full-time. Drift guard: only
+      // re-arm if the separately-persisted match config still matches the
+      // fixture this match was bound to. If a newer deep link replaced the
+      // config (or none is loaded), do NOT treat the resumed match as a referee
+      // match - avoids POSTing against the wrong fixture.
+      // Drift guard keys on match_code ONLY (the stable fixture identity), not
+      // version: an organizer edit during the kill window bumps the version of
+      // the SAME fixture, and enqueueFinalResult submits the live config version
+      // anyway, so a version-only difference must NOT be treated as drift.
+      final resumedCode = snapshot.scoreboardMatchCode;
+      final config = scoreboardResultService.matchConfig;
+      if (snapshot.isRefereeMatch &&
+          resumedCode != null &&
+          resumedCode.isNotEmpty &&
+          !(config != null && config.matchCode != resumedCode)) {
+        // Same fixture, or its config hasn't surfaced yet (loaded by a separate
+        // unawaited initialize() that may lose the race with the Resume tap).
+        // Restore the binding from the snapshot so it stays persisted (survives
+        // another kill in the load window). Remember the fixture identity so
+        // _buildSnapshot keeps re-persisting it and _applyScoreboardMatchConfig
+        // re-arms when this fixture's config arrives.
+        _scoreboardHomeTeamId = snapshot.scoreboardHomeTeamId;
+        _scoreboardAwayTeamId = snapshot.scoreboardAwayTeamId;
+        _resumedFixtureMatchCode = resumedCode;
+        _resumedFixtureVersion = snapshot.scoreboardVersion;
+        if (config != null) {
+          // Matching config is present → arm the POST now.
+          _lastAppliedScoreboardSignature =
+              '${config.matchCode}:${config.version}:${config.durationSeconds}:'
+              '${config.homeIsLeft ? 'L' : 'R'}:'
+              '${config.homeTeamName}:${config.awayTeamName}';
+          _suppressScoreboardFinalResult = false;
+        } else {
+          // Config not loaded yet → keep the POST suppressed until it arrives.
+          _suppressScoreboardFinalResult = true;
+        }
+      } else {
+        // Non-referee match, or true drift (a DIFFERENT fixture is loaded):
+        // drop the binding entirely so we never POST against the wrong fixture.
+        _scoreboardHomeTeamId = null;
+        _scoreboardAwayTeamId = null;
+        _resumedFixtureMatchCode = null;
+        _resumedFixtureVersion = null;
+        _suppressScoreboardFinalResult = snapshot.isRefereeMatch;
       }
 
       _remainingTime = snapshot.remainingTime;
@@ -814,15 +900,49 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // the displayed names; the `if (!inGame)` guard below still gates timing.
     final signature =
         '${config.matchCode}:${config.version}:${config.durationSeconds}:${homeIsLeft ? 'L' : 'R'}:${config.homeTeamName}:${config.awayTeamName}';
-    if (_lastAppliedScoreboardSignature == signature) {
+    // Dedupe on an unchanged signature - EXCEPT while a resumed match is still
+    // suppressed. `_lastAppliedScoreboardSignature` is in-memory and is never
+    // cleared when the service drops `_matchConfig` to null (a token-changing
+    // deep link or clearLinkedMatchData), so a suppressed resume can carry a
+    // stale signature for its own fixture. If that same fixture's config then
+    // re-arrives, an early dedupe return here would skip the re-arm below and
+    // leave the final result suppressed forever (#53). While suppressed, fall
+    // through to the re-arm guard, which re-arms the bound fixture or rejects a
+    // different one.
+    if (!(inGame && _suppressScoreboardFinalResult) &&
+        _lastAppliedScoreboardSignature == signature) {
       return;
     }
+    var reArmedFromSuppression = false;
+    if (inGame && _suppressScoreboardFinalResult) {
+      // A resumed match's final result is suppressed until its bound fixture's
+      // config arrives. Re-arm ONLY for that same fixture (the unawaited config
+      // load that lost the race with the Resume tap); any OTHER config must not
+      // silently retarget a live match's final result.
+      final resumedCode = _resumedFixtureMatchCode;
+      if (resumedCode == null ||
+          resumedCode.isEmpty ||
+          config.matchCode != resumedCode) {
+        return;
+      }
+      reArmedFromSuppression = true;
+    }
     _lastAppliedScoreboardSignature = signature;
+    _suppressScoreboardFinalResult = false;
     _scoreboardHomeTeamId = homeIsLeft ? 'A' : 'B';
     _scoreboardAwayTeamId = homeIsLeft ? 'B' : 'A';
 
-    teams[0].name = homeIsLeft ? config.homeTeamName : config.awayTeamName;
-    teams[1].name = homeIsLeft ? config.awayTeamName : config.homeTeamName;
+    // Assign names by stable team ID, not by list position. If this re-runs
+    // while the order is swapped (e.g. the version bump after a successful
+    // submit re-applies the config at full-time), a positional assignment would
+    // scramble the names onto the wrong teams. The score mapping already keys on
+    // the team ID (_scoreboardHomeTeamId), so naming by ID keeps names and
+    // scores consistent regardless of side.
+    for (final team in teams) {
+      team.name = team.id == _scoreboardHomeTeamId
+          ? config.homeTeamName
+          : config.awayTeamName;
+    }
 
     // Apply remote timing presets only before a match starts (between matches,
     // after a reset). Never call gameInit() at full-time: a version-only update
@@ -833,12 +953,35 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (!inGame) {
       periodTime = config.durationSeconds;
       gameInit();
+    } else if (reArmedFromSuppression &&
+        currentStage == MatchStage.fullTime) {
+      // The bound fixture's config only surfaced AFTER this resumed match had
+      // already run to full-time while suppressed. The sole
+      // _queueFinalResultSubmission() call site (the secondHalf -> fullTime
+      // tick) returned early because the result was suppressed and the config
+      // was absent, so nothing was ever queued and the snapshot was already
+      // cleared - the result would be lost forever (#53). Now that the bound
+      // fixture's config is here, submit it. enqueueFinalResult is idempotent
+      // per match_code, so this is safe even if an item somehow already exists.
+      _queueFinalResultSubmission();
     }
   }
 
   void _queueFinalResultSubmission() {
     final config = scoreboardResultService.matchConfig;
-    if (config == null) return;
+    // Final gate before the POST: need a submittable fixture (non-empty code)
+    // and a non-suppressed binding.
+    if (config == null || config.matchCode.isEmpty) return;
+    if (_suppressScoreboardFinalResult) return;
+    // A resumed match is bound to its fixture: never POST if the live config has
+    // drifted to a different fixture (e.g. a deep link opened mid-match). Belt-
+    // and-suspenders with the suppress guard above.
+    final resumedCode = _resumedFixtureMatchCode;
+    if (resumedCode != null &&
+        resumedCode.isNotEmpty &&
+        config.matchCode != resumedCode) {
+      return;
+    }
 
     final defaultHomeTeamId = config.homeIsLeft ? 'A' : 'B';
     final defaultAwayTeamId = config.homeIsLeft ? 'B' : 'A';
