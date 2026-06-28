@@ -944,6 +944,21 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           : config.awayTeamName;
     }
 
+    // Apply the match's field number to the MQTT topic, mirroring the catigoal
+    // path (Match.fromJson + loadMatchData): take the first run of digits from
+    // the venue short name and strip leading zeros. Leave the existing field
+    // untouched when the venue carries no number (e.g. "Center Court") so a
+    // manually-set field is preserved — the mqtt setter would otherwise publish
+    // to a bare "field_" (#50).
+    final venueField = RegExp(r'\d+')
+            .firstMatch(config.venueShortName)
+            ?.group(0)
+            ?.replaceFirst(RegExp(r'^0+'), '') ??
+        '';
+    if (venueField.isNotEmpty) {
+      mqttService.topicField = venueField;
+    }
+
     // Apply remote timing presets only before a match starts (between matches,
     // after a reset). Never call gameInit() at full-time: a version-only update
     // from a successful result submission would otherwise zero the just-played
