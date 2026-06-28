@@ -178,6 +178,25 @@ void main() {
     }
   }
 
+  Future<ResultOutboxItem> submitCurrentReview(
+    WidgetTester tester,
+    Game game,
+    String matchCode,
+  ) async {
+    final review = game.buildScoreboardResultReview();
+    expect(review.matchCode, matchCode);
+    final submitted = await game.submitScoreboardResult(
+      expectedSignature: review.signature,
+      homeGoals: review.homeGoals,
+      awayGoals: review.awayGoals,
+      comment: null,
+      homeConfirmed: false,
+      awayConfirmed: false,
+    );
+    expect(submitted, isTrue);
+    return waitForOutboxItem(tester, game, matchCode);
+  }
+
   group('cold-launch detection', () {
     testWidgets('an in-progress snapshot is offered for resume',
         (tester) async {
@@ -416,9 +435,24 @@ void main() {
       expect(saved.scoreboardHomeTeamId, 'B');
       expect(saved.scoreboardAwayTeamId, 'A');
 
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
       game.startTimer();
       await tester.pump(const Duration(seconds: 1));
-      final result = await waitForOutboxItem(tester, game, 'M-53');
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(reviewRequests, 1);
+      expect(game.needsScoreboardResultReview, isTrue);
+
+      final review = game.buildScoreboardResultReview();
+      expect(review.homeGoals, 5,
+          reason: 'home score comes from restored team id B');
+      expect(review.awayGoals, 2,
+          reason: 'away score comes from restored team id A');
+
+      final result = await submitCurrentReview(tester, game, 'M-53');
 
       expect(result.homeGoals, 5,
           reason: 'home score comes from restored team id B');
@@ -471,9 +505,24 @@ void main() {
       expect(saved.scoreboardAwayTeamId, 'B');
       expect(game.teams[0].id, 'B');
 
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
       game.startTimer();
       await tester.pump(const Duration(seconds: 1));
-      final result = await waitForOutboxItem(tester, game, 'M-SWAP');
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(reviewRequests, 1);
+      expect(game.needsScoreboardResultReview, isTrue);
+
+      final review = game.buildScoreboardResultReview();
+      expect(review.homeGoals, 3,
+          reason: 'home score follows team A even after side swap');
+      expect(review.awayGoals, 1,
+          reason: 'away score follows team B even after side swap');
+
+      final result = await submitCurrentReview(tester, game, 'M-SWAP');
 
       expect(result.homeGoals, 3,
           reason: 'home score follows team A even after side swap');
@@ -517,8 +566,15 @@ void main() {
       expect(saved.scoreboardHomeTeamId, isNull);
       expect(saved.scoreboardAwayTeamId, isNull);
 
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
       game.startTimer();
       await tester.pump(const Duration(seconds: 1));
+      expect(reviewRequests, 0);
+      expect(game.needsScoreboardResultReview, isFalse);
       await expectNoOutboxItem(tester, game, 'Y');
 
       await tester.pump(const Duration(milliseconds: 1500));
@@ -529,7 +585,7 @@ void main() {
         (tester) async {
       // Organizer edited the fixture during the kill window: same match_code,
       // newer version. The drift guard keys on match_code only, so this must
-      // re-arm and submit the LIVE config version, not drift-suppress.
+      // re-arm and submit the LIVE config version after review, not drift-suppress.
       await _seedScoreboardPrefs(
         prefs,
         _scoreboardConfig(matchCode: 'M-VER', version: 9),
@@ -552,9 +608,16 @@ void main() {
       await settleScoreboardConfig(tester, game);
 
       game.resumePendingMatch();
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
       game.startTimer();
       await tester.pump(const Duration(seconds: 1));
-      final result = await waitForOutboxItem(tester, game, 'M-VER');
+      expect(reviewRequests, 1);
+      expect(game.needsScoreboardResultReview, isTrue);
+      final result = await submitCurrentReview(tester, game, 'M-VER');
 
       expect(result.homeGoals, 1);
       expect(result.awayGoals, 4);
@@ -565,12 +628,13 @@ void main() {
       game.dispose();
     });
 
-    testWidgets('late-arriving fixture config re-arms a suppressed resume (#53)',
+    testWidgets(
+        'late-arriving fixture config re-arms a suppressed resume (#53)',
         (tester) async {
       // The scoreboard config loads via a separate unawaited initialize() and
       // may not have surfaced before the referee taps Resume. Resume then
       // suppresses; when the SAME fixture's config arrives it must re-arm (the
-      // suppress latch is not one-way), and the final POST must fire.
+      // suppress latch is not one-way), and the final review must open.
       await persist(_snap(
         stage: 'secondHalf',
         remainingTime: 1,
@@ -589,9 +653,7 @@ void main() {
 
       game.resumePendingMatch(); // suppressed: bound fixture remembered as M-LATE
 
-      // Now the fixture's config arrives and notifies listeners. A dead local
-      // base URL makes the resulting submit network call fail instantly
-      // (connection refused) instead of hitting the real host.
+      // Now the fixture's config arrives and notifies listeners.
       game.scoreboardResultService.debugApplyMatchConfig(
         ScoreboardMatchConfig.fromJson(
           _scoreboardConfig(matchCode: 'M-LATE', version: 3),
@@ -601,14 +663,24 @@ void main() {
       );
       await tester.pump();
 
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
       game.startTimer();
       await tester.pump(const Duration(seconds: 1));
-      final result = await waitForOutboxItem(tester, game, 'M-LATE');
+      expect(reviewRequests, 1);
+      expect(game.needsScoreboardResultReview, isTrue);
 
-      expect(result.homeGoals, 6,
-          reason: 're-armed mapping: home is team A');
-      expect(result.awayGoals, 0,
-          reason: 're-armed mapping: away is team B');
+      final review = game.buildScoreboardResultReview();
+      expect(review.homeGoals, 6, reason: 're-armed mapping: home is team A');
+      expect(review.awayGoals, 0, reason: 're-armed mapping: away is team B');
+
+      final result = await submitCurrentReview(tester, game, 'M-LATE');
+
+      expect(result.homeGoals, 6, reason: 're-armed mapping: home is team A');
+      expect(result.awayGoals, 0, reason: 're-armed mapping: away is team B');
       expect(result.version, 3);
 
       await tester.pump(const Duration(milliseconds: 1500));
@@ -616,14 +688,12 @@ void main() {
     });
 
     testWidgets(
-        'late config after full-time still submits a suppressed resume (#53)',
+        'late config after full-time still opens review for suppressed resume (#53)',
         (tester) async {
       // Regression: a resumed referee match can reach full-time WHILE STILL
-      // suppressed (its fixture config has not surfaced yet). The sole
-      // _queueFinalResultSubmission() call site is the secondHalf->fullTime
-      // tick, which returns early under suppression, and the same tick clears
-      // the snapshot - so without re-submitting on late config arrival the
-      // result is lost forever. The late config must drive the POST.
+      // suppressed (its fixture config has not surfaced yet). The full-time
+      // tick cannot open review while suppressed, and the same tick clears the
+      // snapshot - so the late config must surface the review affordance.
       await persist(_snap(
         stage: 'secondHalf',
         remainingTime: 1,
@@ -642,11 +712,18 @@ void main() {
 
       game.resumePendingMatch(); // suppressed: bound fixture remembered as M-LFT
 
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
       // Drive to full-time BEFORE the config surfaces. The suppressed full-time
       // tick must NOT queue anything yet.
       game.startTimer();
       await tester.pump(const Duration(seconds: 1));
       expect(game.currentStage, MatchStage.fullTime);
+      expect(reviewRequests, 0);
+      expect(game.needsScoreboardResultReview, isFalse);
       await expectNoOutboxItem(tester, game, 'M-LFT');
 
       // Now the bound fixture's config finally arrives, after full-time.
@@ -659,7 +736,14 @@ void main() {
       );
       await tester.pump();
 
-      final result = await waitForOutboxItem(tester, game, 'M-LFT');
+      expect(reviewRequests, 1);
+      expect(game.needsScoreboardResultReview, isTrue);
+
+      final review = game.buildScoreboardResultReview();
+      expect(review.homeGoals, 4, reason: 'home is team A');
+      expect(review.awayGoals, 2, reason: 'away is team B');
+
+      final result = await submitCurrentReview(tester, game, 'M-LFT');
       expect(result.homeGoals, 4, reason: 'home is team A');
       expect(result.awayGoals, 2, reason: 'away is team B');
       expect(result.version, 3);
@@ -675,7 +759,8 @@ void main() {
       game.dispose();
     });
 
-    testWidgets('suppressed resume re-persists the binding for a 2nd kill (#53)',
+    testWidgets(
+        'suppressed resume re-persists the binding for a 2nd kill (#53)',
         (tester) async {
       // Config not loaded at resume → binding is suppressed. The snapshot it
       // RE-SAVES must still be a referee match with the binding intact, so a
@@ -744,9 +829,22 @@ void main() {
       await tester.pump();
       expect(game.teams[0].id, 'B', reason: 'team order stayed swapped');
 
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
       game.startTimer();
       await tester.pump(const Duration(seconds: 1));
-      final result = await waitForOutboxItem(tester, game, 'M-LSWAP');
+      expect(reviewRequests, 1);
+      expect(game.needsScoreboardResultReview, isTrue);
+
+      final review = game.buildScoreboardResultReview();
+      expect(review.homeGoals, 1,
+          reason: 'home is team A (id), not teams[0] which is B');
+      expect(review.awayGoals, 7, reason: 'away is team B');
+
+      final result = await submitCurrentReview(tester, game, 'M-LSWAP');
 
       expect(result.homeGoals, 1,
           reason: 'home is team A (id), not teams[0] which is B');
@@ -756,7 +854,8 @@ void main() {
       game.dispose();
     });
 
-    testWidgets('a different fixture mid-suppressed-resume cannot hijack it (#53)',
+    testWidgets(
+        'a different fixture mid-suppressed-resume cannot hijack it (#53)',
         (tester) async {
       // Resume bound to M-HX with no config yet (suppressed). Then a DIFFERENT
       // fixture M-HY opens mid-match. It must be rejected: the re-saved snapshot
@@ -902,6 +1001,221 @@ void main() {
       expect(game.inGame, isFalse);
 
       expect(MatchStateStore(prefs).load(), isNull);
+      game.dispose();
+    });
+
+    testWidgets(
+        'confirm-on-load prompt fires when the callback is registered after '
+        'the link surfaces', (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+
+      // A staged deep link surfaces BEFORE Home installs the confirm callback
+      // (the constructor-initialize vs didChangeDependencies race).
+      game.scoreboardResultService.debugApplyPendingMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-LOAD', version: 2),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+
+      final prompts = <String>[];
+      // The draining setter must fire the already-pending prompt on assignment.
+      game.onRequestConfirmScoreboardMatch = (c) => prompts.add(c.matchCode);
+      expect(prompts, ['M-LOAD']);
+
+      // A redundant notify for the same pending config must not re-prompt.
+      game.scoreboardResultService.debugApplyPendingMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-LOAD', version: 2),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      expect(prompts, ['M-LOAD']);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'submitScoreboardResult refuses when the committed fixture changed',
+        (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-ONE', version: 1),
+        ),
+        token: 'token-1',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      final review = game.buildScoreboardResultReview();
+      expect(review.matchCode, 'M-ONE');
+
+      // A new link is confirmed while the review screen (still showing M-ONE)
+      // is open, changing the committed fixture underneath it.
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-TWO', version: 1),
+        ),
+        token: 'token-2',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+
+      final ok = await game.submitScoreboardResult(
+        expectedSignature: review.signature, // captured for M-ONE
+        homeGoals: review.homeGoals,
+        awayGoals: review.awayGoals,
+        homeConfirmed: false,
+        awayConfirmed: false,
+      );
+      expect(ok, isFalse, reason: 'must not POST M-ONE scores against M-TWO');
+      expect(game.scoreboardResultService.outbox, isEmpty);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'submitScoreboardResult refuses a same-code config that changed sides',
+        (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-SIG', version: 1, homeIsLeft: true),
+        ),
+        token: 't',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      final review = game.buildScoreboardResultReview();
+
+      // Same match code, but the organizer swapped sides (homeIsLeft false):
+      // the captured review's signature no longer matches the live config.
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-SIG', version: 1, homeIsLeft: false),
+        ),
+        token: 't',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+
+      final ok = await game.submitScoreboardResult(
+        expectedSignature: review.signature,
+        homeGoals: review.homeGoals,
+        awayGoals: review.awayGoals,
+        homeConfirmed: false,
+        awayConfirmed: false,
+      );
+      expect(ok, isFalse,
+          reason: 'a same-code side swap must invalidate the captured review');
+      expect(game.scoreboardResultService.outbox, isEmpty);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'a fixture-revision change at full time invalidates the result review',
+        (tester) async {
+      // Reach full time bound to M-END v1 (the review subject is captured).
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        scoreA: 3,
+        scoreB: 1,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-END',
+        scoreboardVersion: 1,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      game.resumePendingMatch();
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-END', version: 1),
+        ),
+        token: 'token-end',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.needsScoreboardResultReview, isTrue);
+      final review = game.buildScoreboardResultReview();
+      expect(review.matchCode, 'M-END');
+
+      // The SAME fixture surfaces at a new revision after full time (organizer
+      // edit / refresh). matchCode still matches (so the #53 drift guard passes)
+      // but the captured full-time signature does not.
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-END', version: 2),
+        ),
+        token: 'token-end',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+
+      expect(game.needsScoreboardResultReview, isFalse,
+          reason: 'a revision change after full time invalidates the review');
+      final ok = await game.submitScoreboardResult(
+        expectedSignature: review.signature, // captured for v1
+        homeGoals: review.homeGoals,
+        awayGoals: review.awayGoals,
+        homeConfirmed: false,
+        awayConfirmed: false,
+      );
+      expect(ok, isFalse,
+          reason: 'must not post the v1 review against the v2 revision');
+      await expectNoOutboxItem(tester, game, 'M-END');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('onPendingMatchPromptClosed re-arms a still-pending prompt',
+        (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+
+      final prompts = <String>[];
+      game.onRequestConfirmScoreboardMatch = (c) => prompts.add(c.matchCode);
+
+      game.scoreboardResultService.debugApplyPendingMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-RE', version: 1),
+        ),
+        token: 't',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      expect(prompts, ['M-RE']);
+
+      // The dialog closed while the same link is still pending (e.g. a stale
+      // no-op Load/Cancel): the prompt must re-arm for it.
+      game.onPendingMatchPromptClosed();
+      expect(prompts, ['M-RE', 'M-RE']);
+
+      // Once the link is cleared, closing the prompt must NOT re-fire.
+      game.scoreboardResultService.cancelPendingMatch();
+      game.onPendingMatchPromptClosed();
+      expect(prompts, ['M-RE', 'M-RE']);
+
+      await tester.pump(const Duration(milliseconds: 1500));
       game.dispose();
     });
   });

@@ -87,6 +87,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   WakelockService wakelockService = WakelockService();
   ScoreboardResultService scoreboardResultService = ScoreboardResultService();
   String? _lastAppliedScoreboardSignature;
+  String? _lastPromptedPendingSignature;
   String? _scoreboardHomeTeamId;
   String? _scoreboardAwayTeamId;
   bool _suppressScoreboardFinalResult = false;
@@ -98,9 +99,34 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   // suppressed window, so a second kill before the config loads doesn't lose it.
   String? _resumedFixtureMatchCode;
   int? _resumedFixtureVersion;
+  // Signature of the fixture whose result is eligible for review at full time.
+  // Captured the moment the match ends (or the bound fixture's config surfaces
+  // post-full-time for a suppressed resume). The result-review affordance is
+  // gated on the committed config STILL matching this, so loading a different
+  // link at full time can't bind the just-ended match's scores to the new
+  // fixture. Cleared on a fresh match (gameInit).
+  String? _fullTimeResultSignature;
 
   // Callback to request showing the dialog
   void Function()? onRequestSwitchTeamOrderDialog;
+  void Function()? onRequestReviewScoreboardResult;
+
+  // Callback to request the confirm-on-load ("Load match?") dialog. A DRAINING
+  // setter, mirroring [onRequestResumeMatch]: scoreboardResultService.initialize()
+  // is kicked off in the Game constructor and can surface a staged deep link
+  // (pendingMatchConfig) BEFORE Home registers this callback in
+  // didChangeDependencies. A plain field would let _onScoreboardServiceUpdate
+  // mark the prompt consumed against a null callback, stranding the staged match
+  // with no dialog and no re-fire. Firing on assignment lets whichever happens
+  // last (config arrival vs callback registration) raise the prompt.
+  void Function(ScoreboardMatchConfig config)? _onRequestConfirmScoreboardMatch;
+  void Function(ScoreboardMatchConfig config)?
+      get onRequestConfirmScoreboardMatch => _onRequestConfirmScoreboardMatch;
+  set onRequestConfirmScoreboardMatch(
+      void Function(ScoreboardMatchConfig config)? callback) {
+    _onRequestConfirmScoreboardMatch = callback;
+    _maybeFirePendingMatchPrompt();
+  }
 
   // Callback to request showing the cold-resume prompt. A DRAINING setter:
   // main.dart constructs Game() before runApp and _loadPrefs() is async, so the
@@ -130,7 +156,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     Module moduleA3 = Module(this, teamID, 'A3', 2);
     Module moduleA4 = Module(this, teamID, 'A4', 3);
     Module moduleA5 = Module(this, teamID, 'A5', 4);
-    teams.add(Team('Team A', [moduleA1, moduleA2, moduleA3, moduleA4 ,moduleA5], teamID));
+    teams.add(Team(
+        'Team A', [moduleA1, moduleA2, moduleA3, moduleA4, moduleA5], teamID));
 
     // B team (1)
     teamID = 'B';
@@ -139,11 +166,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     Module moduleB3 = Module(this, teamID, 'B3', 7);
     Module moduleB4 = Module(this, teamID, 'B4', 8);
     Module moduleB5 = Module(this, teamID, 'B5', 9);
-    teams.add(Team('Team B', [moduleB1, moduleB2, moduleB3, moduleB4 ,moduleB5], teamID));
-
+    teams.add(Team(
+        'Team B', [moduleB1, moduleB2, moduleB3, moduleB4, moduleB5], teamID));
 
     gameInit();
     scoreboardResultService.addListener(_onScoreboardServiceUpdate);
+    scoreboardResultService.onCurrentResultDelivered =
+        _onScoreboardResultDelivered;
     unawaited(scoreboardResultService.initialize());
     unawaited(_loadPrefs());
   }
@@ -215,6 +244,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _suppressScoreboardFinalResult = false;
     _resumedFixtureMatchCode = null;
     _resumedFixtureVersion = null;
+    _fullTimeResultSignature = null;
 
     stopTimer();
 
@@ -414,10 +444,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         _resumedFixtureVersion = snapshot.scoreboardVersion;
         if (config != null) {
           // Matching config is present → arm the POST now.
-          _lastAppliedScoreboardSignature =
-              '${config.matchCode}:${config.version}:${config.durationSeconds}:'
-              '${config.homeIsLeft ? 'L' : 'R'}:'
-              '${config.homeTeamName}:${config.awayTeamName}';
+          _lastAppliedScoreboardSignature = config.signature;
           _suppressScoreboardFinalResult = false;
         } else {
           // Config not loaded yet → keep the POST suppressed until it arrives.
@@ -582,7 +609,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           stopAll(true);
           timerButtonText = 'REPEAT';
           gameOverAll();
-          _queueFinalResultSubmission();
+          _enterFullTimeResultReview();
           // The match is over: stop the OS autoConnect from chasing modules
           // that are powered down for good (e.g. a unit still off from a
           // late penalty). In-match these reconnect unbounded on purpose; at
@@ -706,9 +733,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
   }
 
-  void resetModuleNames(){
+  void resetModuleNames() {
     for (var team in teams) {
-      for (var module in team.modules.where((module) => module.isEnabled && module.hasCustomLabel)) {
+      for (var module in team.modules
+          .where((module) => module.isEnabled && module.hasCustomLabel)) {
         module.setLabel(module.defaultName);
       }
     }
@@ -727,11 +755,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     bool vibrateTriggered = false;
 
     for (var team in teams) {
-      for (var module in team.modules.where((module) => module.isEnabled && module.state == ModuleState.damage)) {
+      for (var module in team.modules.where(
+          (module) => module.isEnabled && module.state == ModuleState.damage)) {
         final penaltyBefore = module.penaltyTime;
         module.notifyTimer();
 
-        if (!_replaying && !vibrateTriggered && vibrationService.damageTimerEnabled && penaltyBefore > 0) {
+        if (!_replaying &&
+            !vibrateTriggered &&
+            vibrationService.damageTimerEnabled &&
+            penaltyBefore > 0) {
           final penaltyAfter = module.penaltyTime;
           if (vibrationService.damageTimerAlerts.contains(penaltyAfter)) {
             vibrateTriggered = true;
@@ -754,7 +786,6 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
     vibrationService.vibrateGameTimer();
   }
-
 
   void stopTimer() {
     _isGameRunning = false;
@@ -863,11 +894,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // Damage timers – one notification set per module currently in damage state.
     if (vibrationService.damageTimerEnabled) {
       for (final team in teams) {
-        for (final module in team.modules.where(
-            (m) => m.isEnabled && m.state == ModuleState.damage && m.penaltyTime > 0)) {
-          NotificationService.scheduleDamageAlerts(
-              module.moduleId, module.name, module.penaltyTime,
-              vibrationService.damageTimerAlerts);
+        for (final module in team.modules.where((m) =>
+            m.isEnabled &&
+            m.state == ModuleState.damage &&
+            m.penaltyTime > 0)) {
+          NotificationService.scheduleDamageAlerts(module.moduleId, module.name,
+              module.penaltyTime, vibrationService.damageTimerAlerts);
         }
       }
     }
@@ -885,7 +917,51 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     super.dispose();
   }
 
+  /// Called by the service the moment the active match's result is confirmed
+  /// delivered (HTTP 200). Defer the actual reset to a microtask: this fires
+  /// from inside the service's processOutbox, so resetting (which mutates the
+  /// service) inline would be re-entrant.
+  void _onScoreboardResultDelivered() {
+    scheduleMicrotask(_resetAfterScoreboardSubmission);
+  }
+
+  /// Return to the clean start state after a referee result is delivered, ready
+  /// for the next match (as if freshly launched): disconnect modules, restore
+  /// default team names/order, the operator's configured match length, and a
+  /// fresh 0-0 first half; drop the linked match (keeping the outbox audit) and
+  /// any saved snapshot. Only reached on a successful submission, so a queued or
+  /// failed result keeps the match on screen with its status instead.
+  void _resetAfterScoreboardSubmission() {
+    disconnectAll();
+    for (final team in teams) {
+      team.name = team.id == 'A' ? 'Team A' : 'Team B';
+    }
+    _lastAppliedScoreboardSignature = null;
+    _scoreboardHomeTeamId = null;
+    _scoreboardAwayTeamId = null;
+    _fullTimeResultSignature = null;
+    _resumedFixtureMatchCode = null;
+    _resumedFixtureVersion = null;
+    _suppressScoreboardFinalResult = false;
+    // The deep link had overridden the live periodTime; restore the operator's
+    // configured default (or the app default of 600 s when none is stored).
+    _periodTime = _prefs?.getInt(_periodTimeKey) ?? 600;
+    setTeamToDefaultOrder();
+    gameInit();
+    unawaited(scoreboardResultService.resetLinkedMatchAfterSubmission());
+    _clearMatchState();
+    notifyListeners();
+  }
+
   void _onScoreboardServiceUpdate() {
+    if (scoreboardResultService.pendingMatchConfig == null) {
+      // Pending cleared (confirmed/cancelled): reset the dedup so re-opening the
+      // same link later prompts again.
+      _lastPromptedPendingSignature = null;
+    } else {
+      _maybeFirePendingMatchPrompt();
+    }
+
     final config = scoreboardResultService.matchConfig;
     if (config != null) {
       _applyScoreboardMatchConfig(config);
@@ -893,13 +969,36 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Raise the "Load match?" prompt for a staged deep link, exactly once per
+  /// pending signature. Only advances [_lastPromptedPendingSignature] when the
+  /// callback is actually invoked, so a config that surfaces before Home
+  /// installs the callback is not silently consumed (the draining setter
+  /// re-runs this on registration).
+  void _maybeFirePendingMatchPrompt() {
+    final callback = _onRequestConfirmScoreboardMatch;
+    if (callback == null) return;
+    final pending = scoreboardResultService.pendingMatchConfig;
+    if (pending == null) return;
+    final signature = pending.signature;
+    if (_lastPromptedPendingSignature == signature) return;
+    _lastPromptedPendingSignature = signature;
+    callback(pending);
+  }
+
+  /// Called by Home when the "Load match?" dialog closes. Re-arms the prompt so
+  /// a newer link that arrived while the dialog was open (and was suppressed by
+  /// the dialog's re-entrancy guard) is shown next, and a stale Load/Cancel that
+  /// no-opped against a changed fixture doesn't strand the current pending one.
+  void onPendingMatchPromptClosed() {
+    _lastPromptedPendingSignature = null;
+    _maybeFirePendingMatchPrompt();
+  }
+
   void _applyScoreboardMatchConfig(ScoreboardMatchConfig config) {
-    final homeIsLeft = config.homeIsLeft;
     // Team names are part of the signature so a corrected schedule payload that
     // changes only a name (without bumping version/duration/side) still updates
     // the displayed names; the `if (!inGame)` guard below still gates timing.
-    final signature =
-        '${config.matchCode}:${config.version}:${config.durationSeconds}:${homeIsLeft ? 'L' : 'R'}:${config.homeTeamName}:${config.awayTeamName}';
+    final signature = config.signature;
     // Dedupe on an unchanged signature - EXCEPT while a resumed match is still
     // suppressed. `_lastAppliedScoreboardSignature` is in-memory and is never
     // cleared when the service drops `_matchConfig` to null (a token-changing
@@ -929,8 +1028,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
     _lastAppliedScoreboardSignature = signature;
     _suppressScoreboardFinalResult = false;
-    _scoreboardHomeTeamId = homeIsLeft ? 'A' : 'B';
-    _scoreboardAwayTeamId = homeIsLeft ? 'B' : 'A';
+    _scoreboardHomeTeamId = config.homeIsLeft ? 'A' : 'B';
+    _scoreboardAwayTeamId = config.homeIsLeft ? 'B' : 'A';
 
     // Assign names by stable team ID, not by list position. If this re-runs
     // while the order is swapped (e.g. the version bump after a successful
@@ -951,48 +1050,128 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // bridge. The full-time clock display stays in sync separately via the
     // periodTime setter when settings change.
     if (!inGame) {
-      periodTime = config.durationSeconds;
+      // Set the LIVE match length from the link, but do NOT persist it as the
+      // operator's configured default (the `periodTime` setter would write it to
+      // prefs and clobber their setting). gameInit() applies it to the clock.
+      _periodTime = config.durationSeconds;
       gameInit();
-    } else if (reArmedFromSuppression &&
-        currentStage == MatchStage.fullTime) {
+    } else if (reArmedFromSuppression && currentStage == MatchStage.fullTime) {
       // The bound fixture's config only surfaced AFTER this resumed match had
-      // already run to full-time while suppressed. The sole
-      // _queueFinalResultSubmission() call site (the secondHalf -> fullTime
-      // tick) returned early because the result was suppressed and the config
-      // was absent, so nothing was ever queued and the snapshot was already
-      // cleared - the result would be lost forever (#53). Now that the bound
-      // fixture's config is here, submit it. enqueueFinalResult is idempotent
-      // per match_code, so this is safe even if an item somehow already exists.
-      _queueFinalResultSubmission();
+      // already run to full-time while suppressed. Now that the bound fixture's
+      // config is here, capture it as the review subject and surface the review
+      // flow instead of silently enqueueing.
+      _enterFullTimeResultReview();
     }
   }
 
-  void _queueFinalResultSubmission() {
-    final config = scoreboardResultService.matchConfig;
+  bool _canSubmitScoreboardResult([ScoreboardMatchConfig? config]) {
+    final matchConfig = config ?? scoreboardResultService.matchConfig;
     // Final gate before the POST: need a submittable fixture (non-empty code)
     // and a non-suppressed binding.
-    if (config == null || config.matchCode.isEmpty) return;
-    if (_suppressScoreboardFinalResult) return;
+    if (matchConfig == null || matchConfig.matchCode.isEmpty) return false;
+    if (_suppressScoreboardFinalResult) return false;
     // A resumed match is bound to its fixture: never POST if the live config has
     // drifted to a different fixture (e.g. a deep link opened mid-match). Belt-
     // and-suspenders with the suppress guard above.
     final resumedCode = _resumedFixtureMatchCode;
     if (resumedCode != null &&
         resumedCode.isNotEmpty &&
-        config.matchCode != resumedCode) {
-      return;
+        matchConfig.matchCode != resumedCode) {
+      return false;
+    }
+    return true;
+  }
+
+  bool get needsScoreboardResultReview {
+    final config = scoreboardResultService.matchConfig;
+    if (currentStage != MatchStage.fullTime) return false;
+    // The committed config must STILL be the exact fixture that just ended.
+    // Loading a different link at full time changes matchConfig, but its
+    // signature won't match the one captured at full time, so we never offer to
+    // submit the just-ended scores against a newly-loaded fixture.
+    if (_fullTimeResultSignature == null) return false;
+    if (config == null || config.signature != _fullTimeResultSignature) {
+      return false;
+    }
+    if (!_canSubmitScoreboardResult(config)) return false;
+    return !scoreboardResultService.hasResultFor(config.matchCode);
+  }
+
+  /// Capture the just-ended fixture as the result-review subject, then raise the
+  /// review affordance. Called at the secondHalf->fullTime tick and, for a
+  /// suppressed resume, when the bound fixture's config surfaces post-full-time.
+  void _enterFullTimeResultReview() {
+    final config = scoreboardResultService.matchConfig;
+    if (config != null && _canSubmitScoreboardResult(config)) {
+      _fullTimeResultSignature = config.signature;
+    }
+    _requestScoreboardResultReview();
+  }
+
+  void _requestScoreboardResultReview() {
+    if (!needsScoreboardResultReview) return;
+    onRequestReviewScoreboardResult?.call();
+  }
+
+  ({
+    String matchCode,
+    String signature,
+    String homeName,
+    String awayName,
+    int homeGoals,
+    int awayGoals,
+  }) buildScoreboardResultReview() {
+    final config = scoreboardResultService.matchConfig;
+    final homeIsLeft = config?.homeIsLeft ?? true;
+    final defaultHomeTeamId = homeIsLeft ? 'A' : 'B';
+    final defaultAwayTeamId = homeIsLeft ? 'B' : 'A';
+    final homeTeamId = _scoreboardHomeTeamId ?? defaultHomeTeamId;
+    final awayTeamId = _scoreboardAwayTeamId ?? defaultAwayTeamId;
+
+    return (
+      matchCode: config?.matchCode ?? '',
+      // Full fixture+revision identity captured at review time, so a later
+      // same-code change (side swap / version bump) is detected on submit.
+      signature: config?.signature ?? '',
+      homeName: _teamNameById(homeTeamId) ?? config?.homeTeamName ?? 'Home',
+      awayName: _teamNameById(awayTeamId) ?? config?.awayTeamName ?? 'Away',
+      homeGoals: _scoreByTeamId(homeTeamId) ?? 0,
+      awayGoals: _scoreByTeamId(awayTeamId) ?? 0,
+    );
+  }
+
+  Future<bool> submitScoreboardResult({
+    required String expectedSignature,
+    required int homeGoals,
+    required int awayGoals,
+    String? comment,
+    required bool homeConfirmed,
+    required bool awayConfirmed,
+  }) async {
+    if (!_canSubmitScoreboardResult()) return false;
+
+    // Identity guard: the review screen captured its scores/team mapping for one
+    // fixture revision. Compare the FULL signature (code + version + side +
+    // names), not just the match code: a same-code config change (e.g. a side
+    // swap or version bump from an organizer edit, or a new link confirmed at
+    // full time) would otherwise post the captured scores against a changed
+    // mapping/version. Refuse so the referee re-opens a fresh review instead.
+    if (scoreboardResultService.matchConfig?.signature != expectedSignature) {
+      return false;
     }
 
-    final defaultHomeTeamId = config.homeIsLeft ? 'A' : 'B';
-    final defaultAwayTeamId = config.homeIsLeft ? 'B' : 'A';
-    final homeGoals = _scoreByTeamId(_scoreboardHomeTeamId ?? defaultHomeTeamId) ?? 0;
-    final awayGoals = _scoreByTeamId(_scoreboardAwayTeamId ?? defaultAwayTeamId) ?? 0;
-
-    unawaited(scoreboardResultService.enqueueFinalResult(
+    final trimmedComment = comment?.trim();
+    final submitted = await scoreboardResultService.enqueueFinalResult(
       homeGoals: homeGoals,
       awayGoals: awayGoals,
-      comment: 'Submitted via RCJ Soccer RefMate',
-    ));
+      comment: trimmedComment == null || trimmedComment.isEmpty
+          ? null
+          : trimmedComment,
+      homeConfirmed: homeConfirmed,
+      awayConfirmed: awayConfirmed,
+    );
+    notifyListeners();
+    return submitted;
   }
 
   int? _scoreByTeamId(String? teamId) {
@@ -1003,7 +1182,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     return null;
   }
 
-
+  String? _teamNameById(String? teamId) {
+    if (teamId == null) return null;
+    for (final team in teams) {
+      if (team.id == teamId) return team.name;
+    }
+    return null;
+  }
 
   void playAll(bool removeDamage) async {
     for (var team in teams) {
@@ -1034,8 +1219,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // isConnected is false while autoConnect keeps retrying. Without this a
       // "disconnect all" would skip those modules, leaving them retrying and
       // later consuming GATT slots after the referee asked to disconnect.
-      for (var module in team.modules.where(
-          (module) => module.isEnabled && (module.isConnected || module.isConnecting))) {
+      for (var module in team.modules.where((module) =>
+          module.isEnabled && (module.isConnected || module.isConnecting))) {
         module.bleDisconnect();
       }
     }
@@ -1048,8 +1233,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   // — during a match these reconnects are unbounded on purpose (invariant #5).
   void disconnectInactiveModules() {
     for (var team in teams) {
-      for (var module in team.modules.where(
-          (module) => module.isEnabled && module.isConnecting)) {
+      for (var module in team.modules
+          .where((module) => module.isEnabled && module.isConnecting)) {
         module.bleDisconnect();
       }
     }
@@ -1340,5 +1525,4 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
     notifyListeners();
   }
-
 }
