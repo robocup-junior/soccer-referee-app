@@ -563,7 +563,7 @@ class ScoreboardResultService with ChangeNotifier {
       responseBody: responseBody,
       errorMessage: errorMessage,
     );
-    _statusMessage = 'Retrying ($nextRetryCount/$_maxSubmissionRetries)';
+    _statusMessage = 'Will retry ($nextRetryCount/$_maxSubmissionRetries)';
   }
 
   void _updateMatchVersionFromResponse(Map<String, dynamic>? body) {
