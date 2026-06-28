@@ -35,6 +35,11 @@ class _ScrollingStatusTextState extends State<ScrollingStatusText>
     with SingleTickerProviderStateMixin {
   late final AnimationController _controller;
 
+  /// The text currently being marquee'd, so we can detect a message change and
+  /// rewind the scroll to the start even when the new message measures to the
+  /// same period as the old one.
+  String? _animatedText;
+
   @override
   void initState() {
     super.initState();
@@ -80,18 +85,24 @@ class _ScrollingStatusTextState extends State<ScrollingStatusText>
           if (overflows) {
             final ms = (scrollExtent / widget.velocity * 1000).round();
             final durationChanged = _controller.duration?.inMilliseconds != ms;
+            final textChanged = _animatedText != widget.text;
             if (durationChanged) {
               _controller.duration = Duration(milliseconds: ms);
             }
-            // repeat() captures the period at call time, so a duration change
-            // while already animating has no effect until the next repeat().
-            // Restart when the period changes (e.g. the status switches to a
-            // different overflowing message) to keep the configured velocity.
-            if (!_controller.isAnimating || durationChanged) {
+            // Restart from the beginning whenever the marquee starts, the
+            // message changes, or the period changes. repeat() seeds the new
+            // simulation from the controller's current value and captures the
+            // period at call time, so without rewinding to 0 a new message
+            // would begin mid-scroll (prefix hidden) and a changed period
+            // would not take effect until the next restart.
+            if (!_controller.isAnimating || textChanged || durationChanged) {
+              _animatedText = widget.text;
+              _controller.value = 0;
               _controller.repeat();
             }
           } else if (_controller.isAnimating) {
             _controller.stop();
+            _animatedText = null;
           }
         });
 
