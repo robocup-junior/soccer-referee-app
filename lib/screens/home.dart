@@ -4,12 +4,14 @@ import 'dart:io' show Platform;
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'package:rcj_scoreboard/screens/module_settings.dart';
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'package:flutter/services.dart';
 import 'package:rcj_scoreboard/screens/settings.dart';
+import 'package:rcj_scoreboard/screens/scoreboard_result_review.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
 import 'package:rcj_scoreboard/widgets/critical_gesture_detector.dart';
 import 'package:rcj_scoreboard/widgets/scrolling_status_text.dart';
@@ -30,6 +32,8 @@ class _HomeState extends State<Home> {
   Game? _game;
   void Function()? _switchOrderCallback;
   void Function()? _resumeCallback;
+  void Function(ScoreboardMatchConfig config)? _confirmCallback;
+  void Function()? _reviewCallback;
 
   @override
   void didChangeDependencies() {
@@ -46,6 +50,8 @@ class _HomeState extends State<Home> {
       final callbacks = setupGameCallbacks(_game!, context);
       _switchOrderCallback = callbacks.switchOrder;
       _resumeCallback = callbacks.resume;
+      _confirmCallback = callbacks.confirm;
+      _reviewCallback = callbacks.review;
     }
   }
 
@@ -54,11 +60,18 @@ class _HomeState extends State<Home> {
     // Clear the dialog callbacks we installed so the long-lived Game does not
     // retain closures capturing this disposed State's context. Guard on
     // identity so we never clear a newer Home's callback.
-    if (identical(_game?.onRequestSwitchTeamOrderDialog, _switchOrderCallback)) {
+    if (identical(
+        _game?.onRequestSwitchTeamOrderDialog, _switchOrderCallback)) {
       _game?.onRequestSwitchTeamOrderDialog = null;
     }
     if (identical(_game?.onRequestResumeMatch, _resumeCallback)) {
       _game?.onRequestResumeMatch = null;
+    }
+    if (identical(_game?.onRequestConfirmScoreboardMatch, _confirmCallback)) {
+      _game?.onRequestConfirmScoreboardMatch = null;
+    }
+    if (identical(_game?.onRequestReviewScoreboardResult, _reviewCallback)) {
+      _game?.onRequestReviewScoreboardResult = null;
     }
     super.dispose();
   }
@@ -149,7 +162,7 @@ class _HomeState extends State<Home> {
               onPressed: () {
                 _navigateToSettings(context, game);
               },
-                // Navigate to config page
+              // Navigate to config page
             ),
           ],
         ),
@@ -186,7 +199,8 @@ class _HomeState extends State<Home> {
                         child: Column(
                           children: [
                             GestureDetector(
-                              onLongPress: () => _editRemainingTime(context, game),
+                              onLongPress: () =>
+                                  _editRemainingTime(context, game),
                               child: Text(
                                   '${(game.remainingTime ~/ 60).toString().padLeft(2, '0')}:${(game.remainingTime % 60).toString().padLeft(2, '0')}',
                                   style: const TextStyle(fontSize: 36.0)),
@@ -203,24 +217,51 @@ class _HomeState extends State<Home> {
                             ),
                             SizedBox(
                               width: double.infinity,
-                              child: CriticalButton(
-                                singleTap: game.singleTapEnabled,
-                                onAction: () => game.toggleTimer(),
-                                style: ElevatedButton.styleFrom(
-                                  minimumSize: const Size(0, 36),
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 12,
-                                    vertical: 8,
-                                  ),
-                                  backgroundColor: (game.isGameRunning
-                                      ? (game.isTimerRunning
-                                          ? AppColors.red
-                                          : AppColors.green)
-                                      : AppColors.green),
-                                ),
-                                child: Text(game.timerButtonText,
-                                    style: const TextStyle(color: Colors.white)),
-                              ),
+                              // For a deep-link (referee) match at full time the
+                              // one action is to SUBMIT the result, not REPEAT
+                              // the same fixture — so swap the timer button for
+                              // "Submit result". This also avoids stacking two
+                              // buttons in this narrow column (which overflowed).
+                              child: game.needsScoreboardResultReview
+                                  ? ElevatedButton(
+                                      onPressed: () =>
+                                          _openScoreboardResultReview(
+                                              context, game),
+                                      style: ElevatedButton.styleFrom(
+                                        minimumSize: const Size(0, 36),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 8,
+                                        ),
+                                        backgroundColor: AppColors.blue,
+                                        foregroundColor: Colors.white,
+                                      ),
+                                      child: const FittedBox(
+                                        fit: BoxFit.scaleDown,
+                                        child: Text('Submit result',
+                                            style:
+                                                TextStyle(color: Colors.white)),
+                                      ),
+                                    )
+                                  : CriticalButton(
+                                      singleTap: game.singleTapEnabled,
+                                      onAction: () => game.toggleTimer(),
+                                      style: ElevatedButton.styleFrom(
+                                        minimumSize: const Size(0, 36),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                          vertical: 8,
+                                        ),
+                                        backgroundColor: (game.isGameRunning
+                                            ? (game.isTimerRunning
+                                                ? AppColors.red
+                                                : AppColors.green)
+                                            : AppColors.green),
+                                      ),
+                                      child: Text(game.timerButtonText,
+                                          style: const TextStyle(
+                                              color: Colors.white)),
+                                    ),
                             )
                           ],
                         ),
@@ -386,20 +427,22 @@ Widget buildTeamContainer(Team team, Game game) {
                     heightFactor: 0.7,
                     child: Container(
                       color: Colors.grey[800],
-                      padding: const EdgeInsets.symmetric(vertical: 20.0, horizontal: 20.0),
+                      padding: const EdgeInsets.symmetric(
+                          vertical: 20.0, horizontal: 20.0),
                       child: TeamSettingsWidget(team: team, game: game),
                     ),
                   );
                 });
           },
           child: Container(
-
             // color bar for displaying team top mark
             decoration: BoxDecoration(
               color: Colors.transparent,
               border: Border(
                 top: BorderSide(
-                  color: team.id == "A" ? const Color(0xFF77FF00) : const Color(0xFFFF00FF), // Neon green or neon magenta
+                  color: team.id == "A"
+                      ? const Color(0xFF77FF00)
+                      : const Color(0xFFFF00FF), // Neon green or neon magenta
                   width: 5,
                 ),
               ),
@@ -498,19 +541,6 @@ Widget buildTeamContainer(Team team, Game game) {
 //   );
 // }
 //
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 class TeamSettingsWidget extends StatefulWidget {
   final Team team;
@@ -657,7 +687,8 @@ class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
   @override
   void initState() {
     super.initState();
-    _timeController = TextEditingController(text: _format(widget.game.remainingTime));
+    _timeController =
+        TextEditingController(text: _format(widget.game.remainingTime));
   }
 
   @override
@@ -748,11 +779,26 @@ class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
   }
 }
 
-/// Installs the half-time "switch team order" dialog and the cold-resume prompt
-/// callbacks on [game], returning the exact closures assigned so the caller can
-/// clear them on dispose (both capture [context]).
-({void Function() switchOrder, void Function() resume}) setupGameCallbacks(
-    Game game, BuildContext context) {
+Future<void> _openScoreboardResultReview(
+    BuildContext context, Game game) async {
+  if (!game.needsScoreboardResultReview) return;
+  await Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (context) => ScoreboardResultReviewScreen(game: game),
+    ),
+  );
+}
+
+/// Installs the half-time "switch team order", cold-resume, scoreboard-load,
+/// and scoreboard-result-review callbacks on [game], returning the exact
+/// closures assigned so the caller can clear them on dispose.
+({
+  void Function() switchOrder,
+  void Function() resume,
+  void Function(ScoreboardMatchConfig config) confirm,
+  void Function() review,
+}) setupGameCallbacks(Game game, BuildContext context) {
   // A local function declaration (not a `final ... = () {}` variable) to satisfy
   // the analyzer's prefer_function_declarations_over_variables lint, which CI
   // runs as fatal (`flutter analyze --fatal-infos`).
@@ -762,36 +808,41 @@ class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
       barrierDismissible: false,
       builder: (context) => AlertDialog(
         backgroundColor: Colors.grey[800],
-        title: const Text("Switch Team Order", style: TextStyle(color: Colors.white)),
-        content: const Text("Do you want to switch the team order for the second half?"),
-        actions: [Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            Expanded(
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.grey[600],
+        title: const Text("Switch Team Order",
+            style: TextStyle(color: Colors.white)),
+        content: const Text(
+            "Do you want to switch the team order for the second half?"),
+        actions: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              Expanded(
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey[600],
+                  ),
+                  onPressed: () {
+                    Navigator.of(context).pop(false); // Keep current order
+                  },
+                  child:
+                      const Text("No", style: TextStyle(color: Colors.white)),
                 ),
-                onPressed: () {
-                  Navigator.of(context).pop(false); // Keep current order
-                },
-                child: const Text("No", style: TextStyle(color: Colors.white)),
               ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.grey[600],
+              const SizedBox(width: 16),
+              Expanded(
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey[600],
+                  ),
+                  onPressed: () {
+                    Navigator.of(context).pop(true); // Switch order
+                  },
+                  child:
+                      const Text("Yes", style: TextStyle(color: Colors.white)),
                 ),
-                onPressed: () {
-                  Navigator.of(context).pop(true); // Switch order
-                },
-                child: const Text("Yes", style: TextStyle(color: Colors.white)),
               ),
-            ),
-          ],
-        ),
+            ],
+          ),
         ],
       ),
     );
@@ -800,6 +851,7 @@ class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
       game.toggleTeamOrder(); // Switch team order
     }
   }
+
   game.onRequestSwitchTeamOrderDialog = callback;
 
   // Cold-resume prompt (#45). Non-destructive: Resume is the prominent default;
@@ -819,61 +871,209 @@ class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
       await showDialog<void>(
         context: context,
         barrierDismissible: false,
-      builder: (dialogContext) => PopScope(
-        canPop: false,
-        child: AlertDialog(
-          backgroundColor: Colors.grey[800],
-          title: const Text('Resume match in progress?',
-              style: TextStyle(color: Colors.white)),
-          content: Text(_resumeMatchBody(snapshot),
-              style: const TextStyle(color: Colors.white)),
-          actions: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                Expanded(
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.grey[600],
-                    ),
-                    onPressed: () async {
-                      final confirmed = await _confirmDiscardMatch(dialogContext);
-                      if (confirmed == true) {
-                        await game.discardPendingMatch();
-                        if (dialogContext.mounted) {
-                          Navigator.of(dialogContext).pop();
+        builder: (dialogContext) => PopScope(
+          canPop: false,
+          child: AlertDialog(
+            backgroundColor: Colors.grey[800],
+            title: const Text('Resume match in progress?',
+                style: TextStyle(color: Colors.white)),
+            content: Text(_resumeMatchBody(snapshot),
+                style: const TextStyle(color: Colors.white)),
+            actions: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  Expanded(
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.grey[600],
+                      ),
+                      onPressed: () async {
+                        final confirmed =
+                            await _confirmDiscardMatch(dialogContext);
+                        if (confirmed == true) {
+                          await game.discardPendingMatch();
+                          if (dialogContext.mounted) {
+                            Navigator.of(dialogContext).pop();
+                          }
                         }
-                      }
-                    },
-                    child: const Text('Discard',
-                        style: TextStyle(color: Colors.white)),
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green[600],
+                      },
+                      child: const Text('Discard',
+                          style: TextStyle(color: Colors.white)),
                     ),
-                    onPressed: () {
-                      game.resumePendingMatch();
-                      Navigator.of(dialogContext).pop();
-                    },
-                    child: const Text('Resume',
-                        style: TextStyle(color: Colors.white)),
                   ),
-                ),
-              ],
-            ),
-          ],
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: ElevatedButton(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green[600],
+                      ),
+                      onPressed: () {
+                        game.resumePendingMatch();
+                        Navigator.of(dialogContext).pop();
+                      },
+                      child: const Text('Resume',
+                          style: TextStyle(color: Colors.white)),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
-      ),
       );
     });
   }
+
   game.onRequestResumeMatch = resumeCallback;
 
-  return (switchOrder: callback, resume: resumeCallback);
+  var confirmDialogOpen = false;
+  void confirmCallback(ScoreboardMatchConfig config) {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Re-entrancy guard (mirrors reviewRouteOpen): a second deep link arriving
+      // while this dialog is open must not stack a second dialog. The dialog's
+      // expectedSignature keeps its Load/Cancel bound to the match it displays,
+      // and onPendingMatchPromptClosed re-arms the prompt on close so a newer
+      // pending link is shown next.
+      if (confirmDialogOpen) return;
+      if (!context.mounted) return;
+      confirmDialogOpen = true;
+      // Capture the displayed match's identity so Load/Cancel can't act on a
+      // newer pending link that replaced it after this dialog was built.
+      final expectedSignature = config.signature;
+      final duration = _formatMatchDuration(config.durationSeconds);
+      final details = <String>[
+        if (config.venueShortName.isNotEmpty)
+          'Field ${config.venueShortName} · $duration'
+        else
+          duration,
+        if (game.inGame) '⚠ This replaces the match in progress.',
+      ];
+      try {
+        await showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          builder: (dialogContext) => PopScope(
+            canPop: false,
+            child: AlertDialog(
+              backgroundColor: Colors.grey[800],
+              title: const Text('Load match?',
+                  style: TextStyle(color: Colors.white)),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '${config.homeTeamName} vs ${config.awayTeamName}',
+                    style: const TextStyle(color: Colors.white),
+                  ),
+                  const SizedBox(height: 8),
+                  for (final line in details)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Text(
+                        line,
+                        style: TextStyle(
+                          color: line.startsWith('⚠')
+                              ? Colors.orangeAccent
+                              : Colors.white70,
+                          fontWeight: line.startsWith('⚠')
+                              ? FontWeight.w600
+                              : FontWeight.normal,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              actions: [
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [
+                    Expanded(
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.grey[600],
+                        ),
+                        onPressed: () {
+                          game.scoreboardResultService.cancelPendingMatch(
+                              expectedSignature: expectedSignature);
+                          Navigator.of(dialogContext).pop();
+                        },
+                        child: const Text('Cancel',
+                            style: TextStyle(color: Colors.white)),
+                      ),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green[600],
+                        ),
+                        onPressed: () async {
+                          await game.scoreboardResultService
+                              .confirmPendingMatch(
+                                  expectedSignature: expectedSignature);
+                          if (dialogContext.mounted) {
+                            Navigator.of(dialogContext).pop();
+                          }
+                        },
+                        child: const Text('Load',
+                            style: TextStyle(color: Colors.white)),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      } finally {
+        confirmDialogOpen = false;
+        // Re-arm: show a newer pending link that was suppressed while this
+        // dialog was open, or one a stale (no-op) action left unhandled.
+        game.onPendingMatchPromptClosed();
+      }
+    });
+  }
+
+  game.onRequestConfirmScoreboardMatch = confirmCallback;
+
+  var reviewRouteOpen = false;
+  void reviewCallback() {
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (reviewRouteOpen) return;
+      if (!context.mounted) return;
+      if (!game.needsScoreboardResultReview) return;
+      reviewRouteOpen = true;
+      try {
+        await _openScoreboardResultReview(context, game);
+      } finally {
+        reviewRouteOpen = false;
+      }
+    });
+  }
+
+  game.onRequestReviewScoreboardResult = reviewCallback;
+
+  return (
+    switchOrder: callback,
+    resume: resumeCallback,
+    confirm: confirmCallback,
+    review: reviewCallback,
+  );
+}
+
+/// Human-readable match length for the confirm-on-load dialog. Whole minutes
+/// show as "N min"; a sub-minute duration shows as "N s" (never the misleading
+/// "0 min" that `seconds ~/ 60` produces for e.g. a 30 s test match); a mixed
+/// duration shows "N min M s".
+String _formatMatchDuration(int seconds) {
+  if (seconds <= 0) return '0 s';
+  final minutes = seconds ~/ 60;
+  final secs = seconds % 60;
+  if (minutes == 0) return '$secs s';
+  if (secs == 0) return '$minutes min';
+  return '$minutes min $secs s';
 }
 
 String _resumeMatchBody(MatchSnapshot snapshot) {
@@ -913,8 +1113,8 @@ Future<bool?> _confirmDiscardMatch(BuildContext context) {
       canPop: false,
       child: AlertDialog(
         backgroundColor: Colors.grey[800],
-        title: const Text('Discard match?',
-            style: TextStyle(color: Colors.white)),
+        title:
+            const Text('Discard match?', style: TextStyle(color: Colors.white)),
         content: const Text(
             'This permanently deletes the saved match and cannot be undone.',
             style: TextStyle(color: Colors.white)),
