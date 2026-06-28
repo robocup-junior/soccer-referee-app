@@ -413,11 +413,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         _resumedFixtureMatchCode = resumedCode;
         _resumedFixtureVersion = snapshot.scoreboardVersion;
         if (config != null) {
-          // Matching config is present → arm the POST now.
+          // Matching config is present → arm the POST now. Keep this string
+          // identical to the signature built in _applyScoreboardMatchConfig
+          // (incl. the trailing venue) or a resumed match re-applies spuriously.
           _lastAppliedScoreboardSignature =
               '${config.matchCode}:${config.version}:${config.durationSeconds}:'
               '${config.homeIsLeft ? 'L' : 'R'}:'
-              '${config.homeTeamName}:${config.awayTeamName}';
+              '${config.homeTeamName}:${config.awayTeamName}:'
+              '${config.venueShortName}';
           _suppressScoreboardFinalResult = false;
         } else {
           // Config not loaded yet → keep the POST suppressed until it arrives.
@@ -895,11 +898,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   void _applyScoreboardMatchConfig(ScoreboardMatchConfig config) {
     final homeIsLeft = config.homeIsLeft;
-    // Team names are part of the signature so a corrected schedule payload that
-    // changes only a name (without bumping version/duration/side) still updates
-    // the displayed names; the `if (!inGame)` guard below still gates timing.
+    // Team names and venue are part of the signature so a corrected schedule
+    // payload that changes only a name or the venue (without bumping
+    // version/duration/side) still updates the displayed names and the MQTT
+    // field below; the `if (!inGame)` guard below still gates timing. Keep this
+    // string identical to the one written on the resume path (see
+    // resumePendingMatch) or the dedupe desyncs.
     final signature =
-        '${config.matchCode}:${config.version}:${config.durationSeconds}:${homeIsLeft ? 'L' : 'R'}:${config.homeTeamName}:${config.awayTeamName}';
+        '${config.matchCode}:${config.version}:${config.durationSeconds}:${homeIsLeft ? 'L' : 'R'}:${config.homeTeamName}:${config.awayTeamName}:${config.venueShortName}';
     // Dedupe on an unchanged signature - EXCEPT while a resumed match is still
     // suppressed. `_lastAppliedScoreboardSignature` is in-memory and is never
     // cleared when the service drops `_matchConfig` to null (a token-changing

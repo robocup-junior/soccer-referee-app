@@ -72,6 +72,25 @@ void main() {
     game.dispose();
   });
 
+  testWidgets('a venue-only correction (same match/version) updates the field',
+      (tester) async {
+    final game = Game();
+    await settleLoad(tester);
+
+    apply(game, matchCode: 'M-1', venue: 'Field 5');
+    await tester.pump();
+    expect(game.mqttService.topic, 'field_5');
+
+    // Same fixture (match_code + version unchanged) but a corrected venue. The
+    // venue is part of the dedupe signature, so this must not be skipped (#50,
+    // RAVF001).
+    apply(game, matchCode: 'M-1', venue: 'Field 7');
+    await tester.pump();
+
+    expect(game.mqttService.topic, 'field_7');
+    game.dispose();
+  });
+
   testWidgets('venue without digits leaves the field topic unchanged',
       (tester) async {
     final game = Game();
