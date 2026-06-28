@@ -326,7 +326,7 @@ class ScoreboardResultService with ChangeNotifier {
         (item.state != ResultSubmissionState.failed ||
             item.retryCount >= _maxSubmissionRetries));
     if (alreadyTracked) {
-      _statusMessage = 'Result already sent';
+      _statusMessage = 'Result already tracked';
       notifyListeners();
       return false;
     }
