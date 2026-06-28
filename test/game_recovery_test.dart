@@ -16,6 +16,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/models/scoreboard_result.dart';
+import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
 
 ModuleSnapshot _moduleSnap({
@@ -901,6 +902,99 @@ void main() {
       expect(game.inGame, isFalse);
 
       expect(MatchStateStore(prefs).load(), isNull);
+      game.dispose();
+    });
+  });
+
+  group('scoreboard team naming (#53)', () {
+    Team teamById(Game game, String id) =>
+        game.teams.firstWhere((t) => t.id == id);
+
+    testWidgets('config re-apply after a swap keeps names matched by team id',
+        (tester) async {
+      // Repro of the swap+full-time display bug: the post-submit version bump
+      // re-applies the config while the order is swapped. Names must follow the
+      // team identity (home name -> home team), not the list position.
+      final game = Game();
+      await settleLoad(tester);
+
+      // Initial config (homeIsLeft true => home is team A).
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(_scoreboardConfig(
+          matchCode: 'M-NAME',
+          version: 1,
+          homeTeamName: 'Red Robots',
+          awayTeamName: 'Blue Bots',
+        )),
+      );
+      await tester.pump();
+      expect(teamById(game, 'A').name, 'Red Robots');
+      expect(teamById(game, 'B').name, 'Blue Bots');
+
+      // Swap the order (2nd-half switch), then re-apply the SAME fixture with a
+      // bumped version (mimics _updateMatchVersionFromResponse after a 200).
+      game.toggleTeamOrder();
+      await tester.pump();
+      expect(game.teams[0].id, 'B', reason: 'order is now swapped');
+
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(_scoreboardConfig(
+          matchCode: 'M-NAME',
+          version: 2, // bumped => signature differs => re-applies
+          homeTeamName: 'Red Robots',
+          awayTeamName: 'Blue Bots',
+        )),
+      );
+      await tester.pump();
+
+      // Names must still be on the correct teams by id, NOT scrambled onto the
+      // physical positions.
+      expect(teamById(game, 'A').name, 'Red Robots',
+          reason: 'home name stays on home team (id A) after swap');
+      expect(teamById(game, 'B').name, 'Blue Bots',
+          reason: 'away name stays on away team (id B) after swap');
+      game.dispose();
+    });
+
+    testWidgets('home_is_left false + swap keeps home name on team B',
+        (tester) async {
+      // The home_is_left:false counterpart of the swap test above (home is team
+      // B). Swapping then re-applying must keep the home name on team B; the old
+      // positional code would put it on teams[0] (team A after swap) and fail.
+      final game = Game();
+      await settleLoad(tester);
+
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(_scoreboardConfig(
+          matchCode: 'M-RIGHT',
+          version: 1,
+          homeIsLeft: false, // home is team B
+          homeTeamName: 'Red Robots',
+          awayTeamName: 'Blue Bots',
+        )),
+      );
+      await tester.pump();
+      expect(teamById(game, 'B').name, 'Red Robots',
+          reason: 'home (id B when !homeIsLeft) gets the home name');
+      expect(teamById(game, 'A').name, 'Blue Bots');
+
+      game.toggleTeamOrder();
+      await tester.pump();
+      expect(game.teams[0].id, 'B');
+
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(_scoreboardConfig(
+          matchCode: 'M-RIGHT',
+          version: 2, // bumped => re-applies while swapped
+          homeIsLeft: false,
+          homeTeamName: 'Red Robots',
+          awayTeamName: 'Blue Bots',
+        )),
+      );
+      await tester.pump();
+      expect(teamById(game, 'B').name, 'Red Robots',
+          reason: 'home name stays on team B after swap+reapply');
+      expect(teamById(game, 'A').name, 'Blue Bots');
       game.dispose();
     });
   });

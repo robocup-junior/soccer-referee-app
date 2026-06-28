@@ -932,8 +932,17 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _scoreboardHomeTeamId = homeIsLeft ? 'A' : 'B';
     _scoreboardAwayTeamId = homeIsLeft ? 'B' : 'A';
 
-    teams[0].name = homeIsLeft ? config.homeTeamName : config.awayTeamName;
-    teams[1].name = homeIsLeft ? config.awayTeamName : config.homeTeamName;
+    // Assign names by stable team ID, not by list position. If this re-runs
+    // while the order is swapped (e.g. the version bump after a successful
+    // submit re-applies the config at full-time), a positional assignment would
+    // scramble the names onto the wrong teams. The score mapping already keys on
+    // the team ID (_scoreboardHomeTeamId), so naming by ID keeps names and
+    // scores consistent regardless of side.
+    for (final team in teams) {
+      team.name = team.id == _scoreboardHomeTeamId
+          ? config.homeTeamName
+          : config.awayTeamName;
+    }
 
     // Apply remote timing presets only before a match starts (between matches,
     // after a reset). Never call gameInit() at full-time: a version-only update
