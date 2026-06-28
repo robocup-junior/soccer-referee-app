@@ -12,6 +12,7 @@ import 'package:flutter/services.dart';
 import 'package:rcj_scoreboard/screens/settings.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
 import 'package:rcj_scoreboard/widgets/critical_gesture_detector.dart';
+import 'package:rcj_scoreboard/widgets/scrolling_status_text.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/services/ble_adapter_monitor.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
@@ -191,11 +192,8 @@ class _HomeState extends State<Home> {
                                   style: const TextStyle(fontSize: 36.0)),
                             ),
                             Text(game.gameStageString),
-                            Text(
-                              game.scoreboardResultService.statusMessage,
-                              textAlign: TextAlign.center,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
+                            ScrollingStatusText(
+                              text: game.scoreboardResultService.statusMessage,
                               style: TextStyle(
                                 fontSize: 12,
                                 color: game.scoreboardResultService.hasConflict

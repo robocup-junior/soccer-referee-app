@@ -34,7 +34,7 @@ class ScoreboardResultService with ChangeNotifier {
   ScoreboardMatchConfig? _matchConfig;
   List<ResultOutboxItem> _outbox = [];
   bool _isSubmitting = false;
-  String _statusMessage = 'Waiting for referee app link';
+  String _statusMessage = 'Awaiting link';
 
   String _authValue(String token) => '$_bearerScheme $token';
 
@@ -110,7 +110,7 @@ class ScoreboardResultService with ChangeNotifier {
         debugPrint('ScoreboardResultService: initial outbox run failed: $error');
       }));
     } else if (_matchConfig != null) {
-      _statusMessage = 'Stored match ready; open a new referee link when needed';
+      _statusMessage = 'Stored match ready';
       notifyListeners();
     }
   }
@@ -152,7 +152,7 @@ class ScoreboardResultService with ChangeNotifier {
     final tokenChanged = rawToken != _token;
     _token = rawToken;
     _baseUri = parsed.baseUri;
-    _statusMessage = 'Referee link received';
+    _statusMessage = 'Link received';
 
     if (tokenChanged) {
       // Drop the previous match config the moment a different link arrives, so a
@@ -256,7 +256,7 @@ class ScoreboardResultService with ChangeNotifier {
   Future<void> refreshMatchConfig() async {
     final token = _token;
     if (token == null || token.isEmpty) {
-      _statusMessage = 'No referee token';
+      _statusMessage = 'No link';
       notifyListeners();
       return;
     }
@@ -286,17 +286,17 @@ class ScoreboardResultService with ChangeNotifier {
           await _prefs?.setString(_prefsMatchKey, jsonEncode(json));
           _statusMessage = _matchConfig!.matchCode.isEmpty
               ? 'Match loaded'
-              : 'Match loaded (${_matchConfig!.matchCode})';
+              : 'Match loaded';
         } else {
-          _statusMessage = 'Invalid match payload';
+          _statusMessage = 'Bad match data';
         }
       } else if (response.statusCode == 401) {
-        _statusMessage = 'Referee token is invalid or expired';
+        _statusMessage = 'Link expired';
       } else {
-        _statusMessage = 'Match load failed (${response.statusCode})';
+        _statusMessage = 'Load failed (${response.statusCode})';
       }
     } catch (e) {
-      _statusMessage = 'Match load failed (network)';
+      _statusMessage = 'Load failed (net)';
       debugPrint('ScoreboardResultService: match load failed: $e');
     }
 
@@ -326,7 +326,7 @@ class ScoreboardResultService with ChangeNotifier {
         (item.state != ResultSubmissionState.failed ||
             item.retryCount >= _maxSubmissionRetries));
     if (alreadyTracked) {
-      _statusMessage = 'Result already queued or submitted';
+      _statusMessage = 'Result already sent';
       notifyListeners();
       return false;
     }
@@ -350,7 +350,7 @@ class ScoreboardResultService with ChangeNotifier {
     );
 
     _outbox = [..._outbox, item];
-    _statusMessage = 'Final result queued for sync';
+    _statusMessage = 'Result queued';
     await _persistOutbox();
     notifyListeners();
 
@@ -379,7 +379,7 @@ class ScoreboardResultService with ChangeNotifier {
       }
     }
     if (revived) {
-      _statusMessage = 'Retrying final result sync';
+      _statusMessage = 'Retrying…';
       await _persistOutbox();
       notifyListeners();
     }
@@ -391,7 +391,7 @@ class ScoreboardResultService with ChangeNotifier {
     _baseUri = _defaultBaseUri;
     _matchConfig = null;
     _outbox = [];
-    _statusMessage = 'Waiting for referee app link';
+    _statusMessage = 'Awaiting link';
 
     final prefs = _prefs;
     if (prefs != null) {
@@ -486,7 +486,7 @@ class ScoreboardResultService with ChangeNotifier {
           responseBody: body,
           clearError: true,
         );
-        _statusMessage = 'Final result submitted';
+        _statusMessage = 'Result sent ✓';
         _updateMatchVersionFromResponse(body);
       } else if (response.statusCode == 409) {
         _outbox[index] = item.copyWith(
@@ -495,7 +495,7 @@ class ScoreboardResultService with ChangeNotifier {
           responseBody: body,
           errorMessage: body?['reason']?.toString() ?? 'conflict',
         );
-        _statusMessage = 'Final result requires manual review';
+        _statusMessage = 'Conflict — review';
       } else if (response.statusCode == 401 || response.statusCode == 422) {
         _outbox[index] = item.copyWith(
           state: ResultSubmissionState.failed,
@@ -503,7 +503,7 @@ class ScoreboardResultService with ChangeNotifier {
           responseBody: body,
           errorMessage: body?['reason']?.toString() ?? 'request rejected',
         );
-        _statusMessage = 'Final result rejected (${response.statusCode})';
+        _statusMessage = 'Rejected (${response.statusCode})';
       } else {
         _markRetriableFailure(
           index: index,
@@ -554,7 +554,7 @@ class ScoreboardResultService with ChangeNotifier {
         responseBody: responseBody,
         errorMessage: 'max_retries_reached',
       );
-      _statusMessage = 'Final result sync failed after $nextRetryCount attempts';
+      _statusMessage = 'Sync failed ($nextRetryCount×)';
       return;
     }
 
@@ -565,7 +565,7 @@ class ScoreboardResultService with ChangeNotifier {
       responseBody: responseBody,
       errorMessage: errorMessage,
     );
-    _statusMessage = 'Final result sync will retry ($nextRetryCount/$_maxSubmissionRetries)';
+    _statusMessage = 'Retrying ($nextRetryCount/$_maxSubmissionRetries)';
   }
 
   void _updateMatchVersionFromResponse(Map<String, dynamic>? body) {
