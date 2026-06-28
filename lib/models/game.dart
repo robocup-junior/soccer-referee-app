@@ -665,6 +665,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   int get remainingTime => _remainingTime;
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;
+  // True iff at least one enabled module is connected across either team.
+  // Gates the no-module penalty path (issue #22): when the app is used purely
+  // for time/score/penalty tracking with no robots, a module double-tap records
+  // a penalty directly instead of "starting" a robot that does not exist. The
+  // isEnabled filter mirrors the other connection/fan-out scans in this file.
   bool get anyModuleConnected => teams.any((team) =>
       team.modules.any((module) => module.isEnabled && module.isConnected));
   bool get noModuleConnected => !anyModuleConnected;
