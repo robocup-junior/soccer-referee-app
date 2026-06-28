@@ -422,6 +422,19 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
               '${config.homeTeamName}:${config.awayTeamName}:'
               '${config.venueShortName}';
           _suppressScoreboardFinalResult = false;
+          // Apply the venue field here too. Seeding the signature above means a
+          // later scoreboard-service notification dedupe-returns in
+          // _applyScoreboardMatchConfig BEFORE its field assignment runs, so on
+          // the race where Resume is tapped inside the unawaited initialize()
+          // window (config already set, listeners not yet notified) the resumed
+          // referee match would otherwise keep publishing on a stale/manual MQTT
+          // field (#50). Mirrors _applyScoreboardMatchConfig's field logic and is
+          // idempotent if that path already ran. Same race the binding above is
+          // restored for.
+          final venueField = fieldNumberFromVenue(config.venueShortName);
+          if (venueField.isNotEmpty) {
+            mqttService.topicField = venueField;
+          }
         } else {
           // Config not loaded yet → keep the POST suppressed until it arrives.
           _suppressScoreboardFinalResult = true;
