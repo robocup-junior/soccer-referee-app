@@ -972,7 +972,20 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // this guard to "match" the catigoal path — the guard is the fix.
     final venueField = fieldNumberFromVenue(config.venueShortName);
     if (venueField.isNotEmpty) {
+      final previousTopic = mqttService.topic;
       mqttService.topicField = venueField;
+      // If the field changes while a match is already underway — a mid-game
+      // venue correction, or the late-config re-arm of a suppressed resume — the
+      // `if (!inGame)` gameInit() broadcast below is skipped, so nothing would
+      // repopulate the NEW retained MQTT topic. Since publishes are retained,
+      // subscribers on the corrected field_N would otherwise see a previous
+      // match's retained data (or nothing) until the next score/stage event.
+      // Rebroadcast current state once, only when the topic actually changed, so
+      // an idempotent re-apply of the same field doesn't spam the bus.
+      // _broadcastFullState is off the robot START/STOP hot path (invariant #1).
+      if (inGame && mqttService.topic != previousTopic) {
+        _broadcastFullState();
+      }
     }
 
     // Apply remote timing presets only before a match starts (between matches,
