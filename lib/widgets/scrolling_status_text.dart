@@ -47,11 +47,17 @@ class _ScrollingStatusTextState extends State<ScrollingStatusText>
     super.dispose();
   }
 
-  Size _measure(double maxWidth) {
+  Size _measure() {
+    // Measure with the same effective text scaler the rendered `Text` uses
+    // (it inherits MediaQuery.textScalerOf when none is set). Without this the
+    // measurement is unscaled while the rendered text scales with the user's
+    // accessibility font size, so at large scales a string could be judged to
+    // fit and then clip on the static path instead of scrolling.
     final painter = TextPainter(
       text: TextSpan(text: widget.text, style: widget.style),
       maxLines: 1,
       textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
     )..layout();
     return painter.size;
   }
@@ -61,7 +67,7 @@ class _ScrollingStatusTextState extends State<ScrollingStatusText>
     return LayoutBuilder(
       builder: (context, constraints) {
         final maxWidth = constraints.maxWidth;
-        final size = _measure(maxWidth);
+        final size = _measure();
         final overflows = maxWidth.isFinite && size.width > maxWidth;
 
         // Drive the controller as a post-frame side effect — never start/stop an
