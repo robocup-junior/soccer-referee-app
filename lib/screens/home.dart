@@ -194,6 +194,9 @@ Widget buildModuleButton(Module module, Game game) {
         return Expanded(
           child: GestureDetector(
             onDoubleTap: () {
+              // No-show penalty mode (issue #8) blocks all manual robot paths
+              // while the auto penalty-goal clock runs.
+              if (game.noShowPenaltyGoalsActive) return;
               // No-module mode (issue #22): with no robots connected the module
               // is never "playing", so the old handler fell through to play().
               // Record a penalty directly while the match is running. A second
@@ -273,6 +276,7 @@ Widget buildTeamContainer(Team team, Game game) {
       builder: (context, team, child) {
         return GestureDetector(
           onDoubleTap: () {
+            if (game.noShowPenaltyGoalsActive) return;
             team.addScore(1);
             game.stopAll(true);
             game.notifyModulesScore();
