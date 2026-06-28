@@ -77,10 +77,15 @@ class _ScrollingStatusTextState extends State<ScrollingStatusText>
           if (!mounted) return;
           if (overflows) {
             final ms = (scrollExtent / widget.velocity * 1000).round();
-            if (_controller.duration?.inMilliseconds != ms) {
+            final durationChanged = _controller.duration?.inMilliseconds != ms;
+            if (durationChanged) {
               _controller.duration = Duration(milliseconds: ms);
             }
-            if (!_controller.isAnimating) {
+            // repeat() captures the period at call time, so a duration change
+            // while already animating has no effect until the next repeat().
+            // Restart when the period changes (e.g. the status switches to a
+            // different overflowing message) to keep the configured velocity.
+            if (!_controller.isAnimating || durationChanged) {
               _controller.repeat();
             }
           } else if (_controller.isAnimating) {
