@@ -944,17 +944,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           : config.awayTeamName;
     }
 
-    // Apply the match's field number to the MQTT topic, mirroring the catigoal
-    // path (Match.fromJson + loadMatchData): take the first run of digits from
-    // the venue short name and strip leading zeros. Leave the existing field
-    // untouched when the venue carries no number (e.g. "Center Court") so a
-    // manually-set field is preserved — the mqtt setter would otherwise publish
-    // to a bare "field_" (#50).
-    final venueField = RegExp(r'\d+')
-            .firstMatch(config.venueShortName)
-            ?.group(0)
-            ?.replaceFirst(RegExp(r'^0+'), '') ??
-        '';
+    // Apply the match's field number to the MQTT topic. This reuses the catigoal
+    // field-extraction rule (`fieldNumberFromVenue`, shared with
+    // `Match.fromJson`) but deliberately does NOT mirror `loadMatchData`'s
+    // unconditional assignment: when the venue carries no number (e.g. "Center
+    // Court") we leave the existing field untouched so a manually-set field is
+    // preserved, instead of publishing to a bare "field_" (#50). Do not remove
+    // this guard to "match" the catigoal path — the guard is the fix.
+    final venueField = fieldNumberFromVenue(config.venueShortName);
     if (venueField.isNotEmpty) {
       mqttService.topicField = venueField;
     }
