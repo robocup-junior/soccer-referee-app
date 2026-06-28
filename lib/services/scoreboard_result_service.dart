@@ -284,9 +284,7 @@ class ScoreboardResultService with ChangeNotifier {
         if (json is Map<String, dynamic>) {
           _matchConfig = ScoreboardMatchConfig.fromJson(json);
           await _prefs?.setString(_prefsMatchKey, jsonEncode(json));
-          _statusMessage = _matchConfig!.matchCode.isEmpty
-              ? 'Match loaded'
-              : 'Match loaded';
+          _statusMessage = 'Match loaded';
         } else {
           _statusMessage = 'Bad match data';
         }
