@@ -122,41 +122,47 @@ class _ScrollingStatusTextState extends State<ScrollingStatusText>
           );
         }
 
-        return SizedBox(
-          height: size.height,
-          child: ClipRect(
-            // OverflowBox lets the (wider-than-viewport) row lay out at its
-            // intrinsic width instead of triggering a RenderFlex overflow; the
-            // ClipRect above keeps it visually bounded.
-            child: OverflowBox(
-              maxWidth: double.infinity,
-              alignment: Alignment.centerLeft,
-              child: AnimatedBuilder(
-                animation: _controller,
-                builder: (context, child) => Transform.translate(
-                  offset: Offset(-_controller.value * scrollExtent, 0),
-                  child: child,
-                ),
-                // Two identical copies separated by `gap`: at controller.value==1
-                // the offset is exactly one period, so the second copy sits where
-                // the first started — a seamless wrap.
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    line,
-                    SizedBox(width: widget.gap),
-                    // The second copy exists only for the seamless visual wrap;
-                    // exclude it from semantics so screen readers announce the
-                    // status once (via `line`), not twice.
-                    ExcludeSemantics(
-                      child: Text(
-                        widget.text,
-                        style: widget.style,
-                        maxLines: 1,
-                        softWrap: false,
-                      ),
+        // Expose one stable, non-animated semantic label for the whole status
+        // and exclude the scrolling visual (two clipped, translated copies) from
+        // semantics, so the screen-reader label does not move, clip, or
+        // duplicate as the marquee runs.
+        return Semantics(
+          container: true,
+          label: widget.text,
+          child: ExcludeSemantics(
+            child: SizedBox(
+              height: size.height,
+              child: ClipRect(
+                // OverflowBox lets the (wider-than-viewport) row lay out at its
+                // intrinsic width instead of triggering a RenderFlex overflow;
+                // the ClipRect above keeps it visually bounded.
+                child: OverflowBox(
+                  maxWidth: double.infinity,
+                  alignment: Alignment.centerLeft,
+                  child: AnimatedBuilder(
+                    animation: _controller,
+                    builder: (context, child) => Transform.translate(
+                      offset: Offset(-_controller.value * scrollExtent, 0),
+                      child: child,
                     ),
-                  ],
+                    // Two identical copies separated by `gap`: at
+                    // controller.value==1 the offset is exactly one period, so
+                    // the second copy sits where the first started — a seamless
+                    // wrap.
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        line,
+                        SizedBox(width: widget.gap),
+                        Text(
+                          widget.text,
+                          style: widget.style,
+                          maxLines: 1,
+                          softWrap: false,
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ),
