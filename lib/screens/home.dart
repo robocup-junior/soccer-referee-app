@@ -194,8 +194,21 @@ Widget buildModuleButton(Module module, Game game) {
         return Expanded(
           child: GestureDetector(
             onDoubleTap: () {
+              // No-show penalty mode (issue #8) blocks all manual robot paths
+              // while the auto penalty-goal clock runs.
               if (game.noShowPenaltyGoalsActive) return;
-              if (module.isPlaying) {
+              // No-module mode (issue #22): with no robots connected the module
+              // is never "playing", so the old handler fell through to play().
+              // Record a penalty directly while the match is running. A second
+              // double-tap finds the module in `damage`, skips this branch, and
+              // lands on play() below — which clears the penalty back to stop
+              // (see Module.play / _resumeAfterPenalty). So tap = penalise,
+              // tap-again = clear. As soon as one module connects this whole
+              // branch is skipped and the connected-robot flow below applies.
+              if (game.noModuleConnected && game.isGameRunning &&
+                  module.state != ModuleState.damage) {
+                module.penalty(game.penaltyTime);
+              } else if (module.isPlaying) {
                 if (game.isGameRunning) {
                   module.penalty(game.penaltyTime);
                 } else {
