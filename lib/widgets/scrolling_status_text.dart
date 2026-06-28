@@ -127,11 +127,16 @@ class _ScrollingStatusTextState extends State<ScrollingStatusText>
                   children: [
                     line,
                     SizedBox(width: widget.gap),
-                    Text(
-                      widget.text,
-                      style: widget.style,
-                      maxLines: 1,
-                      softWrap: false,
+                    // The second copy exists only for the seamless visual wrap;
+                    // exclude it from semantics so screen readers announce the
+                    // status once (via `line`), not twice.
+                    ExcludeSemantics(
+                      child: Text(
+                        widget.text,
+                        style: widget.style,
+                        maxLines: 1,
+                        softWrap: false,
+                      ),
                     ),
                   ],
                 ),
