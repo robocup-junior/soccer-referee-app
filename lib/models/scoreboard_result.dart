@@ -99,6 +99,22 @@ class ScoreboardMatchConfig {
     );
   }
 
+  /// Stable identity of a fixture+revision as displayed/applied. Used to dedupe
+  /// the confirm-on-load prompt and to guard confirm/cancel/submit against
+  /// acting on a different fixture than the one a stale dialog/review is showing.
+  ///
+  /// Built via jsonEncode of an ordered field list (not a delimiter-joined
+  /// string) so values containing the separator — e.g. a team name with a ':'
+  /// — cannot collide with a different fixture.
+  String get signature => jsonEncode(<dynamic>[
+        matchCode,
+        version,
+        durationSeconds,
+        homeIsLeft,
+        homeTeamName,
+        awayTeamName,
+      ]);
+
   Map<String, dynamic> toJson() => {
         'match_code': matchCode,
         'home_team': homeTeamName,
@@ -120,6 +136,8 @@ class ResultOutboxItem {
   final String matchCode;
   final int homeGoals;
   final int awayGoals;
+  final bool homeConfirmed;
+  final bool awayConfirmed;
   final int version;
   final String idempotencyKey;
   final String? comment;
@@ -138,6 +156,8 @@ class ResultOutboxItem {
     required this.matchCode,
     required this.homeGoals,
     required this.awayGoals,
+    this.homeConfirmed = false,
+    this.awayConfirmed = false,
     required this.version,
     required this.idempotencyKey,
     this.comment,
@@ -156,6 +176,8 @@ class ResultOutboxItem {
     Map<String, dynamic>? responseBody,
     String? errorMessage,
     int? retryCount,
+    bool? homeConfirmed,
+    bool? awayConfirmed,
     // A plain nullable parameter cannot distinguish "leave unchanged" from "set
     // to null" (both arrive as null), so an explicit flag is needed to actively
     // clear the response/error fields — e.g. on a successful submit or when a
@@ -171,6 +193,8 @@ class ResultOutboxItem {
       matchCode: matchCode,
       homeGoals: homeGoals,
       awayGoals: awayGoals,
+      homeConfirmed: homeConfirmed ?? this.homeConfirmed,
+      awayConfirmed: awayConfirmed ?? this.awayConfirmed,
       version: version,
       idempotencyKey: idempotencyKey,
       comment: comment,
@@ -213,6 +237,8 @@ class ResultOutboxItem {
       matchCode: json['match_code'] as String? ?? '',
       homeGoals: (json['home_goals'] as num?)?.toInt() ?? 0,
       awayGoals: (json['away_goals'] as num?)?.toInt() ?? 0,
+      homeConfirmed: json['home_confirmed'] as bool? ?? false,
+      awayConfirmed: json['away_confirmed'] as bool? ?? false,
       version: (json['version'] as num?)?.toInt() ?? 0,
       idempotencyKey: json['idempotency_key'] as String,
       comment: json['comment'] as String?,
@@ -235,6 +261,8 @@ class ResultOutboxItem {
         'match_code': matchCode,
         'home_goals': homeGoals,
         'away_goals': awayGoals,
+        'home_confirmed': homeConfirmed,
+        'away_confirmed': awayConfirmed,
         'version': version,
         'idempotency_key': idempotencyKey,
         'comment': comment,
