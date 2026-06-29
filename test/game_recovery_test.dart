@@ -1220,6 +1220,97 @@ void main() {
     });
   });
 
+  group('result-delivery reset guard (RAVF001)', () {
+    // Drive a live referee match to full time with its result eligible for
+    // review. The resume path is used purely as a concise way to land at
+    // secondHalf, 1 s from the end, with the scoreboard binding armed.
+    Future<Game> liveRefereeAtFullTime(
+      WidgetTester tester, {
+      required String matchCode,
+      int version = 1,
+      int scoreA = 3,
+      int scoreB = 1,
+    }) async {
+      await _seedScoreboardPrefs(
+        prefs,
+        _scoreboardConfig(matchCode: matchCode, version: version),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        scoreA: scoreA,
+        scoreB: scoreB,
+        isRefereeMatch: true,
+        scoreboardMatchCode: matchCode,
+        scoreboardVersion: version,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      await settleScoreboardConfig(tester, game);
+      game.resumePendingMatch();
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.needsScoreboardResultReview, isTrue);
+      return game;
+    }
+
+    testWidgets('a late 200 after REPEAT does not reset the new live match',
+        (tester) async {
+      final game = await liveRefereeAtFullTime(tester, matchCode: 'M-RPT');
+      await submitCurrentReview(tester, game, 'M-RPT');
+
+      // Referee taps REPEAT: gameInit() starts a brand-new match and clears the
+      // captured full-time signature. Make the new match visibly non-default so
+      // a stray reset is observable.
+      game.toggleTimer(); // GAME OVER branch -> gameInit
+      expect(game.currentStage, MatchStage.firstHalf);
+      game.teams[0].score = 7;
+      game.startTimer();
+      expect(game.inGame, isTrue);
+
+      // The original queued result now lands (HTTP 200). It is still the
+      // service's "current fixture", so the delivery callback fires - but the
+      // referee has moved on, so it must NOT disconnect/reinit the live match.
+      game.scoreboardResultService.onCurrentResultDelivered!();
+      await tester
+          .pump(); // drain the reset microtask (if the guard let it run)
+
+      expect(game.teams[0].score, 7, reason: 'live match score must survive');
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.inGame, isTrue);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'a 200 while still on the full-time match resets to clean start',
+        (tester) async {
+      final game = await liveRefereeAtFullTime(tester,
+          matchCode: 'M-DLV', scoreA: 5, scoreB: 2);
+      // A custom name proves the reset restores defaults.
+      game.teams.firstWhere((t) => t.id == 'A').name = 'Eagles';
+      await submitCurrentReview(tester, game, 'M-DLV');
+
+      game.scoreboardResultService.onCurrentResultDelivered!();
+      await tester.pump(); // drain the reset microtask
+
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.inGame, isFalse);
+      final teamA = game.teams.firstWhere((t) => t.id == 'A');
+      expect(teamA.name, 'Team A');
+      expect(teamA.score, 0);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+  });
+
   group('scoreboard team naming (#53)', () {
     Team teamById(Game game, String id) =>
         game.teams.firstWhere((t) => t.id == id);

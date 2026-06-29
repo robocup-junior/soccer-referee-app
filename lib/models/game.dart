@@ -922,6 +922,18 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   /// from inside the service's processOutbox, so resetting (which mutates the
   /// service) inline would be re-entrant.
   void _onScoreboardResultDelivered() {
+    // A queued result can be delivered (200) only AFTER the referee has already
+    // left the post-match screen — e.g. tapped REPEAT to start a fresh match,
+    // which keeps the committed binding so the late 200 still reads as the
+    // "current fixture" in the service. Resetting then would disconnectAll() +
+    // gameInit() the new, live in-progress match (RAVF001). Only reset while we
+    // are STILL on the exact full-time match this delivery belongs to: REPEAT /
+    // a new match move the stage off fullTime and clear the captured full-time
+    // signature (gameInit), so this guard cleanly distinguishes the two.
+    if (currentStage != MatchStage.fullTime ||
+        _fullTimeResultSignature == null) {
+      return;
+    }
     scheduleMicrotask(_resetAfterScoreboardSubmission);
   }
 
