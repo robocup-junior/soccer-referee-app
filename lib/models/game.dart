@@ -109,7 +109,21 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   // Callback to request showing the dialog
   void Function()? onRequestSwitchTeamOrderDialog;
-  void Function()? onRequestReviewScoreboardResult;
+
+  // Callback to open the full-screen result review. A DRAINING setter (mirrors
+  // [onRequestResumeMatch]): a cold launch can restore a killed referee match
+  // that reached full time with an unsubmitted result (RAVF003) and raise the
+  // review BEFORE Home registers this callback in didChangeDependencies. Firing
+  // on assignment lets whichever happens last (restore vs registration) open the
+  // review. The registered callback re-checks needsScoreboardResultReview and is
+  // idempotent, so firing on every assignment is safe.
+  void Function()? _onRequestReviewScoreboardResult;
+  void Function()? get onRequestReviewScoreboardResult =>
+      _onRequestReviewScoreboardResult;
+  set onRequestReviewScoreboardResult(void Function()? callback) {
+    _onRequestReviewScoreboardResult = callback;
+    if (callback != null) _requestScoreboardResultReview();
+  }
 
   // Callback to request the confirm-on-load ("Load match?") dialog. A DRAINING
   // setter, mirroring [onRequestResumeMatch]: scoreboardResultService.initialize()
@@ -210,13 +224,19 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       }
     }
 
-    // A usable in-progress match (not already finished) → stash and prompt the
-    // referee. Stage fullTime means the match was over, so nothing to resume.
-    if (snapshot != null &&
-        snapshot.inGame &&
-        _stageFromName(snapshot.stage) != MatchStage.fullTime) {
-      _pendingResume = snapshot;
-      _maybeFireResumePrompt();
+    // A usable snapshot → either offer a resume (mid-match) or, for a referee
+    // match killed at full time before its result was submitted, restore enough
+    // to re-offer the result review (RAVF003). A non-referee fullTime snapshot
+    // is terminal — nothing to resume — and is ignored as before.
+    if (snapshot != null && snapshot.inGame) {
+      final stage = _stageFromName(snapshot.stage);
+      if (stage != MatchStage.fullTime) {
+        _pendingResume = snapshot;
+        _maybeFireResumePrompt();
+      } else if (snapshot.isRefereeMatch &&
+          (snapshot.scoreboardMatchCode?.isNotEmpty ?? false)) {
+        _restoreFullTimeResultReview(snapshot);
+      }
     }
 
     // Prompt for notification permission once on first launch (one-shot), now
@@ -502,6 +522,52 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// Cold-launch restore of a referee match that was killed at full time with
+  /// an unsubmitted result (RAVF003). Restores only what the result review needs
+  /// — final scores, team names/order and the scoreboard binding — at stage
+  /// fullTime, then re-offers the review (now, or when the bound fixture's config
+  /// surfaces). Deliberately does NOT restore modules or reconnect: the match is
+  /// over and the robots are off; the only thing being recovered is the result.
+  /// The snapshot stays on disk until the result is delivered (reset clears it)
+  /// or the referee starts a fresh match (REPEAT), so even a second kill in this
+  /// window is survivable.
+  void _restoreFullTimeResultReview(MatchSnapshot snapshot) {
+    _suppressPersist = true;
+    try {
+      currentStage = MatchStage.fullTime;
+      inGame = true;
+      timerButtonText = snapshot.timerButtonText;
+      _remainingTime = snapshot.remainingTime;
+      isTimeRunning = false;
+      _isGameRunning = false;
+      _restoreTeamOrderAndInfo(snapshot.teams);
+
+      _scoreboardHomeTeamId = snapshot.scoreboardHomeTeamId;
+      _scoreboardAwayTeamId = snapshot.scoreboardAwayTeamId;
+      _resumedFixtureMatchCode = snapshot.scoreboardMatchCode;
+      _resumedFixtureVersion = snapshot.scoreboardVersion;
+
+      final config = scoreboardResultService.matchConfig;
+      if (config != null && config.matchCode == snapshot.scoreboardMatchCode) {
+        // The bound fixture's config is already loaded → arm now and offer the
+        // review immediately.
+        _lastAppliedScoreboardSignature = config.signature;
+        _suppressScoreboardFinalResult = false;
+        _enterFullTimeResultReview();
+      } else {
+        // Config not loaded yet (the service's unawaited initialize() races the
+        // snapshot load) → keep suppressed; _applyScoreboardMatchConfig re-arms
+        // and raises the review at fullTime once the bound fixture surfaces.
+        _suppressScoreboardFinalResult = true;
+      }
+
+      _broadcastFullState();
+    } finally {
+      _suppressPersist = false;
+    }
+    notifyListeners();
+  }
+
   void _restoreTeamOrderAndInfo(List<TeamSnapshot> teamSnaps) {
     // Game() always builds teams as [A, B]. A swapped match was reordered by
     // toggleTeamOrder() reversing the list, and _teamColorHex + the UI color
@@ -615,9 +681,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           // late penalty). In-match these reconnect unbounded on purpose; at
           // full time we settle the ones still off to "Disconnected".
           disconnectInactiveModules();
-          // Match just ended: clear the snapshot rather than persisting a
-          // fullTime one (item 2 made this transition a persist point).
-          _clearMatchState();
+          _persistOrClearAtFullTime();
           break;
         default:
           debugPrint('unknown match stage');
@@ -1071,8 +1135,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // The bound fixture's config only surfaced AFTER this resumed match had
       // already run to full-time while suppressed. Now that the bound fixture's
       // config is here, capture it as the review subject and surface the review
-      // flow instead of silently enqueueing.
+      // flow instead of silently enqueueing. The full-time tick cleared the
+      // snapshot while suppressed (nothing to review yet); re-persist it now so a
+      // kill before Submit can resume the review (RAVF003).
       _enterFullTimeResultReview();
+      _persistOrClearAtFullTime();
     }
   }
 
@@ -1127,7 +1194,23 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   void _requestScoreboardResultReview() {
     if (!needsScoreboardResultReview) return;
-    onRequestReviewScoreboardResult?.call();
+    _onRequestReviewScoreboardResult?.call();
+  }
+
+  /// At full time (or when a suppressed resume's fixture config surfaces
+  /// post-full-time), decide whether to persist or clear the snapshot. A referee
+  /// match with an unsubmitted result PERSISTS a full-time review snapshot so a
+  /// kill before Submit can resume the review (RAVF003) — nothing POSTs from the
+  /// snapshot; it only keeps the result alive for re-submission. Otherwise the
+  /// match is terminal and the snapshot is cleared (the #45 contract that a
+  /// finished match isn't resumed). Once the result is submitted/delivered the
+  /// outbox owns durability and the reset (or REPEAT) clears the snapshot.
+  void _persistOrClearAtFullTime() {
+    if (needsScoreboardResultReview) {
+      _flushMatchStateNow();
+    } else {
+      _clearMatchState();
+    }
   }
 
   ({

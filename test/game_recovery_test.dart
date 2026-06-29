@@ -1311,6 +1311,111 @@ void main() {
     });
   });
 
+  group('full-time result durability (RAVF003)', () {
+    testWidgets('a killed full-time referee match is restored into the review',
+        (tester) async {
+      await _seedScoreboardPrefs(
+        prefs,
+        _scoreboardConfig(matchCode: 'M-KILL', version: 3),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      // A full-time referee snapshot: the match ended but the result was never
+      // submitted before the app was killed.
+      await persist(_snap(
+        stage: 'fullTime',
+        remainingTime: 0,
+        scoreA: 4,
+        scoreB: 2,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-KILL',
+        scoreboardVersion: 3,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      await settleScoreboardConfig(tester, game);
+      await tester.pump(); // let a suppressed restore re-arm via the config
+
+      expect(game.pendingResume, isNull,
+          reason: 'a finished match is not offered for a plain resume');
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.needsScoreboardResultReview, isTrue);
+
+      // The draining setter opens the review the moment Home registers it.
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () => reviewRequests++;
+      expect(reviewRequests, 1);
+
+      final review = game.buildScoreboardResultReview();
+      expect(review.matchCode, 'M-KILL');
+      expect(review.homeGoals, 4, reason: 'home is team A');
+      expect(review.awayGoals, 2, reason: 'away is team B');
+
+      final result = await submitCurrentReview(tester, game, 'M-KILL');
+      expect(result.homeGoals, 4);
+      expect(result.awayGoals, 2);
+      expect(result.version, 3);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'the full-time tick persists a review snapshot, then REPEAT clears it',
+        (tester) async {
+      await _seedScoreboardPrefs(
+        prefs,
+        _scoreboardConfig(matchCode: 'M-DUR', version: 2),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        scoreA: 3,
+        scoreB: 0,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-DUR',
+        scoreboardVersion: 2,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      await settleScoreboardConfig(tester, game);
+      game.resumePendingMatch();
+
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.needsScoreboardResultReview, isTrue);
+
+      // The full-time tick PERSISTS a review snapshot (does not clear it), so a
+      // kill before Submit is recoverable.
+      final saved = await waitForSavedSnapshot(
+        tester,
+        (s) => s.stage == 'fullTime' && s.isRefereeMatch,
+      );
+      expect(saved.scoreboardMatchCode, 'M-DUR');
+      expect(saved.teams.firstWhere((t) => t.id == 'A').score, 3);
+
+      // Once the referee starts a fresh match (REPEAT), the snapshot is cleared.
+      game.toggleTimer(); // GAME OVER branch -> gameInit + clear
+      expect(game.currentStage, MatchStage.firstHalf);
+      for (var i = 0; i < 20; i++) {
+        await tester.pump();
+        if (MatchStateStore(prefs).load() == null) break;
+      }
+      expect(MatchStateStore(prefs).load(), isNull,
+          reason: 'REPEAT must clear the persisted full-time snapshot');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+  });
+
   group('scoreboard team naming (#53)', () {
     Team teamById(Game game, String id) =>
         game.teams.firstWhere((t) => t.id == id);
