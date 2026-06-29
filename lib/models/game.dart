@@ -1106,7 +1106,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       return false;
     }
     if (!_canSubmitScoreboardResult(config)) return false;
-    return !scoreboardResultService.hasResultFor(config.matchCode);
+    // A terminally-rejected (HTTP 401/422) result must NOT hide the review:
+    // it is correctable, and enqueueFinalResult accepts a fresh re-submit, so
+    // the referee needs a route back to the review screen (RAVF002). Any other
+    // tracked state (pending / conflict / submitted / retry-exhausted) still
+    // suppresses the affordance.
+    return !scoreboardResultService.hasUnresolvedResultFor(config.matchCode);
   }
 
   /// Capture the just-ended fixture as the result-review subject, then raise the

@@ -91,6 +91,19 @@ class ScoreboardResultService with ChangeNotifier {
   bool get hasToken => _token != null && _token!.isNotEmpty;
   bool hasResultFor(String matchCode) =>
       _outbox.any((item) => item.matchCode == matchCode);
+
+  /// True if [matchCode] has an outbox item that should still BLOCK re-opening
+  /// the full-time result review. Every state blocks EXCEPT a terminal rejection
+  /// (HTTP 401/422): that result is correctable, so the review must stay
+  /// reachable for the referee to fix and re-submit (RAVF002). A retry-exhausted
+  /// transient failure (5xx / network) is NOT terminal here and keeps blocking —
+  /// it is re-sent via [retryPendingNow], not by re-opening the review.
+  bool hasUnresolvedResultFor(String matchCode) => _outbox.any(
+      (item) => item.matchCode == matchCode && !_isTerminalRejection(item));
+
+  static bool _isTerminalRejection(ResultOutboxItem item) =>
+      item.state == ResultSubmissionState.failed &&
+      (item.responseStatus == 401 || item.responseStatus == 422);
   bool get hasConflict => conflictCount > 0;
   int get pendingCount => _outbox
       .where((item) => item.state == ResultSubmissionState.pending)

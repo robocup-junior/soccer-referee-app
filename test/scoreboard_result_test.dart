@@ -392,6 +392,59 @@ void main() {
       expect(service.statusMessage, '✓ Submitted M-KEEP');
     });
 
+    test(
+        'a terminal 401 rejection unblocks the review for a re-submit '
+        '(RAVF002)', () async {
+      final client = _FakeHttpClient(
+          (request) => http.Response(jsonEncode({'reason': 'bad token'}), 401));
+      final service = ScoreboardResultService(httpClient: client);
+      service.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(_matchJson(matchCode: 'M-401')),
+        token: 'token',
+        baseUri: Uri.parse('http://127.0.0.1:8080'),
+      );
+
+      await service.enqueueFinalResult(homeGoals: 1, awayGoals: 0);
+      await _waitFor(
+        () =>
+            service.outbox.single.state == ResultSubmissionState.failed &&
+            service.outbox.single.responseStatus == 401,
+        reason: 'the 401 did not mark the item terminally failed',
+      );
+
+      // hasResultFor still sees the item (audit trail), but the review gate
+      // (hasUnresolvedResultFor) treats a terminal rejection as correctable, so
+      // the referee gets the Submit affordance back.
+      expect(service.hasResultFor('M-401'), isTrue);
+      expect(service.hasUnresolvedResultFor('M-401'), isFalse);
+
+      // A fresh enqueue is accepted (a corrected, second attempt).
+      final reSubmitted =
+          await service.enqueueFinalResult(homeGoals: 2, awayGoals: 0);
+      expect(reSubmitted, isTrue);
+    });
+
+    test('a 409 conflict keeps the review blocked (RAVF002)', () async {
+      final client = _FakeHttpClient((request) =>
+          http.Response(jsonEncode({'reason': 'already recorded'}), 409));
+      final service = ScoreboardResultService(httpClient: client);
+      service.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(_matchJson(matchCode: 'M-409')),
+        token: 'token',
+        baseUri: Uri.parse('http://127.0.0.1:8080'),
+      );
+
+      await service.enqueueFinalResult(homeGoals: 1, awayGoals: 0);
+      await _waitFor(
+        () => service.outbox.single.state == ResultSubmissionState.conflict,
+        reason: 'the 409 did not record a conflict',
+      );
+
+      // A conflict is a terminal SERVER state the referee can't correct by
+      // re-submitting, so it must keep blocking the review.
+      expect(service.hasUnresolvedResultFor('M-409'), isTrue);
+    });
+
     test('cancelling a staged link keeps a prior submitted confirmation',
         () async {
       final client = _FakeHttpClient((request) {
