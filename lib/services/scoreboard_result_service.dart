@@ -104,6 +104,29 @@ class ScoreboardResultService with ChangeNotifier {
   static bool _isTerminalRejection(ResultOutboxItem item) =>
       item.state == ResultSubmissionState.failed &&
       (item.responseStatus == 401 || item.responseStatus == 422);
+
+  /// Polls this match's outbox item until it reaches a terminal state
+  /// (submitted / conflict / failed) or [timeout] elapses, returning that
+  /// state — or null if the item is still pending (offline / slow) at the
+  /// deadline. Centralizes the busy-poll the review screen used inline.
+  Future<ResultSubmissionState?> awaitOutboxOutcome(
+    String matchCode, {
+    Duration timeout = const Duration(seconds: 4),
+  }) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      ResultOutboxItem? item;
+      for (final entry in _outbox) {
+        if (entry.matchCode == matchCode) item = entry;
+      }
+      if (item != null && item.state != ResultSubmissionState.pending) {
+        return item.state;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    return null;
+  }
+
   bool get hasConflict => conflictCount > 0;
   int get pendingCount => _outbox
       .where((item) => item.state == ResultSubmissionState.pending)

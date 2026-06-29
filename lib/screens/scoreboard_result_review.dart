@@ -88,32 +88,25 @@ class _ScoreboardResultReviewScreenState
     navigator.pop();
   }
 
-  /// Poll the outbox for this match's item and classify its state. On a 200 the
-  /// reset to the clean start state fires separately; on a conflict/rejection
-  /// the match stays on the home screen with its error status so the referee can
-  /// decide. A still-pending item (offline / slow) is reported as queued.
+  /// Watch the outbox for this match's outcome. On a 200 the reset to the clean
+  /// start state fires separately; on a conflict/rejection the match stays on
+  /// the home screen with its error status so the referee can decide. A
+  /// still-pending item at the deadline (offline OR a slow-but-succeeding POST —
+  /// the request timeout is longer than this poll) is reported as queued.
   Future<_SubmitOutcome> _awaitOutcome(String matchCode) async {
-    final service = widget.game.scoreboardResultService;
-    for (var i = 0; i < 20; i++) {
-      ResultOutboxItem? item;
-      for (final entry in service.outbox) {
-        if (entry.matchCode == matchCode) item = entry;
-      }
-      if (item != null) {
-        switch (item.state) {
-          case ResultSubmissionState.submitted:
-            return _SubmitOutcome.sent;
-          case ResultSubmissionState.conflict:
-            return _SubmitOutcome.conflict;
-          case ResultSubmissionState.failed:
-            return _SubmitOutcome.rejected;
-          case ResultSubmissionState.pending:
-            break;
-        }
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+    final state =
+        await widget.game.scoreboardResultService.awaitOutboxOutcome(matchCode);
+    switch (state) {
+      case ResultSubmissionState.submitted:
+        return _SubmitOutcome.sent;
+      case ResultSubmissionState.conflict:
+        return _SubmitOutcome.conflict;
+      case ResultSubmissionState.failed:
+        return _SubmitOutcome.rejected;
+      case ResultSubmissionState.pending:
+      case null:
+        return _SubmitOutcome.queued;
     }
-    return _SubmitOutcome.queued;
   }
 
   String _outcomeMessage(_SubmitOutcome outcome) {
@@ -125,7 +118,11 @@ class _ScoreboardResultReviewScreenState
       case _SubmitOutcome.rejected:
         return 'Submission rejected — the link may be invalid or expired.';
       case _SubmitOutcome.queued:
-        return 'No connection — saved and will send automatically.';
+        // The item is still pending at the deadline: this is EITHER offline OR
+        // a slow-but-succeeding POST (the request timeout outlives this poll),
+        // so the wording must not assert "no connection". It is saved either way
+        // and the persistent status corrects to ✓ once it lands.
+        return 'Saved — sending in the background.';
     }
   }
 

@@ -1270,7 +1270,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       homeConfirmed: homeConfirmed,
       awayConfirmed: awayConfirmed,
     );
-    notifyListeners();
+    // enqueueFinalResult already notifies on every outcome it can change
+    // (queued / already-tracked), and Game listens to the service and re-emits,
+    // so no extra notifyListeners() is needed here.
     return submitted;
   }
 
