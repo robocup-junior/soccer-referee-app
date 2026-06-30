@@ -65,10 +65,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
   static bool get _useIosUuid => !kIsWeb && Platform.isIOS;
 
   final _bridgeAddressMask = MaskTextInputFormatter(
-    mask: (!kIsWeb && Platform.isIOS)
+    mask: _useIosUuid
         ? '########-####-####-####-############'
         : '##:##:##:##:##:##',
-    filter: (!kIsWeb && Platform.isIOS)
+    filter: _useIosUuid
         ? {"#": RegExp('[0-9A-Fa-f-]')}
         : {"#": RegExp('[0-9A-Fa-f:]')},
   );
