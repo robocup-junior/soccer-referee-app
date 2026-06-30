@@ -1344,6 +1344,53 @@ void main() {
       await tester.pump(const Duration(milliseconds: 1500));
       game.dispose();
     });
+
+    testWidgets(
+        'REPEAT of the same fixture does not re-arm while the prior result is '
+        'in flight, so a late 200 cannot reset the second run', (tester) async {
+      // REPEAT replays the SAME fixture: gameInit nulls the full-time signature
+      // but the service keeps _matchConfig, so the second run reaches its own
+      // full time with the SAME match_code+version still "current". A late 200
+      // from the FIRST run must not reset/disconnect the second run (RAVF001,
+      // REPEAT same-fixture edge).
+      final game = await liveRefereeAtFullTime(tester, matchCode: 'M-REP');
+      await submitCurrentReview(tester, game, 'M-REP'); // first result queued
+      expect(
+          game.scoreboardResultService.hasUnresolvedResultFor('M-REP'), isTrue,
+          reason: 'the first run\'s result is still in flight after submit');
+
+      // Shorten the halves so the second run reaches full time in a few ticks.
+      game.periodTime = 1;
+      game.halfTimeDuration = 1;
+
+      game.toggleTimer(); // GAME OVER -> gameInit (firstHalf, signature cleared)
+      expect(game.currentStage, MatchStage.firstHalf);
+
+      // Drive the second run to full time via the clock only (no playAll fan-out
+      // timers). firstHalf -> halfTime (auto-starts) -> secondHalf (referee
+      // starts) -> fullTime.
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1)); // -> halfTime
+      expect(game.currentStage, MatchStage.halfTime);
+      await tester.pump(const Duration(seconds: 1)); // -> secondHalf
+      expect(game.currentStage, MatchStage.secondHalf);
+      game.teams[0].score = 5; // make the live second run visibly non-default
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1)); // -> fullTime
+      expect(game.currentStage, MatchStage.fullTime);
+
+      // The guard kept the reset signature un-armed (a prior same-fixture result
+      // is still unresolved), so the late 200 is a no-op for the second run.
+      game.scoreboardResultService.onCurrentResultDelivered!();
+      await tester.pump(); // drain the reset microtask (if it wrongly ran)
+
+      expect(game.teams[0].score, 5,
+          reason: 'the second run must NOT be reset by the first run\'s 200');
+      expect(game.currentStage, MatchStage.fullTime);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
   });
 
   group('full-time result durability (RAVF003)', () {

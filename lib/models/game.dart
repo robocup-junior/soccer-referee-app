@@ -1228,7 +1228,17 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   /// suppressed resume, when the bound fixture's config surfaces post-full-time.
   void _enterFullTimeResultReview() {
     final config = scoreboardResultService.matchConfig;
-    if (config != null && _canSubmitScoreboardResult(config)) {
+    if (config != null &&
+        _canSubmitScoreboardResult(config) &&
+        // Don't arm the reset signature while a prior result for the SAME
+        // fixture is still in flight. REPEAT replays the same fixture: gameInit
+        // nulls _fullTimeResultSignature but the service keeps _matchConfig, so
+        // the second run's full time would otherwise re-arm — and a late 200
+        // from the FIRST run (same code+version -> isCurrentFixture) would then
+        // reset/disconnect the live second match. The fixture token is
+        // single-use, so a still-unresolved prior result already owns it and the
+        // review stays correctly suppressed (RAVF001, REPEAT same-fixture).
+        !scoreboardResultService.hasUnresolvedResultFor(config.matchCode)) {
       _fullTimeResultSignature = config.signature;
     }
     _requestScoreboardResultReview();
