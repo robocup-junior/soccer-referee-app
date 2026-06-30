@@ -1,18 +1,13 @@
-import 'dart:async';
-import 'dart:io';
-
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:mask_text_input_formatter/mask_text_input_formatter.dart';
 import '../models/game.dart';
 import '../services/ble_bridge_service.dart';
 import '../services/mqtt.dart';
 import '../services/notification_service.dart';
 import '../services/preset_service.dart';
 import '../services/vibration_service.dart';
+import '../utils/ble_address.dart';
 import '../utils/colors.dart';
 import 'mac_qr_scanner.dart';
 
@@ -59,19 +54,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     SetItem('90 sec', 90),
   ];
 
-  // On iOS a BLE device is addressed by a CoreBluetooth UUID, not a MAC. Mirror
-  // the per-module address field (module_settings.dart): mask + length differ by
-  // platform so the bridge address can be entered/edited correctly on iPhone.
-  static bool get _useIosUuid => !kIsWeb && Platform.isIOS;
-
-  final _bridgeAddressMask = MaskTextInputFormatter(
-    mask: _useIosUuid
-        ? '########-####-####-####-############'
-        : '##:##:##:##:##:##',
-    filter: _useIosUuid
-        ? {"#": RegExp('[0-9A-Fa-f-]')}
-        : {"#": RegExp('[0-9A-Fa-f:]')},
-  );
+  // iOS addresses a BLE device by a CoreBluetooth UUID, not a MAC; the mask,
+  // length and hint differ by platform. Shared with the per-module address field
+  // via utils/ble_address.dart so both screens stay in sync.
+  final _bridgeAddressMask = buildBleAddressMask();
 
   @override
   void initState() {
@@ -93,62 +79,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   // Apply a scanned bridge QR result to the bridge address. QR codes always
   // encode a MAC (mac_qr_scanner only accepts a 17-char MAC), but iOS cannot
-  // connect by MAC — it needs the device's CoreBluetooth UUID. So on iOS resolve
-  // the MAC to a UUID by BLE-scanning for the device that advertises that MAC in
-  // its name. The bridge advertises with the same `RCJs-m_<MAC>` name as a robot
-  // module. On Android the scanned MAC is the address, so it is applied directly.
-  //
-  // The scan lifecycle mirrors ModuleSettingsScreen.startScanning(): subscribe to
-  // onScanResults BEFORE startScan and clean up in finally. We deliberately do
-  // NOT use scanResults — it is a behavior stream that replays the previous
-  // scan's cached results (see module_settings.dart and commit 5e6b013), which
-  // could resolve the bridge to a stale device the current scan never saw.
+  // connect by MAC — it needs the device's CoreBluetooth UUID, so resolve it via
+  // the shared BLE scan (utils/ble_address.dart). On Android the scanned MAC is
+  // the address, so it is applied directly.
   Future<void> _applyBridgeQrResult(String macResult) async {
-    if (!_useIosUuid) {
+    if (!useIosBleUuid) {
       setState(() {
         widget.game.bleBridgeService.bridgeMacAddress = macResult;
       });
       return;
     }
 
-    // Match case-insensitively: the QR scanner accepts a lower- or upper-case
-    // MAC while the device may advertise the other case (the Android/bridge
-    // connect path already normalizes via toUpperCase()).
-    final bleDeviceName = 'RCJs-m_$macResult'.toUpperCase();
-    String? resolvedUuid;
-    StreamSubscription<List<ScanResult>>? scanSub;
-
-    try {
-      scanSub = FlutterBluePlus.onScanResults.listen((results) {
-        for (final ScanResult r in results) {
-          if (r.device.platformName.toUpperCase() == bleDeviceName) {
-            resolvedUuid ??= r.device.remoteId.toString();
-            // Stop as soon as the device is found rather than waiting out the
-            // full timeout: this resolves faster and shrinks the window in which
-            // this global scan overlaps the robot-control surface.
-            unawaited(FlutterBluePlus.stopScan());
-            break;
-          }
-        }
-      });
-
-      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 3));
-      // Wait for the scan to stop (on match above, or on the timeout) before
-      // evaluating the result.
-      await FlutterBluePlus.isScanning.where((scanning) => !scanning).first;
-    } catch (e) {
-      // BLE off / permission denied / platform scan failure: do not let the
-      // button handler throw; fall through to the "No device found" dialog.
-      debugPrint('BleBridge: QR resolve scan error: $e');
-    } finally {
-      await scanSub?.cancel();
-      await FlutterBluePlus.stopScan();
-    }
+    final resolvedUuid = await resolveIosDeviceUuid(macResult);
 
     if (resolvedUuid != null) {
       if (mounted) {
         setState(() {
-          widget.game.bleBridgeService.bridgeMacAddress = resolvedUuid!;
+          widget.game.bleBridgeService.bridgeMacAddress = resolvedUuid;
         });
       }
       return;
@@ -367,16 +314,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                                 : 'Disconnected',
                                   ),
                                   SettingInputField(
-                                    title: _useIosUuid
+                                    title: useIosBleUuid
                                         ? 'Bridge UUID'
                                         : 'Bridge MAC',
                                     initialValue: widget
                                         .game.bleBridgeService.bridgeMacAddress,
                                     inputFormatters: [_bridgeAddressMask],
-                                    maxLength: _useIosUuid ? 36 : 17,
-                                    hintText: _useIosUuid
-                                        ? 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
-                                        : 'xx:xx:xx:xx:xx:xx',
+                                    maxLength: bleAddressMaxLength,
+                                    hintText: bleAddressHint,
                                     onChanged: (value) {
                                       widget.game.bleBridgeService
                                           .bridgeMacAddress = value;
