@@ -96,6 +96,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   // which re-applies the UNCHANGED committed config, can never be mistaken for
   // the confirmed Load. Consumed on the next apply.
   String? _confirmedLoadSignature;
+  // Future of the resumable-snapshot clear started by a confirmed new-fixture
+  // Load reset (RAVF002). _applyScoreboardMatchConfig runs synchronously inside
+  // confirmPendingMatch's notify, so it cannot await the tombstone itself;
+  // instead it stashes the awaitable clear here and confirmScoreboardMatch (the
+  // only path that can reach the reset branch) awaits it before the Load dialog
+  // dismisses. An immediate kill must not preserve the snapshot of the match the
+  // referee just replaced — mirrors discardPendingMatch's awaited clear.
+  Future<void>? _confirmedLoadClear;
   String? _lastPromptedPendingSignature;
   String? _scoreboardHomeTeamId;
   String? _scoreboardAwayTeamId;
@@ -1167,8 +1175,16 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     try {
       await scoreboardResultService.confirmPendingMatch(
           expectedSignature: expectedSignature);
+      // If the synchronous apply above reset a live match (RAVF002), it stashed
+      // the awaitable snapshot clear; await it so the Load dialog does not dismiss
+      // before the tombstone lands. This await is on the dialog/Load path only,
+      // never the robot START/STOP hot path (invariant #1).
+      final clear = _confirmedLoadClear;
+      _confirmedLoadClear = null;
+      if (clear != null) await clear;
     } finally {
       _confirmedLoadSignature = null;
+      _confirmedLoadClear = null;
     }
   }
 
@@ -1303,7 +1319,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       _periodTime = config.durationSeconds;
       gameInit();
       setTeamToDefaultOrder();
-      _clearMatchState();
+      // Use the AWAITABLE clear (not the fire-and-forget _clearMatchState) and
+      // stash its future so confirmScoreboardMatch can await the tombstone before
+      // the Load dialog dismisses (RAVF002 durability). discardPendingMatch — the
+      // sibling destructive "replace the match" path — awaits its clear for the
+      // same reason: an immediate kill must not re-offer the replaced match. The
+      // synchronous part (_dirty=false + initiating the tombstone write) runs now;
+      // only the disk completion is awaited later, off the robot hot path.
+      _confirmedLoadClear = _clearMatchStateAndWait();
     } else if (reArmedFromSuppression && currentStage == MatchStage.fullTime) {
       // The bound fixture's config only surfaced AFTER this resumed match had
       // already run to full-time while suppressed. Now that the bound fixture's
