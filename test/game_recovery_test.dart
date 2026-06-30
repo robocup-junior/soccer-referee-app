@@ -1856,6 +1856,390 @@ void main() {
     });
   });
 
+  group('new-fixture Load resets the live match (RAVF002)', () {
+    // Drive the real confirm path: stage a pending deep link, then
+    // game.confirmScoreboardMatch() (what Home's Load button calls). Only that
+    // user-confirmed path resets a match in progress/finished.
+    Future<void> confirmLoad(
+      WidgetTester tester,
+      Game game,
+      Map<String, dynamic> config,
+    ) async {
+      game.scoreboardResultService.debugApplyPendingMatchConfig(
+        ScoreboardMatchConfig.fromJson(config),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      await game.confirmScoreboardMatch();
+      await tester.pump();
+    }
+
+    testWidgets(
+        'a confirmed Load of the SAME fixture still resets (not deduped away)',
+        (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _scoreboardConfig(matchCode: 'M-A', version: 1)),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      game.startTimer();
+      await tester.pump();
+      game.teams.firstWhere((t) => t.id == 'A').addScore(2);
+      await tester.pump();
+      expect(game.inGame, isTrue);
+
+      // Re-stage + confirm the SAME fixture (identical signature to the one
+      // already applied). The warned overwrite must still reset to a clean
+      // start, not be deduped away.
+      await confirmLoad(
+          tester, game, _scoreboardConfig(matchCode: 'M-A', version: 1));
+
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.teams.firstWhere((t) => t.id == 'A').score, 0,
+          reason: 'a confirmed Load resets even for the same fixture');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'a confirmed Load of a different fixture mid-match resets scores + '
+        'team order but keeps the outbox', (tester) async {
+      // A result the referee already submitted for the OLD fixture is queued.
+      await _seedOutbox(prefs, [
+        _outboxItem(
+          matchCode: 'M-OLD',
+          state: ResultSubmissionState.pending,
+          homeGoals: 1,
+          awayGoals: 0,
+        ),
+      ]);
+      final game = Game();
+      await settleLoad(tester);
+
+      // Load + start the OLD fixture, swap order (as in a 2nd half), score 2-1.
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(_scoreboardConfig(
+          matchCode: 'M-OLD',
+          version: 1,
+          homeTeamName: 'Reds',
+          awayTeamName: 'Blues',
+        )),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      game.toggleTeamOrder(); // teams become [B, A]
+      await tester.pump();
+      game.startTimer();
+      await tester.pump();
+      game.teams.firstWhere((t) => t.id == 'A').addScore(2);
+      game.teams.firstWhere((t) => t.id == 'B').addScore(1);
+      await tester.pump();
+      expect(game.inGame, isTrue);
+
+      // Referee confirms loading a DIFFERENT fixture (the warned overwrite).
+      await confirmLoad(
+        tester,
+        game,
+        _scoreboardConfig(
+          matchCode: 'M-NEW',
+          version: 1,
+          durationSeconds: 120,
+          homeTeamName: 'Greens',
+          awayTeamName: 'Yellows',
+        ),
+      );
+
+      // Live match reset to a clean state bound to the NEW fixture.
+      expect(game.inGame, isFalse, reason: 'reset to loaded-not-started');
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.teams.firstWhere((t) => t.id == 'A').score, 0);
+      expect(game.teams.firstWhere((t) => t.id == 'B').score, 0);
+      // New fixture is home_is_left:true → home=A=Greens, away=B=Yellows.
+      expect(game.teams.firstWhere((t) => t.id == 'A').name, 'Greens');
+      expect(game.teams.firstWhere((t) => t.id == 'B').name, 'Yellows');
+      // Default team order restored for the new first half (not left swapped).
+      expect(game.teams[0].id, 'A',
+          reason: 'a swapped order must not carry into the new match');
+      expect(game.teams[1].id, 'B');
+      // The new fixture's match length was adopted (M-NEW is 120 s).
+      expect(game.periodTime, 120,
+          reason:
+              'the new fixture duration replaces the previous match length');
+
+      // The previous fixture's queued result is untouched (rule 3).
+      expect(
+        game.scoreboardResultService.outbox
+            .where((i) => i.matchCode == 'M-OLD')
+            .length,
+        1,
+        reason: 'loading a new match must never wipe the outbox',
+      );
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'a same-fixture refresh mid-match preserves the scores (not a Load)',
+        (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _scoreboardConfig(matchCode: 'M-SAME', version: 1)),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      game.startTimer();
+      await tester.pump();
+      game.teams.firstWhere((t) => t.id == 'A').addScore(3);
+      await tester.pump();
+
+      // SAME fixture, bumped version: an automatic refresh (no confirmed Load),
+      // so it must NOT reset. signature includes version, so it re-applies.
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _scoreboardConfig(matchCode: 'M-SAME', version: 2)),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+
+      expect(game.inGame, isTrue,
+          reason: 'a same-fixture refresh must not reset the match');
+      expect(game.teams.firstWhere((t) => t.id == 'A').score, 3,
+          reason: 'just-played scores preserved on a same-fixture refresh');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'a confirmed Load overrides a still-suppressed resume and resets to it',
+        (tester) async {
+      // Cold-resume a referee match bound to M-RES whose config has NOT yet
+      // surfaced (suppressed), in progress at 1-0.
+      await persist(_snap(
+        stage: 'firstHalf',
+        remainingTime: 200,
+        scoreA: 1,
+        scoreB: 0,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-RES',
+        scoreboardVersion: 1,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      expect(game.scoreboardResultService.matchConfig, isNull);
+      game.resumePendingMatch(); // suppressed: bound to M-RES, no config
+      await tester.pump();
+      expect(game.inGame, isTrue);
+
+      // User confirms loading a DIFFERENT fixture while still suppressed. The
+      // suppressed-resume rejection must NOT block an explicit Load.
+      await confirmLoad(
+        tester,
+        game,
+        _scoreboardConfig(
+          matchCode: 'M-OTHER',
+          version: 1,
+          homeTeamName: 'Greens',
+          awayTeamName: 'Yellows',
+        ),
+      );
+
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.teams.firstWhere((t) => t.id == 'A').score, 0,
+          reason: 'a confirmed Load overrides the suppressed-resume rejection');
+      expect(game.teams.firstWhere((t) => t.id == 'A').name, 'Greens');
+      expect(game.scoreboardResultService.matchConfig?.matchCode, 'M-OTHER');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'a delivered 200 still resets after the response bumped the committed '
+        'version (no regression)', (tester) async {
+      await _seedScoreboardPrefs(
+        prefs,
+        _scoreboardConfig(
+          matchCode: 'M-BUMP',
+          version: 2,
+          homeTeamName: 'Reds',
+          awayTeamName: 'Blues',
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await persist(_snap(
+        stage: 'fullTime',
+        remainingTime: 0,
+        scoreA: 2,
+        scoreB: 1,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-BUMP',
+        scoreboardVersion: 2,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      await settleScoreboardConfig(tester, game);
+      await tester.pump();
+      expect(game.needsScoreboardResultReview, isTrue);
+
+      // A successful POST returns a NEW version, which the service applies to the
+      // committed config (_updateMatchVersionFromResponse) BEFORE firing the
+      // delivery callback. Reproduce that committed-version bump, then deliver.
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(_scoreboardConfig(
+          matchCode: 'M-BUMP',
+          version: 3,
+          homeTeamName: 'Reds',
+          awayTeamName: 'Blues',
+        )),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+
+      game.scoreboardResultService.onCurrentResultDelivered?.call();
+      await tester.pump();
+      await tester.pump();
+
+      // The genuine 200 must STILL reset the finished match to a clean start,
+      // even though the committed version no longer equals the full-time
+      // subject's (the reset keys on stage + a captured full-time signature, not
+      // on the post-response committed signature).
+      expect(game.currentStage, MatchStage.firstHalf,
+          reason: 'a genuine 200 must reset even after a version bump');
+      expect(game.teams.firstWhere((t) => t.id == 'A').name, 'Team A',
+          reason: 'reset restores default team names');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'a STALE-dialog Load (rejected promotion) does not reset the live match',
+        (tester) async {
+      // Suppressed resume bound to M-RES (config not surfaced), in progress 1-0.
+      await persist(_snap(
+        stage: 'firstHalf',
+        remainingTime: 200,
+        scoreA: 1,
+        scoreB: 0,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-RES',
+        scoreboardVersion: 1,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      game.resumePendingMatch(); // suppressed, bound to M-RES
+      await tester.pump();
+      expect(game.inGame, isTrue);
+
+      // A committed config for a DIFFERENT fixture arrives and is rejected by the
+      // suppressed-resume guard: committed becomes M-OLD but is NOT applied
+      // (so _lastAppliedScoreboardSignature stays unequal to it).
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _scoreboardConfig(matchCode: 'M-OLD', version: 1)),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+
+      // A newer pending link is staged; the user taps a STALE Load whose
+      // expectedSignature no longer matches the pending fixture, so the service
+      // rejects the promotion. With a bare confirmed-load flag this would have
+      // re-applied committed M-OLD as a "new fixture" and wiped the resume; the
+      // signature-keyed signal must refuse (confirmed sig != applied sig).
+      game.scoreboardResultService.debugApplyPendingMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _scoreboardConfig(matchCode: 'M-B', version: 1)),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      await game.confirmScoreboardMatch(expectedSignature: 'stale-signature');
+      await tester.pump();
+
+      expect(game.inGame, isTrue,
+          reason: 'a rejected stale Load must not reset');
+      expect(game.teams.firstWhere((t) => t.id == 'A').score, 1,
+          reason: 'the suppressed resume scores must be preserved');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'a stale Load whose pending shares the committed-but-unapplied '
+        "fixture's signature still does not reset", (tester) async {
+      await persist(_snap(
+        stage: 'firstHalf',
+        remainingTime: 200,
+        scoreA: 1,
+        scoreB: 0,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-RES',
+        scoreboardVersion: 1,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      game.resumePendingMatch();
+      await tester.pump();
+
+      // Committed M-OLD arrives, rejected by the suppress guard (unapplied).
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _scoreboardConfig(matchCode: 'M-OLD', version: 1)),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+
+      // Pending is now ALSO M-OLD (same signature as committed). The user taps a
+      // STALE older dialog whose expectedSignature is a DIFFERENT fixture, so the
+      // promotion is rejected. The confirmed signal must not arm (pending !=
+      // expectedSignature), so no reset despite pending == committed signature.
+      game.scoreboardResultService.debugApplyPendingMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _scoreboardConfig(matchCode: 'M-OLD', version: 1)),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      await game.confirmScoreboardMatch(
+          expectedSignature: 'stale-older-signature');
+      await tester.pump();
+
+      expect(game.inGame, isTrue,
+          reason: 'a rejected stale Load must not reset');
+      expect(game.teams.firstWhere((t) => t.id == 'A').score, 1,
+          reason: 'preserved even when pending shares the committed signature');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+  });
+
   group('scoreboard team naming (#53)', () {
     Team teamById(Game game, String id) =>
         game.teams.firstWhere((t) => t.id == id);
