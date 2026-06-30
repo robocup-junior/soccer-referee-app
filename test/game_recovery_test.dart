@@ -1496,6 +1496,72 @@ void main() {
       await tester.pump(const Duration(milliseconds: 1500));
       game.dispose();
     });
+
+    testWidgets(
+        'a side-swap during the kill window re-maps home/away on restore',
+        (tester) async {
+      // The match ended with team A (left) 4 - team B (right) 2 and was killed
+      // before Submit. While the app was dead the organizer flipped the fixture
+      // to home_is_left=false, so "home" is now the RIGHT side (team B). The
+      // snapshot persisted the STALE mapping (home=A) AND the pre-swap names
+      // (A='Reds'=home, B='Blues'=away); the restore must re-derive BOTH the
+      // home/away->teamId mapping and the labels from the CURRENT config,
+      // otherwise it would POST team A's 4 goals as "home" (the value bug) and/or
+      // show 'Blues' as the home label (the label bug).
+      await _seedScoreboardPrefs(
+        prefs,
+        _scoreboardConfig(
+          matchCode: 'M-SIDESWAP',
+          version: 3,
+          homeIsLeft: false,
+          homeTeamName: 'Reds',
+          awayTeamName: 'Blues',
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await persist(_snap(
+        stage: 'fullTime',
+        remainingTime: 0,
+        scoreA: 4,
+        scoreB: 2,
+        nameA: 'Reds', // pre-swap labels (homeIsLeft was true: A=home=Reds)
+        nameB: 'Blues',
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-SIDESWAP',
+        scoreboardVersion: 3,
+        scoreboardHomeTeamId: 'A', // stale pre-swap mapping
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      await settleScoreboardConfig(tester, game);
+      await tester.pump();
+
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.needsScoreboardResultReview, isTrue);
+
+      final review = game.buildScoreboardResultReview();
+      expect(review.matchCode, 'M-SIDESWAP');
+      expect(review.homeGoals, 2,
+          reason: 'home is now the right side (team B = 2) after the swap');
+      expect(review.awayGoals, 4,
+          reason: 'away is now the left side (team A = 4) after the swap');
+      expect(review.homeName, 'Reds',
+          reason:
+              'home label must follow the re-derived mapping (team B=Reds)');
+      expect(review.awayName, 'Blues',
+          reason:
+              'away label must follow the re-derived mapping (team A=Blues)');
+
+      final result = await submitCurrentReview(tester, game, 'M-SIDESWAP');
+      expect(result.homeGoals, 2);
+      expect(result.awayGoals, 4);
+      expect(result.version, 3);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
   });
 
   group('scoreboard team naming (#53)', () {

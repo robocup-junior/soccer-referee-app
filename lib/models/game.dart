@@ -557,6 +557,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       _isGameRunning = false;
       _restoreTeamOrderAndInfo(snapshot.teams);
 
+      // Snapshot-sourced mapping: this is the fallback for the config-NOT-loaded
+      // branch below (it keeps the binding persisted across another kill until
+      // the fixture surfaces). When the config IS already loaded, the branch
+      // below re-derives the mapping from the live config (a side swap during
+      // the kill window makes the snapshot mapping stale), so do not "simplify"
+      // by removing these.
       _scoreboardHomeTeamId = snapshot.scoreboardHomeTeamId;
       _scoreboardAwayTeamId = snapshot.scoreboardAwayTeamId;
       _resumedFixtureMatchCode = snapshot.scoreboardMatchCode;
@@ -565,7 +571,29 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       final config = scoreboardResultService.matchConfig;
       if (config != null && config.matchCode == snapshot.scoreboardMatchCode) {
         // The bound fixture's config is already loaded → arm now and offer the
-        // review immediately.
+        // review immediately. Re-derive the home/away->team-id mapping from the
+        // CURRENT config rather than trusting the snapshot's persisted mapping:
+        // the snapshot keeps match_code/version/team-ids but NOT the captured
+        // signature, so an organizer side-swap (homeIsLeft flip) or home-
+        // redefining rename during the kill window would otherwise read the
+        // final scores under the stale _scoreboardHomeTeamId mapping and POST the
+        // wrong team's goals as "home". The config is the live authority and the
+        // physical scores are keyed on the (fixed) team ids, so deriving the
+        // mapping fresh here keeps home/away correct on a swap. Mirrors
+        // _applyScoreboardMatchConfig; the config-not-loaded branch below already
+        // re-derives via that path when the fixture surfaces.
+        _deriveScoreboardSideMapping(config);
+        // Re-label the teams from the CURRENT config too (by stable id, exactly
+        // like _applyScoreboardMatchConfig): _restoreTeamOrderAndInfo above
+        // restored the snapshot's PRE-swap names, so without this a side swap
+        // would show the old team's name next to the value submitted as the new
+        // "home" and mislabel the confirm checkboxes. Goals already follow the
+        // re-derived mapping; the displayed names must follow it as well.
+        for (final team in teams) {
+          team.name = team.id == _scoreboardHomeTeamId
+              ? config.homeTeamName
+              : config.awayTeamName;
+        }
         _lastAppliedScoreboardSignature = config.signature;
         _suppressScoreboardFinalResult = false;
         _enterFullTimeResultReview();
@@ -1121,8 +1149,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
     _lastAppliedScoreboardSignature = signature;
     _suppressScoreboardFinalResult = false;
-    _scoreboardHomeTeamId = config.homeIsLeft ? 'A' : 'B';
-    _scoreboardAwayTeamId = config.homeIsLeft ? 'B' : 'A';
+    _deriveScoreboardSideMapping(config);
 
     // Assign names by stable team ID, not by list position. If this re-runs
     // while the order is swapped (e.g. the version bump after a successful
@@ -1226,6 +1253,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   /// Capture the just-ended fixture as the result-review subject, then raise the
   /// review affordance. Called at the secondHalf->fullTime tick and, for a
   /// suppressed resume, when the bound fixture's config surfaces post-full-time.
+  /// Map the scoreboard home/away roles onto the fixed physical team ids.
+  /// Team 'A' is always the left side and 'B' the right; `homeIsLeft` decides
+  /// which physical team is "home". The single source of this rule — a stale or
+  /// out-of-sync mapping is exactly what POSTs the wrong team's goals as "home".
+  void _deriveScoreboardSideMapping(ScoreboardMatchConfig config) {
+    _scoreboardHomeTeamId = config.homeIsLeft ? 'A' : 'B';
+    _scoreboardAwayTeamId = config.homeIsLeft ? 'B' : 'A';
+  }
+
   void _enterFullTimeResultReview() {
     final config = scoreboardResultService.matchConfig;
     if (config != null &&
