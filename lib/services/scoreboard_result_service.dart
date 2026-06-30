@@ -89,6 +89,11 @@ class ScoreboardResultService with ChangeNotifier {
   }
 
   bool get hasToken => _token != null && _token!.isNotEmpty;
+
+  /// Whether [matchCode] has ANY outbox item, in any state (the audit-trail
+  /// view). The review gate uses [hasUnresolvedResultFor] instead, so this is
+  /// retained only for tests asserting an item was recorded.
+  @visibleForTesting
   bool hasResultFor(String matchCode) =>
       _outbox.any((item) => item.matchCode == matchCode);
 
