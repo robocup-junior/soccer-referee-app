@@ -123,12 +123,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
         for (final ScanResult r in results) {
           if (r.device.platformName.toUpperCase() == bleDeviceName) {
             resolvedUuid ??= r.device.remoteId.toString();
+            // Stop as soon as the device is found rather than waiting out the
+            // full timeout: this resolves faster and shrinks the window in which
+            // this global scan overlaps the robot-control surface.
+            unawaited(FlutterBluePlus.stopScan());
+            break;
           }
         }
       });
 
       await FlutterBluePlus.startScan(timeout: const Duration(seconds: 3));
-      // Wait for the timeout-driven scan to stop before evaluating the result.
+      // Wait for the scan to stop (on match above, or on the timeout) before
+      // evaluating the result.
       await FlutterBluePlus.isScanning.where((scanning) => !scanning).first;
     } catch (e) {
       // BLE off / permission denied / platform scan failure: do not let the
