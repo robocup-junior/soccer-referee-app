@@ -1,4 +1,11 @@
+import 'dart:io';
+
+import 'package:flutter/cupertino.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:mask_text_input_formatter/mask_text_input_formatter.dart';
 import '../models/game.dart';
 import '../services/ble_bridge_service.dart';
 import '../services/mqtt.dart';
@@ -51,6 +58,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
     SetItem('90 sec', 90),
   ];
 
+  // On iOS a BLE device is addressed by a CoreBluetooth UUID, not a MAC. Mirror
+  // the per-module address field (module_settings.dart): mask + length differ by
+  // platform so the bridge address can be entered/edited correctly on iPhone.
+  static bool get _useIosUuid => !kIsWeb && Platform.isIOS;
+
+  final _bridgeAddressMask = MaskTextInputFormatter(
+    mask: (!kIsWeb && Platform.isIOS)
+        ? '########-####-####-####-############'
+        : '##:##:##:##:##:##',
+    filter: (!kIsWeb && Platform.isIOS)
+        ? {"#": RegExp('[0-9A-Fa-f-]')}
+        : {"#": RegExp('[0-9A-Fa-f:]')},
+  );
+
   @override
   void initState() {
     super.initState();
@@ -67,6 +88,72 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void dispose() {
     super.dispose();
+  }
+
+  // Apply a scanned bridge QR result to the bridge address. QR codes always
+  // encode a MAC (mac_qr_scanner only accepts a 17-char MAC), but iOS cannot
+  // connect by MAC — it needs the device's CoreBluetooth UUID. So on iOS resolve
+  // the MAC to a UUID by BLE-scanning for the device that advertises that MAC in
+  // its name, exactly as module_settings.dart's handleIosResult does. The bridge
+  // advertises with the same `RCJs-m_<MAC>` name as a robot module. On Android
+  // the scanned MAC is the address, so it is applied directly.
+  Future<void> _applyBridgeQrResult(String macResult) async {
+    if (!_useIosUuid) {
+      setState(() {
+        widget.game.bleBridgeService.bridgeMacAddress = macResult;
+      });
+      return;
+    }
+
+    final bleDeviceName = 'RCJs-m_$macResult';
+    debugPrint(bleDeviceName);
+    bool validResult = false;
+
+    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 3));
+
+    await for (final results in FlutterBluePlus.scanResults.timeout(
+      const Duration(seconds: 3),
+      onTimeout: (sink) => sink.close(),
+    )) {
+      for (ScanResult r in results) {
+        if (r.device.platformName == bleDeviceName) {
+          if (mounted) {
+            setState(() {
+              widget.game.bleBridgeService.bridgeMacAddress =
+                  r.device.remoteId.toString();
+            });
+          }
+          validResult = true;
+          await FlutterBluePlus.stopScan();
+          break;
+        }
+      }
+      if (validResult) break;
+    }
+
+    await FlutterBluePlus.stopScan();
+
+    if (!validResult && mounted) {
+      await showCupertinoDialog(
+        context: context,
+        builder: (BuildContext context) {
+          return CupertinoAlertDialog(
+            title: const Text('No device found'),
+            content: const Text(
+                'No device was found matching the MAC address you scanned'),
+            actions: [
+              CupertinoDialogAction(
+                isDefaultAction: true,
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+                child: const Text('OK'),
+              ),
+            ],
+          );
+        },
+      );
+    }
   }
 
   @override
@@ -259,9 +346,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                                 : 'Disconnected',
                                   ),
                                   SettingInputField(
-                                    title: 'Bridge MAC',
+                                    title: _useIosUuid
+                                        ? 'Bridge UUID'
+                                        : 'Bridge MAC',
                                     initialValue: widget
                                         .game.bleBridgeService.bridgeMacAddress,
+                                    inputFormatters: [_bridgeAddressMask],
+                                    maxLength: _useIosUuid ? 36 : 17,
+                                    hintText: _useIosUuid
+                                        ? 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
+                                        : 'xx:xx:xx:xx:xx:xx',
                                     onChanged: (value) {
                                       widget.game.bleBridgeService
                                           .bridgeMacAddress = value;
@@ -280,10 +374,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       );
                                       if (!context.mounted) return;
                                       if (result is String) {
-                                        setState(() {
-                                          widget.game.bleBridgeService
-                                              .bridgeMacAddress = result;
-                                        });
+                                        await _applyBridgeQrResult(result);
                                       }
                                     },
                                   ),
@@ -841,12 +932,18 @@ class SettingInputField extends StatefulWidget {
   final String initialValue;
   final ValueChanged<String> onChanged;
   final bool isPassword;
+  final List<TextInputFormatter>? inputFormatters;
+  final int? maxLength;
+  final String? hintText;
 
   const SettingInputField({super.key,
     required this.title,
     required this.initialValue,
     required this.onChanged,
     this.isPassword = false,
+    this.inputFormatters,
+    this.maxLength,
+    this.hintText,
   });
 
   @override
@@ -903,11 +1000,22 @@ class _SettingInputFieldState extends State<SettingInputField> {
               focusNode: _focusNode,
               onChanged: widget.onChanged,
               obscureText: _obscure,
+              inputFormatters: widget.inputFormatters,
+              maxLength: widget.maxLength,
+              // Suppress the character counter so the longer UUID limit doesn't
+              // grow the compact settings row.
+              buildCounter: (context,
+                      {required currentLength,
+                      required isFocused,
+                      maxLength}) =>
+                  null,
               style: const TextStyle(color: Colors.white),
               decoration: InputDecoration(
                 border: const OutlineInputBorder(),
                 filled: true,
                 fillColor: Colors.grey[800],
+                hintText: widget.hintText,
+                hintStyle: const TextStyle(color: Colors.grey),
               ),
             ),
           ),
