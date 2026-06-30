@@ -75,6 +75,39 @@ Future<void> _seedScoreboardPrefs(
   }
 }
 
+Future<void> _seedOutbox(
+  SharedPreferences prefs,
+  List<ResultOutboxItem> items,
+) async {
+  await prefs.setString(
+    'scoreboard_result_outbox',
+    jsonEncode(items.map((item) => item.toJson()).toList()),
+  );
+}
+
+ResultOutboxItem _outboxItem({
+  required String matchCode,
+  required ResultSubmissionState state,
+  int? responseStatus,
+  int homeGoals = 0,
+  int awayGoals = 0,
+  int version = 1,
+}) =>
+    ResultOutboxItem(
+      id: 'item-$matchCode',
+      baseUrl: 'http://127.0.0.1:9',
+      token: 'test-token',
+      matchCode: matchCode,
+      homeGoals: homeGoals,
+      awayGoals: awayGoals,
+      version: version,
+      idempotencyKey: 'idem-$matchCode',
+      state: state,
+      responseStatus: responseStatus,
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+    );
+
 MatchSnapshot _snap({
   String stage = 'firstHalf',
   bool inGame = true,
@@ -1558,6 +1591,157 @@ void main() {
       expect(result.homeGoals, 2);
       expect(result.awayGoals, 4);
       expect(result.version, 3);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'a restored full-time match with a pending result still resets when '
+        'that genuine 200 finally lands', (tester) async {
+      // Kill AFTER Submit but BEFORE the 200: on relaunch the outbox holds a
+      // pending item for the on-screen fixture, so the review stays suppressed
+      // (hasUnresolvedResultFor). But this restored match IS the one the result
+      // belongs to, so the delivery-reset signature must still be armed — when
+      // the genuine 200 arrives the finished match must reset/clear, not linger
+      // with modules connected and a snapshot on disk. The RAVF001 arm-gate must
+      // NOT swallow this (it only guards the live REPEAT tick).
+      await _seedScoreboardPrefs(
+        prefs,
+        _scoreboardConfig(matchCode: 'M-P200', version: 2),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await _seedOutbox(prefs, [
+        _outboxItem(
+          matchCode: 'M-P200',
+          state: ResultSubmissionState.pending,
+          homeGoals: 2,
+          awayGoals: 1,
+          version: 2,
+        ),
+      ]);
+      await persist(_snap(
+        stage: 'fullTime',
+        remainingTime: 0,
+        scoreA: 2,
+        scoreB: 1,
+        nameA: 'Eagles', // a custom name proves the reset restores defaults
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-P200',
+        scoreboardVersion: 2,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      await settleScoreboardConfig(tester, game);
+      await tester.pump();
+
+      // The pending item keeps the review closed...
+      expect(game.needsScoreboardResultReview, isFalse,
+          reason: 'a pending result suppresses the review affordance');
+
+      // ...but the genuine 200 for that same fixture must still reset.
+      game.scoreboardResultService.onCurrentResultDelivered!();
+      await tester.pump(); // drain the reset microtask
+
+      expect(game.currentStage, MatchStage.firstHalf,
+          reason: 'the delivered first-run result must reset the match');
+      expect(game.inGame, isFalse);
+      final teamA = game.teams.firstWhere((t) => t.id == 'A');
+      expect(teamA.name, 'Team A');
+      expect(teamA.score, 0);
+      for (var i = 0; i < 20; i++) {
+        await tester.pump();
+        if (MatchStateStore(prefs).load() == null) break;
+      }
+      expect(MatchStateStore(prefs).load(), isNull,
+          reason: 'a successful delivery must clear the persisted snapshot');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+  });
+
+  group('review re-open gate through Game (RAVF002 e2e)', () {
+    testWidgets(
+        'a terminal 401 in the outbox still re-opens the full-time review',
+        (tester) async {
+      await _seedScoreboardPrefs(
+        prefs,
+        _scoreboardConfig(matchCode: 'M-401E', version: 2),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await _seedOutbox(prefs, [
+        _outboxItem(
+          matchCode: 'M-401E',
+          state: ResultSubmissionState.failed,
+          responseStatus: 401,
+          homeGoals: 2,
+          awayGoals: 1,
+          version: 2,
+        ),
+      ]);
+      await persist(_snap(
+        stage: 'fullTime',
+        remainingTime: 0,
+        scoreA: 2,
+        scoreB: 1,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-401E',
+        scoreboardVersion: 2,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      await settleScoreboardConfig(tester, game);
+      await tester.pump();
+
+      expect(game.needsScoreboardResultReview, isTrue,
+          reason: 'a correctable 401 must leave the review reachable via Game');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('a still-pending outbox item keeps the review blocked',
+        (tester) async {
+      await _seedScoreboardPrefs(
+        prefs,
+        _scoreboardConfig(matchCode: 'M-PEND', version: 2),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await _seedOutbox(prefs, [
+        _outboxItem(
+          matchCode: 'M-PEND',
+          state: ResultSubmissionState.pending,
+          homeGoals: 2,
+          awayGoals: 1,
+          version: 2,
+        ),
+      ]);
+      await persist(_snap(
+        stage: 'fullTime',
+        remainingTime: 0,
+        scoreA: 2,
+        scoreB: 1,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-PEND',
+        scoreboardVersion: 2,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      await settleScoreboardConfig(tester, game);
+      await tester.pump();
+
+      expect(game.needsScoreboardResultReview, isFalse,
+          reason: 'an in-flight result must keep the review suppressed');
 
       await tester.pump(const Duration(milliseconds: 1500));
       game.dispose();

@@ -596,7 +596,21 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         }
         _lastAppliedScoreboardSignature = config.signature;
         _suppressScoreboardFinalResult = false;
-        _enterFullTimeResultReview();
+        // Arm the delivery-reset signature DIRECTLY here, not via
+        // _enterFullTimeResultReview's unresolved-result gate. That gate guards
+        // the LIVE full-time tick so a REPEAT of the same fixture isn't reset by
+        // the first run's late 200 (RAVF001). But a *restored* full-time match IS
+        // the exact match its queued result belongs to: if the app was killed
+        // after Submit but before the 200, the outbox already holds a pending
+        // item (hasUnresolvedResultFor → true), and the gate would leave the
+        // signature null so the genuine 200 would never reset/clear the finished
+        // match. Review *visibility* is governed separately by
+        // needsScoreboardResultReview's own unresolved-result clause, so arming
+        // here does not surface the review while a result is in flight.
+        if (_canSubmitScoreboardResult(config)) {
+          _fullTimeResultSignature = config.signature;
+        }
+        _requestScoreboardResultReview();
       } else {
         // Config not loaded yet (the service's unawaited initialize() races the
         // snapshot load) → keep suppressed; _applyScoreboardMatchConfig re-arms
