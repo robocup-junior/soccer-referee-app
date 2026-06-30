@@ -1748,6 +1748,80 @@ void main() {
     });
   });
 
+  group('review-edit write-back (RAVF004)', () {
+    testWidgets(
+        'a corrected review score is written to the teams and snapshot so a '
+        're-open shows the correction, not the original', (tester) async {
+      await _seedScoreboardPrefs(
+        prefs,
+        _scoreboardConfig(matchCode: 'M-EDIT', version: 2),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      // Cold-launch straight into a full-time review (no outbox item yet).
+      await persist(_snap(
+        stage: 'fullTime',
+        remainingTime: 0,
+        scoreA: 2,
+        scoreB: 1,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-EDIT',
+        scoreboardVersion: 2,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      await settleScoreboardConfig(tester, game);
+      await tester.pump();
+
+      expect(game.needsScoreboardResultReview, isTrue);
+      final review = game.buildScoreboardResultReview();
+      expect(review.homeGoals, 2, reason: 'home is team A');
+      expect(review.awayGoals, 1, reason: 'away is team B');
+
+      // Referee corrects the score on the review screen before submitting.
+      final submitted = await game.submitScoreboardResult(
+        expectedSignature: review.signature,
+        homeGoals: 5,
+        awayGoals: 3,
+        comment: null,
+        homeConfirmed: false,
+        awayConfirmed: false,
+      );
+      expect(submitted, isTrue);
+
+      // The correction is written onto the live teams (home=A, away=B)...
+      final teamA = game.teams.firstWhere((t) => t.id == 'A');
+      final teamB = game.teams.firstWhere((t) => t.id == 'B');
+      expect(teamA.score, 5, reason: 'home (team A) takes the corrected score');
+      expect(teamB.score, 3, reason: 'away (team B) takes the corrected score');
+
+      // ...the queued outbox item carries the corrected score...
+      final item = await waitForOutboxItem(tester, game, 'M-EDIT');
+      expect(item.homeGoals, 5);
+      expect(item.awayGoals, 3);
+
+      // ...and the persisted snapshot reflects it, so a kill+restore or a
+      // terminal-rejection re-open shows 5-3, not the original 2-1 (RAVF004).
+      final snap = await waitForSavedSnapshot(
+        tester,
+        (s) =>
+            s.scoreboardMatchCode == 'M-EDIT' &&
+            s.teams.firstWhere((t) => t.id == 'A').score == 5,
+      );
+      expect(snap.teams.firstWhere((t) => t.id == 'B').score, 3);
+
+      // A fresh review (as re-opened after a 401/422) now reads the correction.
+      final reopened = game.buildScoreboardResultReview();
+      expect(reopened.homeGoals, 5);
+      expect(reopened.awayGoals, 3);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+  });
+
   group('scoreboard team naming (#53)', () {
     Team teamById(Game game, String id) =>
         game.teams.firstWhere((t) => t.id == id);

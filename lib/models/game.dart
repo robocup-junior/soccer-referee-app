@@ -1396,6 +1396,30 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       homeConfirmed: homeConfirmed,
       awayConfirmed: awayConfirmed,
     );
+    if (submitted) {
+      // Persist the referee's (possibly corrected) review scores onto the live
+      // teams and the resumable snapshot now that an outbox item owns them.
+      // Without this, a terminal 401/422 rejection re-opens the review (via
+      // hasUnresolvedResultFor) reading the ORIGINAL teams[*].score, so the
+      // correction would be silently lost and a blind re-submit would re-send
+      // the wrong values (RAVF004). teams[*].score is a plain field (no
+      // MQTT/bridge broadcast), so this updates local truth + the snapshot
+      // only; the POST payload already carries the homeGoals/awayGoals passed
+      // above. Map via the captured side mapping, with the same homeIsLeft
+      // fallback buildScoreboardResultReview uses.
+      final homeIsLeft =
+          scoreboardResultService.matchConfig?.homeIsLeft ?? true;
+      final homeTeamId = _scoreboardHomeTeamId ?? (homeIsLeft ? 'A' : 'B');
+      final awayTeamId = _scoreboardAwayTeamId ?? (homeIsLeft ? 'B' : 'A');
+      for (final team in teams) {
+        if (team.id == homeTeamId) {
+          team.score = homeGoals;
+        } else if (team.id == awayTeamId) {
+          team.score = awayGoals;
+        }
+      }
+      _flushMatchStateNow();
+    }
     // enqueueFinalResult already notifies on every outcome it can change
     // (queued / already-tracked), and Game listens to the service and re-emits,
     // so no extra notifyListeners() is needed here.
