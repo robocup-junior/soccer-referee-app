@@ -1517,6 +1517,21 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       return false;
     }
 
+    // Capture the side mapping BEFORE awaiting the enqueue. The signature guard
+    // above proved matchConfig.signature == expectedSignature, so this mapping is
+    // exactly the one the review screen submitted against. An already-in-flight
+    // refreshMatchConfig() can complete during the await below, reassign the
+    // committed config, and (for a same-fixture side swap) flip homeIsLeft —
+    // re-deriving the mapping AFTER the await would then write these goals onto
+    // the WRONG physical teams. Capturing here keeps the write-back correct
+    // regardless of a concurrent refresh, while still letting a benign
+    // version/name refresh through (the team IDs are stable, so the submitted
+    // homeGoals always belong to homeTeamId). Same homeIsLeft fallback as
+    // buildScoreboardResultReview.
+    final homeIsLeft = scoreboardResultService.matchConfig?.homeIsLeft ?? true;
+    final homeTeamId = _scoreboardHomeTeamId ?? (homeIsLeft ? 'A' : 'B');
+    final awayTeamId = _scoreboardAwayTeamId ?? (homeIsLeft ? 'B' : 'A');
+
     final trimmedComment = comment?.trim();
     final submitted = await scoreboardResultService.enqueueFinalResult(
       homeGoals: homeGoals,
@@ -1536,12 +1551,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // the wrong values (RAVF004). teams[*].score is a plain field (no
       // MQTT/bridge broadcast), so this updates local truth + the snapshot
       // only; the POST payload already carries the homeGoals/awayGoals passed
-      // above. Map via the captured side mapping, with the same homeIsLeft
-      // fallback buildScoreboardResultReview uses.
-      final homeIsLeft =
-          scoreboardResultService.matchConfig?.homeIsLeft ?? true;
-      final homeTeamId = _scoreboardHomeTeamId ?? (homeIsLeft ? 'A' : 'B');
-      final awayTeamId = _scoreboardAwayTeamId ?? (homeIsLeft ? 'B' : 'A');
+      // above. Map via the side mapping captured above (pre-await).
       for (final team in teams) {
         if (team.id == homeTeamId) {
           team.score = homeGoals;
