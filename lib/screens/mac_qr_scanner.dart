@@ -91,19 +91,25 @@ class _BarcodeScannerSimpleState extends State<BarcodeScannerSimple> {
             //scanWindow: Rect.fromCenter(center: Offset.zero, width: 500, height: 500),
 
           ),
-          SafeArea(
-            top: false,
-            child: Align(
-              alignment: Alignment.bottomCenter,
-              child: Container(
-                alignment: Alignment.bottomCenter,
-                height: 100,
-                color: Colors.black.withValues(alpha: 0.85),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    Expanded(child: Center(child: _buildBarcode(_barcode))),
-                  ],
+          Align(
+            alignment: Alignment.bottomCenter,
+            // The black background must reach the physical screen bottom so the
+            // live camera feed never shows through below the bar. The SafeArea
+            // is therefore INSIDE the coloured Container (padding the content up
+            // off the home indicator) rather than around it — otherwise the
+            // bottom safe-area inset stays uncovered and leaks the camera.
+            child: Container(
+              color: Colors.black.withValues(alpha: 0.85),
+              child: SafeArea(
+                top: false,
+                child: SizedBox(
+                  height: 100,
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      Expanded(child: Center(child: _buildBarcode(_barcode))),
+                    ],
+                  ),
                 ),
               ),
             ),
