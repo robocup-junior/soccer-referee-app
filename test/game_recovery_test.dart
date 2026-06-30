@@ -464,6 +464,41 @@ void main() {
       game.dispose();
     });
 
+    testWidgets(
+        'late config on a suppressed in-game resume applies the venue field (#50)',
+        (tester) async {
+      // Resume a referee match WHILE its fixture config has not surfaced yet, so
+      // the match runs suppressed on the manual/persisted field. When the bound
+      // config later arrives, _applyScoreboardMatchConfig re-arms (bypassing the
+      // dedupe) and must apply the venue field even though we are inGame — the
+      // `if (!inGame) gameInit()` broadcast is skipped on this path.
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 200,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-FLD',
+        scoreboardVersion: 1,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      await settleLoad(tester);
+      expect(game.scoreboardResultService.matchConfig, isNull);
+
+      game.resumePendingMatch(); // suppressed: no config yet
+      // _scoreboardConfig uses venue 'Field 1'.
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-FLD', version: 1),
+        ),
+        token: 'test-token',
+      );
+      await tester.pump();
+
+      expect(game.mqttService.topic, 'field_1');
+      game.dispose();
+    });
+
     testWidgets('swapped resume keeps scoreboard mapping by stable team id',
         (tester) async {
       final config = _scoreboardConfig(

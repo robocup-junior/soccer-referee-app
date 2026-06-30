@@ -463,9 +463,24 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         _resumedFixtureMatchCode = resumedCode;
         _resumedFixtureVersion = snapshot.scoreboardVersion;
         if (config != null) {
-          // Matching config is present → arm the POST now.
+          // Matching config is present → arm the POST now. Use the shared
+          // ScoreboardMatchConfig.signature so this stays in lock-step with
+          // _applyScoreboardMatchConfig; a drift here re-applies spuriously.
           _lastAppliedScoreboardSignature = config.signature;
           _suppressScoreboardFinalResult = false;
+          // Apply the venue field here too. Seeding the signature above means a
+          // later scoreboard-service notification dedupe-returns in
+          // _applyScoreboardMatchConfig BEFORE its field assignment runs, so on
+          // the race where Resume is tapped inside the unawaited initialize()
+          // window (config already set, listeners not yet notified) the resumed
+          // referee match would otherwise keep publishing on a stale/manual MQTT
+          // field (#50). Mirrors _applyScoreboardMatchConfig's field logic and is
+          // idempotent if that path already ran. Same race the binding above is
+          // restored for.
+          final venueField = fieldNumberFromVenue(config.venueShortName);
+          if (venueField.isNotEmpty) {
+            mqttService.topicField = venueField;
+          }
         } else {
           // Config not loaded yet → keep the POST suppressed until it arrives.
           _suppressScoreboardFinalResult = true;
@@ -1071,9 +1086,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   void _applyScoreboardMatchConfig(ScoreboardMatchConfig config) {
-    // Team names are part of the signature so a corrected schedule payload that
-    // changes only a name (without bumping version/duration/side) still updates
-    // the displayed names; the `if (!inGame)` guard below still gates timing.
+    // Team names AND venue are part of the signature (see
+    // ScoreboardMatchConfig.signature) so a corrected schedule payload that
+    // changes only a name or the venue (without bumping version/duration/side)
+    // still updates the displayed names and the MQTT field (#50); the
+    // `if (!inGame)` guard below still gates timing.
     final signature = config.signature;
     // Dedupe on an unchanged signature - EXCEPT while a resumed match is still
     // suppressed. `_lastAppliedScoreboardSignature` is in-memory and is never
@@ -1117,6 +1134,31 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       team.name = team.id == _scoreboardHomeTeamId
           ? config.homeTeamName
           : config.awayTeamName;
+    }
+
+    // Apply the match's field number to the MQTT topic. This reuses the catigoal
+    // field-extraction rule (`fieldNumberFromVenue`, shared with
+    // `Match.fromJson`) but deliberately does NOT mirror `loadMatchData`'s
+    // unconditional assignment: when the venue carries no number (e.g. "Center
+    // Court") we leave the existing field untouched so a manually-set field is
+    // preserved, instead of publishing to a bare "field_" (#50). Do not remove
+    // this guard to "match" the catigoal path — the guard is the fix.
+    final venueField = fieldNumberFromVenue(config.venueShortName);
+    if (venueField.isNotEmpty) {
+      final previousTopic = mqttService.topic;
+      mqttService.topicField = venueField;
+      // If the field changes while a match is already underway — a mid-game
+      // venue correction, or the late-config re-arm of a suppressed resume — the
+      // `if (!inGame)` gameInit() broadcast below is skipped, so nothing would
+      // repopulate the NEW retained MQTT topic. Since publishes are retained,
+      // subscribers on the corrected field_N would otherwise see a previous
+      // match's retained data (or nothing) until the next score/stage event.
+      // Rebroadcast current state once, only when the topic actually changed, so
+      // an idempotent re-apply of the same field doesn't spam the bus.
+      // _broadcastFullState is off the robot START/STOP hot path (invariant #1).
+      if (inGame && mqttService.topic != previousTopic) {
+        _broadcastFullState();
+      }
     }
 
     // Apply remote timing presets only before a match starts (between matches,

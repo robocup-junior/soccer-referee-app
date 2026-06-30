@@ -106,6 +106,11 @@ class ScoreboardMatchConfig {
   /// Built via jsonEncode of an ordered field list (not a delimiter-joined
   /// string) so values containing the separator — e.g. a team name with a ':'
   /// — cannot collide with a different fixture.
+  ///
+  /// Venue is part of the identity so a corrected schedule payload that changes
+  /// only the venue (same match/version) still re-applies and updates the MQTT
+  /// field number (#50); this keeps the apply-dedupe and the cold-resume re-arm
+  /// in lock-step on a single signature.
   String get signature => jsonEncode(<dynamic>[
         matchCode,
         version,
@@ -113,6 +118,7 @@ class ScoreboardMatchConfig {
         homeIsLeft,
         homeTeamName,
         awayTeamName,
+        venueShortName,
       ]);
 
   Map<String, dynamic> toJson() => {
