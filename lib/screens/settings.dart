@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
@@ -94,9 +95,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // encode a MAC (mac_qr_scanner only accepts a 17-char MAC), but iOS cannot
   // connect by MAC — it needs the device's CoreBluetooth UUID. So on iOS resolve
   // the MAC to a UUID by BLE-scanning for the device that advertises that MAC in
-  // its name, exactly as module_settings.dart's handleIosResult does. The bridge
-  // advertises with the same `RCJs-m_<MAC>` name as a robot module. On Android
-  // the scanned MAC is the address, so it is applied directly.
+  // its name. The bridge advertises with the same `RCJs-m_<MAC>` name as a robot
+  // module. On Android the scanned MAC is the address, so it is applied directly.
+  //
+  // The scan lifecycle mirrors ModuleSettingsScreen.startScanning(): subscribe to
+  // onScanResults BEFORE startScan and clean up in finally. We deliberately do
+  // NOT use scanResults — it is a behavior stream that replays the previous
+  // scan's cached results (see module_settings.dart and commit 5e6b013), which
+  // could resolve the bridge to a stale device the current scan never saw.
   Future<void> _applyBridgeQrResult(String macResult) async {
     if (!_useIosUuid) {
       setState(() {
@@ -105,35 +111,44 @@ class _SettingsScreenState extends State<SettingsScreen> {
       return;
     }
 
-    final bleDeviceName = 'RCJs-m_$macResult';
-    debugPrint(bleDeviceName);
-    bool validResult = false;
+    // Match case-insensitively: the QR scanner accepts a lower- or upper-case
+    // MAC while the device may advertise the other case (the Android/bridge
+    // connect path already normalizes via toUpperCase()).
+    final bleDeviceName = 'RCJs-m_$macResult'.toUpperCase();
+    String? resolvedUuid;
+    StreamSubscription<List<ScanResult>>? scanSub;
 
-    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 3));
-
-    await for (final results in FlutterBluePlus.scanResults.timeout(
-      const Duration(seconds: 3),
-      onTimeout: (sink) => sink.close(),
-    )) {
-      for (ScanResult r in results) {
-        if (r.device.platformName == bleDeviceName) {
-          if (mounted) {
-            setState(() {
-              widget.game.bleBridgeService.bridgeMacAddress =
-                  r.device.remoteId.toString();
-            });
+    try {
+      scanSub = FlutterBluePlus.onScanResults.listen((results) {
+        for (final ScanResult r in results) {
+          if (r.device.platformName.toUpperCase() == bleDeviceName) {
+            resolvedUuid ??= r.device.remoteId.toString();
           }
-          validResult = true;
-          await FlutterBluePlus.stopScan();
-          break;
         }
-      }
-      if (validResult) break;
+      });
+
+      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 3));
+      // Wait for the timeout-driven scan to stop before evaluating the result.
+      await FlutterBluePlus.isScanning.where((scanning) => !scanning).first;
+    } catch (e) {
+      // BLE off / permission denied / platform scan failure: do not let the
+      // button handler throw; fall through to the "No device found" dialog.
+      debugPrint('BleBridge: QR resolve scan error: $e');
+    } finally {
+      await scanSub?.cancel();
+      await FlutterBluePlus.stopScan();
     }
 
-    await FlutterBluePlus.stopScan();
+    if (resolvedUuid != null) {
+      if (mounted) {
+        setState(() {
+          widget.game.bleBridgeService.bridgeMacAddress = resolvedUuid!;
+        });
+      }
+      return;
+    }
 
-    if (!validResult && mounted) {
+    if (mounted) {
       await showCupertinoDialog(
         context: context,
         builder: (BuildContext context) {
