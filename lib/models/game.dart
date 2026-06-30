@@ -1311,7 +1311,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (needsScoreboardResultReview) {
       _flushMatchStateNow();
     } else if (_suppressScoreboardFinalResult &&
-        (_resumedFixtureMatchCode?.isNotEmpty ?? false)) {
+        (_resumedFixtureMatchCode?.isNotEmpty ?? false) &&
+        !scoreboardResultService
+            .hasUnresolvedResultFor(_resumedFixtureMatchCode!)) {
       // A resumed referee match can reach full time while STILL suppressed (its
       // bound fixture's config hasn't surfaced yet), so needsScoreboardResultReview
       // can't be true at this tick. Clearing here would make a kill in the
@@ -1322,6 +1324,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // _restoreFullTimeResultReview on cold launch, and the late config re-arms
       // and re-persists the review. Same durability contract as RAVF003,
       // extended to the suppressed-resume sub-case (RAVF001).
+      //
+      // Mirror the unresolved-result guard in _enterFullTimeResultReview /
+      // needsScoreboardResultReview: ONLY keep the snapshot when no outbox item
+      // already owns this fixture's result. If one does — e.g. a REPEAT second
+      // run resumed-and-suppressed while the FIRST run's submission is still
+      // pending — persisting and later restoring+arming this snapshot would let
+      // the first run's late 200 reset the wrong run, the exact REPEAT hazard
+      // RAVF001 guards against. In that case fall through to clear, leaving the
+      // pending item's own durability/ownership untouched.
       _flushMatchStateNow();
     } else {
       _clearMatchState();
