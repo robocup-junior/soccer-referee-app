@@ -1310,6 +1310,19 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void _persistOrClearAtFullTime() {
     if (needsScoreboardResultReview) {
       _flushMatchStateNow();
+    } else if (_suppressScoreboardFinalResult &&
+        (_resumedFixtureMatchCode?.isNotEmpty ?? false)) {
+      // A resumed referee match can reach full time while STILL suppressed (its
+      // bound fixture's config hasn't surfaced yet), so needsScoreboardResultReview
+      // can't be true at this tick. Clearing here would make a kill in the
+      // config-load window unrecoverable: there is no outbox item yet (nothing
+      // POSTs until Submit) and the snapshot would be gone. Keep the snapshot
+      // instead — _buildSnapshot still records it as a referee binding
+      // (pendingReferee), a full-time referee snapshot is routed to
+      // _restoreFullTimeResultReview on cold launch, and the late config re-arms
+      // and re-persists the review. Same durability contract as RAVF003,
+      // extended to the suppressed-resume sub-case (RAVF001).
+      _flushMatchStateNow();
     } else {
       _clearMatchState();
     }
