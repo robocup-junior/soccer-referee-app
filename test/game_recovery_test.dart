@@ -1822,6 +1822,40 @@ void main() {
     });
   });
 
+  group('clear-linked-match undelivered guard (RAVF003)', () {
+    testWidgets('undeliveredCount counts every non-submitted outbox item',
+        (tester) async {
+      await _seedScoreboardPrefs(
+        prefs,
+        _scoreboardConfig(matchCode: 'M-CLR', version: 1),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await _seedOutbox(prefs, [
+        _outboxItem(matchCode: 'P', state: ResultSubmissionState.pending),
+        _outboxItem(matchCode: 'C', state: ResultSubmissionState.conflict),
+        _outboxItem(
+          matchCode: 'F',
+          state: ResultSubmissionState.failed,
+          responseStatus: 401,
+        ),
+        _outboxItem(matchCode: 'S', state: ResultSubmissionState.submitted),
+      ]);
+      final game = Game();
+      await settleLoad(tester);
+      await tester.pump();
+
+      // The Settings "Clear linked match" confirm dialog keys on this: warn
+      // only when undelivered results would be lost (pending/conflict/failed),
+      // never counting an already-delivered (submitted) item.
+      expect(game.scoreboardResultService.undeliveredCount, 3);
+      expect(game.scoreboardResultService.submittedCount, 1);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+  });
+
   group('scoreboard team naming (#53)', () {
     Team teamById(Game game, String id) =>
         game.teams.firstWhere((t) => t.id == id);

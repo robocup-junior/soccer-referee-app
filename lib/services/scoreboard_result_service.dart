@@ -142,6 +142,14 @@ class ScoreboardResultService with ChangeNotifier {
   int get submittedCount => _outbox
       .where((item) => item.state == ResultSubmissionState.submitted)
       .length;
+
+  /// Outbox items NOT yet confirmed delivered to the scoreboard (anything other
+  /// than a 200/submitted: pending, conflict, or failed). Used to warn before
+  /// "Clear linked match" — which calls [clearLinkedMatchData] and wipes the
+  /// whole outbox — permanently discards undelivered results (RAVF003).
+  int get undeliveredCount => _outbox
+      .where((item) => item.state != ResultSubmissionState.submitted)
+      .length;
   List<ResultOutboxItem> get outbox => List.unmodifiable(_outbox);
 
   Future<void> initialize() async {

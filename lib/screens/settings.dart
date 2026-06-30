@@ -14,7 +14,8 @@ class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key, required this.game});
 
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();}
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
 
 class _SettingsScreenState extends State<SettingsScreen> {
   late SetItem _selectedGameDuration;
@@ -54,14 +55,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
   @override
   void initState() {
     super.initState();
-    _selectedGameDuration =
-        _gameDurations.firstWhere((item) => item.values == widget.game.periodTime, orElse: () => _gameDurations[4]);
-    _selectedHalftimeBreak = _halftimeBreaks.firstWhere((item) => item.values == widget.game.halfTimeDuration,
+    _selectedGameDuration = _gameDurations.firstWhere(
+        (item) => item.values == widget.game.periodTime,
+        orElse: () => _gameDurations[4]);
+    _selectedHalftimeBreak = _halftimeBreaks.firstWhere(
+        (item) => item.values == widget.game.halfTimeDuration,
         orElse: () => _halftimeBreaks[2]);
-    _selectedNumberOfPlayers = _numberOfPlayersList.firstWhere((item) => item.values == widget.game.numberOfPlayers,
+    _selectedNumberOfPlayers = _numberOfPlayersList.firstWhere(
+        (item) => item.values == widget.game.numberOfPlayers,
         orElse: () => _numberOfPlayersList[1]);
-    _selectedPenaltyTime =
-        _penaltyTimes.firstWhere((item) => item.values == widget.game.penaltyTime, orElse: () => _penaltyTimes[1]);
+    _selectedPenaltyTime = _penaltyTimes.firstWhere(
+        (item) => item.values == widget.game.penaltyTime,
+        orElse: () => _penaltyTimes[1]);
   }
 
   @override
@@ -157,9 +162,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                 ),
                                 SettingStatus(
                                   title: 'Venue',
-                                  status: config?.venueShortName.isNotEmpty == true
-                                      ? config!.venueShortName
-                                      : 'Not loaded',
+                                  status:
+                                      config?.venueShortName.isNotEmpty == true
+                                          ? config!.venueShortName
+                                          : 'Not loaded',
                                 ),
                                 SettingStatus(
                                   title: 'Outbox',
@@ -184,7 +190,53 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   title: 'Clear linked match',
                                   buttonText: 'Clear',
                                   onPressed: () {
-                                    service.clearLinkedMatchData();
+                                    // Clearing wipes the whole outbox. Confirm
+                                    // first if any results haven't been
+                                    // confirmed sent, so a stray tap can't
+                                    // silently discard undelivered results
+                                    // (RAVF003). Nothing undelivered → clear
+                                    // straight away (no friction).
+                                    final undelivered =
+                                        service.undeliveredCount;
+                                    if (undelivered == 0) {
+                                      service.clearLinkedMatchData();
+                                      return;
+                                    }
+                                    final plural = undelivered == 1 ? '' : 's';
+                                    showDialog(
+                                      context: context,
+                                      builder: (ctx) => AlertDialog(
+                                        title:
+                                            const Text('Clear linked match?'),
+                                        content: Text(
+                                          '$undelivered result$plural '
+                                          '${undelivered == 1 ? 'has' : 'have'} '
+                                          'not been confirmed sent to the '
+                                          'scoreboard yet. Clearing the linked '
+                                          'match permanently discards '
+                                          '${undelivered == 1 ? 'it' : 'them'} '
+                                          '— ${undelivered == 1 ? 'it' : 'they'} '
+                                          'will not be sent.',
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.of(ctx).pop(),
+                                            child: const Text('Cancel'),
+                                          ),
+                                          TextButton(
+                                            style: TextButton.styleFrom(
+                                              foregroundColor: Colors.red,
+                                            ),
+                                            onPressed: () {
+                                              Navigator.of(ctx).pop();
+                                              service.clearLinkedMatchData();
+                                            },
+                                            child: const Text('Clear anyway'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
                                   },
                                 ),
                               ],
@@ -255,7 +307,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                             ? 'Connecting...'
                                             : bridgeState ==
                                                     BridgeConnectionState.error
-                                                ? (widget.game.bleBridgeService.lastErrorMessage ?? 'Error')
+                                                ? (widget.game.bleBridgeService
+                                                        .lastErrorMessage ??
+                                                    'Error')
                                                 : 'Disconnected',
                                   ),
                                   SettingInputField(
@@ -625,7 +679,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('AI co-authors: Claude (Anthropic) '
+                              child: Text(
+                                  'AI co-authors: Claude (Anthropic) '
                                   '& Codex (OpenAI) '
                                   '& GitHub Copilot (Microsoft)',
                                   style: TextStyle(fontSize: 14)),
@@ -678,7 +733,8 @@ class SettingsSection extends StatelessWidget {
   final ValueChanged<bool>? onToggle;
 
   const SettingsSection(
-      {super.key, required this.title,
+      {super.key,
+      required this.title,
       required this.settings,
       this.locked = false,
       this.enabled,
@@ -698,7 +754,8 @@ class SettingsSection extends StatelessWidget {
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 Text(
                   title,
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 if (enabled != null && onToggle != null)
                   Switch(
@@ -724,7 +781,8 @@ class SettingDropdownButton extends StatelessWidget {
   final List<SetItem> options;
   final ValueChanged<SetItem?> onChanged;
 
-  const SettingDropdownButton({super.key,
+  const SettingDropdownButton({
+    super.key,
     required this.title,
     required this.value,
     required this.options,
@@ -764,7 +822,8 @@ class SettingButton extends StatelessWidget {
   final String buttonText;
   final Function()? onPressed;
 
-  const SettingButton({super.key,
+  const SettingButton({
+    super.key,
     required this.title,
     required this.buttonText,
     required this.onPressed,
@@ -785,7 +844,8 @@ class SettingButton extends StatelessWidget {
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.grey[700],
               ),
-              child: Text(buttonText, style: const TextStyle(color: Colors.white)),
+              child:
+                  Text(buttonText, style: const TextStyle(color: Colors.white)),
             ),
           )
         ],
@@ -842,7 +902,8 @@ class SettingInputField extends StatefulWidget {
   final ValueChanged<String> onChanged;
   final bool isPassword;
 
-  const SettingInputField({super.key,
+  const SettingInputField({
+    super.key,
     required this.title,
     required this.initialValue,
     required this.onChanged,
@@ -850,7 +911,7 @@ class SettingInputField extends StatefulWidget {
   });
 
   @override
-  State <SettingInputField> createState() => _SettingInputFieldState();
+  State<SettingInputField> createState() => _SettingInputFieldState();
 }
 
 class _SettingInputFieldState extends State<SettingInputField> {
@@ -925,7 +986,7 @@ class SettingStatus extends StatefulWidget {
   const SettingStatus({super.key, required this.title, required this.status});
 
   @override
-  State <SettingStatus> createState() => _SettingStatusState();
+  State<SettingStatus> createState() => _SettingStatusState();
 }
 
 class _SettingStatusState extends State<SettingStatus> {
@@ -1115,7 +1176,10 @@ class SetItem {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is SetItem && runtimeType == other.runtimeType && values == other.values && name == other.name;
+      other is SetItem &&
+          runtimeType == other.runtimeType &&
+          values == other.values &&
+          name == other.name;
 
   @override
   int get hashCode => values.hashCode ^ name.hashCode;
@@ -1197,7 +1261,8 @@ class _ModulePresetsSectionState extends State<ModulePresetsSection> {
     widget.game.applyPreset(preset);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Loaded "${preset.name}" – connecting robots...')),
+        SnackBar(
+            content: Text('Loaded "${preset.name}" – connecting robots...')),
       );
     }
   }
