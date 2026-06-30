@@ -344,6 +344,22 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _persistMatchState();
   }
 
+  /// Same as [_flushMatchStateNow] but awaits the underlying store write, for
+  /// paths where the persisted snapshot must be DURABLE before the caller
+  /// continues — e.g. the RAVF004 corrected-score write-back, whose whole
+  /// purpose is that a kill cannot resurface the pre-correction score on a later
+  /// terminal-rejection re-open. Forces the save (the explicit-flush intent),
+  /// bypassing the `_dirty` short-circuit, but still honours `_suppressPersist`
+  /// and a null store. Awaitable callers must be off the robot START/STOP hot
+  /// path (invariant #1).
+  Future<void> _flushMatchStateNowAndWait() async {
+    if (_suppressPersist) return;
+    final store = _stateStore;
+    if (store == null) return;
+    _dirty = false;
+    await store.save(_buildSnapshot());
+  }
+
   /// Public clear for intentional fresh-start paths outside the resume flow
   /// (e.g. Settings "Reset current game"). gameInit() deliberately does not
   /// clear the snapshot, so those paths must clear it explicitly or a killed
@@ -1153,8 +1169,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   /// knows this is a USER-CONFIRMED Load — which must reset a match already in
   /// progress/finished (RAVF002) — rather than an automatic same-fixture
   /// refresh. confirmPendingMatch promotes + notifies SYNCHRONOUSLY, so the flag
-  /// is in place when the apply runs; the post-await clear is a belt-and-braces
-  /// reset in case a stale-dialog reject promoted nothing.
+  /// is in place when the apply runs. After the await we await the snapshot clear
+  /// the reset stashed (RAVF002 durability), and the `finally` clears the
+  /// confirmed-load signals so a rejected/no-op promotion leaves nothing armed
+  /// for a later apply.
   Future<void> confirmScoreboardMatch({String? expectedSignature}) async {
     // Capture the signature of the fixture being confirmed so the resulting
     // apply only treats THAT exact fixture as a confirmed Load. confirmPendingMatch
@@ -1531,7 +1549,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           team.score = awayGoals;
         }
       }
-      _flushMatchStateNow();
+      // Await the snapshot write so the corrected scores are DURABLE before
+      // submit returns. enqueueFinalResult already persisted the outbox item
+      // durably; a kill in the gap between that and a fire-and-forget snapshot
+      // save would restore the OLD scores, and a later terminal 401/422 rejection
+      // would re-open the review reading the stale teams[*].score — the exact
+      // RAVF004 loss this write-back exists to prevent. submitScoreboardResult is
+      // async and awaited by the review screen, never the robot hot path.
+      await _flushMatchStateNowAndWait();
     }
     // enqueueFinalResult already notifies on every outcome it can change
     // (queued / already-tracked), and Game listens to the service and re-emits,
