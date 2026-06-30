@@ -159,12 +159,27 @@ class ScoreboardResultService with ChangeNotifier {
     final outboxRaw = _prefs!.getString(_prefsOutboxKey);
     if (outboxRaw != null && outboxRaw.isNotEmpty) {
       try {
-        final list = jsonDecode(outboxRaw) as List<dynamic>;
-        _outbox = list
-            .whereType<Map>()
-            .map((item) =>
-                ResultOutboxItem.fromJson(Map<String, dynamic>.from(item)))
-            .toList();
+        final decoded = jsonDecode(outboxRaw);
+        if (decoded is List) {
+          // Parse each item independently. ResultOutboxItem.fromJson force-casts
+          // required fields (id, base_url, token, idempotency_key), so a single
+          // malformed or partially-written entry would otherwise throw and
+          // discard the WHOLE outbox — silently stranding every other pending
+          // submission (its delivery + 20s retry would never run again). Skip
+          // only the bad entry and keep the valid ones.
+          final restored = <ResultOutboxItem>[];
+          for (final item in decoded) {
+            if (item is! Map) continue;
+            try {
+              restored.add(
+                  ResultOutboxItem.fromJson(Map<String, dynamic>.from(item)));
+            } catch (e) {
+              debugPrint(
+                  'ScoreboardResultService: skipping malformed outbox item: $e');
+            }
+          }
+          _outbox = restored;
+        }
       } catch (e) {
         debugPrint('ScoreboardResultService: outbox parse failed: $e');
       }
