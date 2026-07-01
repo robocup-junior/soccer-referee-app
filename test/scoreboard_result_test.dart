@@ -40,6 +40,10 @@ Map<String, dynamic> _matchJson({
       'timezone': 'Europe/Prague',
       'version': version,
       'status': 'SCHEDULED',
+      'home_inspection_status': 'ok',
+      'away_inspection_status': 'missing',
+      'home_inspection_notes': const [],
+      'away_inspection_notes': const [],
     };
 
 Future<void> _waitFor(
@@ -76,6 +80,95 @@ void main() {
       expect(config.durationSeconds, 480);
       expect(config.version, 7);
       expect(config.status, 'SCHEDULED');
+    });
+
+    test('parses inspection status and notes', () {
+      final config = ScoreboardMatchConfig.fromJson({
+        ..._matchJson(),
+        'home_inspection_status': 'ok',
+        'away_inspection_status': 'failed',
+        'home_inspection_notes': const [],
+        'away_inspection_notes': const [
+          {'robot': 1, 'note': 'battery low'},
+          {'robot': 2, 'note': 'wheels re-seated'},
+        ],
+      });
+
+      expect(config.homeInspectionStatus, InspectionStatus.ok);
+      expect(config.awayInspectionStatus, InspectionStatus.failed);
+      expect(config.homeInspectionNotes, isEmpty);
+      expect(config.awayInspectionNotes, const [
+        InspectionNote(robot: 1, note: 'battery low'),
+        InspectionNote(robot: 2, note: 'wheels re-seated'),
+      ]);
+    });
+
+    test('unknown/absent inspection status falls back to unknown', () {
+      final absent = ScoreboardMatchConfig.fromJson(_matchJson()
+        ..remove('home_inspection_status')
+        ..remove('away_inspection_status')
+        ..remove('home_inspection_notes')
+        ..remove('away_inspection_notes'));
+      expect(absent.homeInspectionStatus, InspectionStatus.unknown);
+      expect(absent.awayInspectionStatus, InspectionStatus.unknown);
+      expect(absent.homeInspectionNotes, isEmpty);
+      expect(absent.awayInspectionNotes, isEmpty);
+
+      final garbage = ScoreboardMatchConfig.fromJson({
+        ..._matchJson(),
+        'home_inspection_status': 'exploded',
+      });
+      expect(garbage.homeInspectionStatus, InspectionStatus.unknown);
+    });
+
+    test('inspection notes drop blank text and malformed entries', () {
+      final config = ScoreboardMatchConfig.fromJson({
+        ..._matchJson(),
+        'home_inspection_notes': const [
+          {'robot': 1, 'note': 'cracked chassis'},
+          {'robot': 2, 'note': '   '},
+          {'robot': 3, 'note': ''},
+          'not-a-map',
+        ],
+        'away_inspection_notes': 'not-a-list',
+      });
+      expect(config.homeInspectionNotes,
+          const [InspectionNote(robot: 1, note: 'cracked chassis')]);
+      expect(config.awayInspectionNotes, isEmpty);
+    });
+
+    test('inspection status and notes survive a toJson/fromJson round-trip', () {
+      final original = ScoreboardMatchConfig.fromJson({
+        ..._matchJson(),
+        'home_inspection_status': 'failed',
+        'away_inspection_status': 'missing',
+        'home_inspection_notes': const [
+          {'robot': 2, 'note': 'loose wiring'},
+        ],
+        'away_inspection_notes': const [],
+      });
+
+      final restored = ScoreboardMatchConfig.fromJson(
+        jsonDecode(jsonEncode(original.toJson())) as Map<String, dynamic>,
+      );
+
+      expect(restored.homeInspectionStatus, InspectionStatus.failed);
+      expect(restored.awayInspectionStatus, InspectionStatus.missing);
+      expect(restored.homeInspectionNotes,
+          const [InspectionNote(robot: 2, note: 'loose wiring')]);
+      expect(restored.awayInspectionNotes, isEmpty);
+    });
+
+    test('inspection status is not part of the load signature', () {
+      final base = ScoreboardMatchConfig.fromJson(_matchJson());
+      final flipped = base.copyWith(
+        homeInspectionStatus: InspectionStatus.failed,
+        awayInspectionStatus: InspectionStatus.ok,
+        homeInspectionNotes: const [InspectionNote(robot: 1, note: 'x')],
+      );
+      // Inspection state is cosmetic: a status/notes change must not re-fire the
+      // confirm-on-load / apply-dedupe logic keyed on `signature`.
+      expect(flipped.signature, base.signature);
     });
 
     test('falls back to side_order map and defaults', () {
