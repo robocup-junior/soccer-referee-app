@@ -230,6 +230,60 @@ void main() {
     return waitForOutboxItem(tester, game, matchCode);
   }
 
+  group('scoreboard duration 25-min slot workaround (#71)', () {
+    testWidgets(
+        'a 25-min slot loads as a 10-min half + 5-min break, overriding the '
+        'operator defaults for this match', (tester) async {
+      // Seed distinct operator defaults so the mapping is unambiguous.
+      await prefs.setInt('game_period_time', 777);
+      await prefs.setInt('game_halftime_duration', 123);
+      final game = Game();
+      await settleLoad(tester);
+      expect(game.inGame, isFalse);
+
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(
+              matchCode: 'M-25', version: 1, durationSeconds: 25 * 60),
+        ),
+        token: 'test-token',
+      );
+      await tester.pump();
+
+      expect(game.periodTime, 10 * 60,
+          reason: '25-min slot -> 10-min half (not 25 min per half)');
+      expect(game.halfTimeDuration, 5 * 60,
+          reason: '25-min slot -> 5-min half-time break');
+      expect(game.remainingTime, 10 * 60,
+          reason: 'gameInit sets the clock to the mapped 10-min half');
+      game.dispose();
+    });
+
+    testWidgets(
+        'a non-25-min duration passes through as the per-half length and '
+        'leaves the half-time break untouched', (tester) async {
+      await prefs.setInt('game_halftime_duration', 123);
+      final game = Game();
+      await settleLoad(tester);
+
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(
+              matchCode: 'M-15', version: 1, durationSeconds: 15 * 60),
+        ),
+        token: 'test-token',
+      );
+      await tester.pump();
+
+      expect(game.periodTime, 15 * 60,
+          reason: 'non-25 duration used directly as the per-half length');
+      expect(game.remainingTime, 15 * 60);
+      expect(game.halfTimeDuration, 123,
+          reason: 'workaround only remaps half-time for the 25-min slot');
+      game.dispose();
+    });
+  });
+
   group('cold-launch detection', () {
     testWidgets('an in-progress snapshot is offered for resume',
         (tester) async {
