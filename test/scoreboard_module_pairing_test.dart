@@ -135,6 +135,29 @@ void main() {
     game.dispose();
   });
 
+  testWidgets(
+      'a later MAC set pairs even when the fixture signature is unchanged',
+      (tester) async {
+    final game = await loadedGame(tester);
+
+    // First apply: the same fixture with no module MACs — the pre-#70 persisted
+    // shape an upgrading user carries. Nothing to pair yet.
+    apply(game, _config());
+    await tester.pump();
+    expect(teamById(game, 'A').modules[0].macAddress, '');
+
+    // A refresh of the SAME fixture (identical signature fields) that now
+    // carries MACs. _applyScoreboardMatchConfig dedupes on the unchanged
+    // signature — MACs are not part of it — so the module sync is what must
+    // still pair the newly-arrived MAC.
+    apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+    await tester.pump();
+
+    expect(teamById(game, 'A').modules[0].macAddress, 'A1:B2:C3:D4:E5:F6');
+
+    game.dispose();
+  });
+
   testWidgets('no module keys leaves every slot unpaired', (tester) async {
     final game = await loadedGame(tester);
 
