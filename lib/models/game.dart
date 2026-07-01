@@ -37,6 +37,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   static const int _defaultPlayersPerTeam = 2;
   static const int _noShowPenaltyGoalIntervalSeconds = 30;
   static const int _maxNoShowPenaltyGoalDifference = 10;
+  // Workaround (issue #71) for the scoreboard sending the 25-min scheduling
+  // SLOT as `duration_seconds` (rcj-scoreboard#108). A standard RCJ Soccer
+  // 25-min slot is 10+5+10 — two 10-min halves + a 5-min half-time break — so
+  // map that one value to a 10-min half + 5-min break instead of treating
+  // 25 min as the per-half length (which would run 2x25=50 min). Any other
+  // duration passes through unchanged until the server sends a real half time.
+  static const int _scoreboardSlot25MinSeconds = 25 * 60; // 1500
+  static const int _scoreboardSlot25HalfSeconds = 10 * 60; // 600
+  static const int _scoreboardSlot25HalfTimeSeconds = 5 * 60; // 300
 
   String timerButtonText = 'START';
   final int _maxPlayer = 5;
@@ -1337,6 +1346,19 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
   }
 
+  // Set the LIVE match timing from a scoreboard config, applying the #71
+  // 25-min-slot workaround. Sets the fields directly (NOT via the periodTime/
+  // halfTimeDuration setters) so the link's timing is used for this match only
+  // and never persisted as the operator's stored defaults.
+  void _applyScoreboardTiming(ScoreboardMatchConfig config) {
+    if (config.durationSeconds == _scoreboardSlot25MinSeconds) {
+      _periodTime = _scoreboardSlot25HalfSeconds;
+      _halfTimeDuration = _scoreboardSlot25HalfTimeSeconds;
+    } else {
+      _periodTime = config.durationSeconds;
+    }
+  }
+
   void _applyScoreboardMatchConfig(ScoreboardMatchConfig config) {
     // Team names AND venue are part of the signature (see
     // ScoreboardMatchConfig.signature) so a corrected schedule payload that
@@ -1446,7 +1468,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // Set the LIVE match length from the link, but do NOT persist it as the
       // operator's configured default (the `periodTime` setter would write it to
       // prefs and clobber their setting). gameInit() applies it to the clock.
-      _periodTime = config.durationSeconds;
+      // #71: a 25-min scheduling slot is mapped to a 10-min half + 5-min break.
+      _applyScoreboardTiming(config);
       gameInit();
     } else if (isConfirmedNewFixtureLoad) {
       // RAVF002: the referee confirmed the "Load match?" overwrite while a match
@@ -1465,7 +1488,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // and keeps retrying; its late 200 no longer matches the committed
       // fixture, so it can't reset this match (rule 3). Clear the stale snapshot
       // so a kill resumes the new match.
-      _periodTime = config.durationSeconds;
+      // #71: a 25-min scheduling slot is mapped to a 10-min half + 5-min break.
+      _applyScoreboardTiming(config);
       gameInit();
       setTeamToDefaultOrder();
       // Use the AWAITABLE clear (not the fire-and-forget _clearMatchState) and
