@@ -1225,6 +1225,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     final signature = config.signature;
     final isConfirmedNewFixtureLoad =
         confirmedSignature != null && confirmedSignature == signature && inGame;
+    // #70: auto-pair the robots' comm modules from the server MACs, but ONLY
+    // when this apply (re)loads/resets the match — a fresh link load (!inGame)
+    // or a confirmed "Load match?" overwrite. Capture the decision now, BEFORE
+    // gameInit() below flips `inGame`, so an incidental mid-match re-apply (a
+    // name/venue correction) never re-pairs modules the referee is actively
+    // using. The pairing itself runs at the END of this method.
+    final shouldAutoPairModules = !inGame || isConfirmedNewFixtureLoad;
     // Dedupe on an unchanged signature - EXCEPT while a resumed match is still
     // suppressed. `_lastAppliedScoreboardSignature` is in-memory and is never
     // cleared when the service drops `_matchConfig` to null (a token-changing
@@ -1354,6 +1361,34 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // kill before Submit can resume the review (RAVF003).
       _enterFullTimeResultReview();
       _persistOrClearAtFullTime();
+    }
+
+    // #70: pair each side's comm modules from the server MACs. Runs LAST so the
+    // enable/disable state gameInit() just applied is settled first —
+    // applyPresetConfig only connects an ENABLED module, and a disabled slot
+    // must not be left holding a live link. Off the START/STOP hot path
+    // (invariant #1): this is config-load time, clock stopped.
+    if (shouldAutoPairModules) {
+      _autoPairScoreboardModules(config);
+    }
+  }
+
+  void _autoPairScoreboardModules(ScoreboardMatchConfig config) {
+    // Map each side's MACs onto that side's fixed module slots, keyed by team ID
+    // (not list position) so a swapped team order can't cross the sides —
+    // mirroring the name loop. Only the slots the server supplies a MAC for are
+    // touched, so a partial list never clobbers a hand-paired spare slot; the
+    // server config is authoritative only for the modules it actually names.
+    // The empty label lets each slot fall back to its default name (A1..A5) via
+    // Module.name; applyPresetConfig is idempotent (skips a slot already on that
+    // MAC) so a version-bump re-apply won't churn live BLE links.
+    for (final team in teams) {
+      final macs = team.id == _scoreboardHomeTeamId
+          ? config.homeModuleMacs
+          : config.awayModuleMacs;
+      for (var i = 0; i < team.modules.length && i < macs.length; i++) {
+        team.modules[i].applyPresetConfig(macs[i], '');
+      }
     }
   }
 

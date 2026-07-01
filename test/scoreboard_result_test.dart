@@ -99,6 +99,47 @@ void main() {
       expect(a.signature, isNot(b.signature),
           reason: 'a colon in a team name must not alias a different fixture');
     });
+
+    test('parses per-side module MACs, normalising to upper-case', () {
+      final config = ScoreboardMatchConfig.fromJson({
+        ..._matchJson(),
+        'home_module_macs': ['a1:b2:c3:d4:e5:f6', '11:22:33:44:55:66'],
+        'away_module_macs': ['aa:bb:cc:dd:ee:ff'],
+      });
+
+      expect(config.homeModuleMacs, ['A1:B2:C3:D4:E5:F6', '11:22:33:44:55:66']);
+      expect(config.awayModuleMacs, ['AA:BB:CC:DD:EE:FF']);
+    });
+
+    test('defaults module MACs to empty lists for payloads without them', () {
+      final config = ScoreboardMatchConfig.fromJson(_matchJson());
+
+      expect(config.homeModuleMacs, isEmpty);
+      expect(config.awayModuleMacs, isEmpty);
+    });
+
+    test('drops blank/whitespace MAC entries', () {
+      final config = ScoreboardMatchConfig.fromJson({
+        ..._matchJson(),
+        'home_module_macs': ['A1:B2:C3:D4:E5:F6', '', '   '],
+      });
+
+      expect(config.homeModuleMacs, ['A1:B2:C3:D4:E5:F6']);
+    });
+
+    test('toJson/fromJson round-trips module MACs so a cold resume keeps them',
+        () {
+      final config = ScoreboardMatchConfig.fromJson({
+        ..._matchJson(),
+        'home_module_macs': ['A1:B2:C3:D4:E5:F6'],
+        'away_module_macs': ['AA:BB:CC:DD:EE:FF'],
+      });
+
+      final restored = ScoreboardMatchConfig.fromJson(config.toJson());
+
+      expect(restored.homeModuleMacs, ['A1:B2:C3:D4:E5:F6']);
+      expect(restored.awayModuleMacs, ['AA:BB:CC:DD:EE:FF']);
+    });
   });
 
   group('ResultOutboxItem serialization', () {
