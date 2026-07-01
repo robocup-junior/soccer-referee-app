@@ -30,7 +30,7 @@ MATCH = {
     "away_team": {"name": "Blue Bots"},
     "home_is_left": True,
     "venue": "Field 1",
-    "scheduled_start": "2026-06-26T10:00:00Z",
+    "scheduled_start": "2026-07-01T13:30:00Z",
     "duration_seconds": 30,
     "timezone": "UTC",
     "version": 1,

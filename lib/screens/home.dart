@@ -1006,11 +1006,13 @@ Future<void> _openScoreboardResultReview(
       // newer pending link that replaced it after this dialog was built.
       final expectedSignature = config.signature;
       final duration = _formatMatchDuration(config.durationSeconds);
+      final kickoff = _formatLocalKickoff(config.scheduledStart);
       final details = <String>[
         if (config.venueShortName.isNotEmpty)
           'Field ${config.venueShortName} · $duration'
         else
           duration,
+        if (kickoff != null) 'Kickoff $kickoff (local time)',
         if (game.inGame) '⚠ This replaces the match in progress.',
       ];
       try {
@@ -1173,6 +1175,24 @@ String _formatMatchDuration(int seconds) {
   if (minutes == 0) return '$secs s';
   if (secs == 0) return '$minutes min';
   return '$minutes min $secs s';
+}
+
+// The fixture's scheduled kickoff in the phone's LOCAL time, so a referee can
+// confirm they loaded the match for the right slot. `scheduledStart` is parsed
+// from the payload's ISO-8601 (UTC/offset) value; toLocal() converts it to the
+// device zone. Formatted by hand (no intl dependency). Returns null when the
+// payload carries no scheduled_start.
+String? _formatLocalKickoff(DateTime? scheduledStart) {
+  if (scheduledStart == null) return null;
+  final dt = scheduledStart.toLocal();
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+  final hh = dt.hour.toString().padLeft(2, '0');
+  final mm = dt.minute.toString().padLeft(2, '0');
+  return '${days[dt.weekday - 1]} ${dt.day} ${months[dt.month - 1]} · $hh:$mm';
 }
 
 String _resumeMatchBody(MatchSnapshot snapshot) {
