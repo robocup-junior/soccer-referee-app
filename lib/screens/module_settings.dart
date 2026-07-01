@@ -1,6 +1,4 @@
-import 'dart:io';
 import 'package:flutter/cupertino.dart';
-import 'package:flutter/foundation.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -9,7 +7,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/services/ble.dart';
-import 'package:mask_text_input_formatter/mask_text_input_formatter.dart';
+import 'package:rcj_scoreboard/utils/ble_address.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
 
 import 'mac_qr_scanner.dart';
@@ -82,7 +80,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     final mac = _controller.text.trim();
     if (mac.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a MAC address first')),
+        const SnackBar(content: Text('Enter a device address first')),
       );
       return;
     }
@@ -163,42 +161,44 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     setState(() {
       bleIsScanning = true;
     });
+    // Cancel any previous subscription before creating a new one.
     await _scanSubscription?.cancel();
     _scanSubscription = null;
 
+    // Subscribe BEFORE startScan so no results are missed between the scan
+    // starting and .listen() being attached (race in the old ordering). Use
+    // onScanResults, not scanResults: scanResults is a behavior stream that
+    // replays the previous scan's cached results to a new listener, so
+    // subscribing before startScan would surface stale/unfiltered devices from
+    // an earlier scan; onScanResults clears between scans.
+    _scanSubscription = FlutterBluePlus.onScanResults.listen((results) {
+      for (ScanResult result in results) {
+        if (!devices.contains(result.device)) {
+          if (mounted) {
+            setState(() {
+              devices.add(result.device);
+            });
+          }
+        }
+      }
+    });
+
     try {
       await FlutterBluePlus.startScan(
-        //withNames: ['RCJ-soccer_module'],
-        //withServices: [Guid('6E400002-B5A3-F393-E0A9-E50E24DCCA9E')],
         withKeywords: ['RCJ', 'soccer', 'module'],
         timeout: const Duration(seconds: 3),
       );
-      // Subscribe AFTER startScan to avoid replaying stale cached results
-      _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
-        for (ScanResult result in results) {
-          if (!devices.contains(result.device)) {
-            if (mounted) {
-              setState(() {
-                devices.add(result.device);
-              });
-            }
-          }
-        }
-      });
-
       // Wait for scanning to stop
       await FlutterBluePlus.isScanning.where((val) => val == false).first;
     } finally {
       await _scanSubscription?.cancel();
       _scanSubscription = null;
-
       if (mounted) {
         setState(() {
           bleIsScanning = false;
         });
       }
     }
-
   }
 
   // @override
@@ -230,14 +230,9 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     super.dispose();
   }
 
-  var maskFormatter = MaskTextInputFormatter(
-    mask: (!kIsWeb && Platform.isIOS)
-        ? '########-####-####-####-############'
-        : '##:##:##:##:##:##',
-    filter: (!kIsWeb && Platform.isIOS)
-        ? {"#": RegExp('[0-9A-Fa-f-]')}
-        : {"#": RegExp('[0-9A-Fa-f:]')},
-  );
+  // Shared with the bridge address field via utils/ble_address.dart so both
+  // screens use the same UUID-vs-MAC mask.
+  final maskFormatter = buildBleAddressMask();
 
   @override
   Widget build(BuildContext context) {
@@ -286,9 +281,16 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                   'Module status:',
                   style: TextStyle(fontSize: 18),
                 ),
-                Text(
-                  deviceStatus == 'OK' ? module.bleStatus : deviceStatus,
-                  style: const TextStyle(fontSize: 18),
+                // Flexible + ellipsis so a long status string can never overflow
+                // the Row and bork the screen (BLE errors can be verbose).
+                Flexible(
+                  child: Text(
+                    deviceStatus == 'OK' ? module.bleStatus : deviceStatus,
+                    style: const TextStyle(fontSize: 18),
+                    textAlign: TextAlign.right,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ],
             ),
@@ -338,15 +340,15 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
               controller: _controller,
               inputFormatters: [maskFormatter],
               decoration: InputDecoration(
-                labelText: (!kIsWeb && Platform.isIOS) ? 'Enter device UUID' : 'Enter MAC Address',
+                labelText: useIosBleUuid ? 'Enter device UUID' : 'Enter MAC Address',
                 labelStyle: const TextStyle(color: Colors.grey),
-                hintText: (!kIsWeb && Platform.isIOS) ? 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' :'xx:xx:xx:xx:xx:xx',
+                hintText: bleAddressHint,
                 hintStyle: const TextStyle(color: Colors.grey),
                 border: const OutlineInputBorder(),
 
               ),
               style: const TextStyle(color: Colors.white),
-              maxLength: (!kIsWeb && Platform.isIOS) ? 36 : 17,
+              maxLength: bleAddressMaxLength,
             ),
             const SizedBox(height: 8),
             Row(
@@ -387,7 +389,15 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                   if (module.isConnected || module.isConnecting) {
                     module.bleDisconnect();
                   } else {
-                    module.setBleDevice(BluetoothDevice.fromId(_controller.text.toUpperCase()));
+                    final mac = _controller.text.trim();
+                    if (mac.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                            content: Text('Enter a device address first')),
+                      );
+                      return;
+                    }
+                    module.setBleDevice(BluetoothDevice.fromId(mac.toUpperCase()));
                     module.bleConnect();
                     FlutterBluePlus.stopScan();
                   }
@@ -472,7 +482,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
           if (result != null) {
             //result = 'RCJ-soccer_module-XX:XX:XX:XX:XX:XX'
             // --> map result (ble device name) to uuid
-            if(!kIsWeb && Platform.isIOS){
+            if (useIosBleUuid) {
               handleIosResult(result);
             } else {
               _controller.text = result;
@@ -482,34 +492,22 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
       );
     }
 
+    // QR codes encode a MAC, but iOS connects by CoreBluetooth UUID — resolve it
+    // via the shared BLE scan (utils/ble_address.dart), which uses the validated
+    // onScanResults lifecycle (NOT the replay-prone scanResults this used to call)
+    // and tears the scan down in finally.
     Future<void> handleIosResult(dynamic pResult) async {
-      bool validResult = false;
-      String? bleDeviceName = 'RCJs-m_$pResult';
-      debugPrint(bleDeviceName);
+      final resolvedUuid = await resolveIosDeviceUuid('$pResult');
 
-      await FlutterBluePlus.startScan(timeout: const Duration(seconds: 3));
-
-      await for (final results in FlutterBluePlus.scanResults.timeout(
-        const Duration(seconds: 3),
-        onTimeout: (sink) => sink.close(),
-      )) {
-        for (ScanResult r in results) {
-          if (r.device.platformName == bleDeviceName) {
-            //debugPrint('App-specific UUID: ${r.device.remoteId}');
-            _controller.text = r.device.remoteId.toString();
-            validResult = true;
-            await FlutterBluePlus.stopScan();
-            break;
-          }
+      if (resolvedUuid != null) {
+        if (mounted) {
+          _controller.text = resolvedUuid;
         }
-
-        if (validResult) break;
+        return;
       }
 
-      await FlutterBluePlus.stopScan();
-
       //Error handling if no device to mac was found
-      if (!validResult && mounted) {
+      if (mounted) {
         await showCupertinoDialog(
           context: context,
           builder: (BuildContext context) {

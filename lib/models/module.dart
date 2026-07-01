@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/models/game.dart';
+import 'package:rcj_scoreboard/services/error_messages.dart';
+import 'package:rcj_scoreboard/services/match_state_store.dart';
 
 
 enum ModuleState {
@@ -50,6 +52,14 @@ class Module with ChangeNotifier {
   bool _isConnected = false;
   bool _isPlaying = false;
   int _penaltyTime = 0;
+  // One-shot set by [restoreFromSnapshot] on a cold-resume restore. The FIRST
+  // post-restore [bleNotify] (fired seconds later from the reconnect's
+  // connected-event, so a synchronous game-scoped flag would already be cleared)
+  // consumes it and sends at most a STOP — never play/damage — so a robot can't
+  // auto-PLAY or self-release its penalty while the match clock is frozen. It is
+  // per-module so each module's own late reconnect is covered, and one-shot so
+  // it can't linger and suppress the referee's later START.
+  bool _suppressNextRestoreNotify = false;
   // Whether the module should resume playing when its penalty is cleared or
   // expires. Captured at penalty() entry: a module penalised from the play
   // state (the only way a connected module is penalised) resumes play, while a
@@ -63,6 +73,13 @@ class Module with ChangeNotifier {
   bool _connectIntent = false;
   BluetoothDevice? bleDevice;
   StreamSubscription<BluetoothConnectionState>? subscription;
+  // RX-notification listener. Held so it can be cancelled before a replacement
+  // is attached on reconnect (bleInitModule runs on every connected event) and
+  // on teardown — otherwise auto-reconnect would stack duplicate listeners that
+  // each deliver the same inbound message. Cancelling only drops the Dart
+  // subscription; it never turns the characteristic notification off on a live
+  // connection.
+  StreamSubscription<List<int>>? _rxSubscription;
   BluetoothCharacteristic? bleTX;
   BluetoothCharacteristic? bleRX;
 
@@ -88,6 +105,18 @@ class Module with ChangeNotifier {
   }
 
   void bleNotify() async {
+    if (_suppressNextRestoreNotify) {
+      // First reconnect after a cold-resume restore: keep the robot stopped
+      // regardless of the restored _state (esp. a restored `damage` module),
+      // so its penalty countdown does not start while the match clock is
+      // frozen. The referee's double-tap START re-arms play/damage with time.
+      try {
+        await bleSendStop();
+      } finally {
+        _suppressNextRestoreNotify = false;
+      }
+      return;
+    }
     switch (_state) {
       case ModuleState.play:
         await bleSendPlay();
@@ -112,28 +141,35 @@ class Module with ChangeNotifier {
     if (bleDevice == null || bleDevice!.isConnected) return;
     //debugPrint('BLE connect222...........................');
 
-
-    // don't know why but without this delay sometimes it cannot connect more than 5 modules
-    await Future.delayed(const Duration(milliseconds: 100));
-
-    subscription?.cancel();
-    //bleDevice?.disconnect();
-
+    // Set the intent BEFORE the pre-connect delay so a bleDisconnect() that runs
+    // during the delay (user Cancel / disconnectAll) is observable when we
+    // re-check below — otherwise this in-flight connect would revive autoConnect
+    // after the user asked to stop.
     _connectIntent = true;
     bleStatus = 'Connecting...';
     notifyListeners();
 
+    // don't know why but without this delay sometimes it cannot connect more than 5 modules
+    await Future.delayed(const Duration(milliseconds: 100));
+
+    // Abort if the user disconnected (intent cleared) or the device connected
+    // during the delay.
+    if (!_connectIntent || (bleDevice?.isConnected ?? false)) return;
+
+    subscription?.cancel();
     _registerBleSubscriber(bleDevice!);
 
     try {
       //bleStatus = 'Connecting...';
       await bleDevice?.connect(autoConnect:true, mtu: null);
     } catch (e) {
-      // Gave up — drop the connect intent (parity with the bridge) so a stray
-      // event can never flip "Connection error" back to "Connecting...".
+      // The initial connect() failed — drop the connect intent (parity with the
+      // bridge) so a stray event can never flip the message back to
+      // "Connecting...". Reconnection of a module that DID connect is handled by
+      // connect(autoConnect:true) at the OS level, not by re-entering here.
       _connectIntent = false;
-      bleStatus = 'Connection error';
-      debugPrint('BLE connect error');
+      bleStatus = describeError(e).message;
+      debugPrint('BLE connect error: $e');
       subscription?.cancel();
     }
     notifyListeners();
@@ -146,14 +182,14 @@ class Module with ChangeNotifier {
     var service = services.where((element) => element.uuid == Guid.fromString(_serviceUUID));
     if (service.isEmpty) {
       debugPrint('Required service not found');
-      bleDisconnect();
+      bleDisconnect(reason: "Couldn't find robot service");
       return false;
     }
 
     var characteristic = service.firstOrNull?.characteristics.where((element) => element.uuid == Guid.fromString(_characteristicUUIDTX) || element.uuid == Guid.fromString(_characteristicUUIDRX));
     if (characteristic == null || characteristic.isEmpty) {
       debugPrint('Required characteristics not found');
-      bleDisconnect();
+      bleDisconnect(reason: 'Robot is missing expected data channel');
       return false;
     }
 
@@ -167,7 +203,10 @@ class Module with ChangeNotifier {
     if (bleRX != null) {
       try {
         await bleRX!.setNotifyValue(true);
-        bleRX!.onValueReceived.listen((data) {
+        // Replace any previous listener so reconnects don't accumulate
+        // duplicate handlers for the same characteristic.
+        await _rxSubscription?.cancel();
+        _rxSubscription = bleRX!.onValueReceived.listen((data) {
           handleReceivedData(data);
         });
       } catch (e) {
@@ -322,26 +361,31 @@ class Module with ChangeNotifier {
   }
 
 
-  void bleDisconnect() async {
+  void bleDisconnect({String? reason}) async {
     // Note: no `!isConnected` guard. While autoConnect is still retrying the
     // device is NOT connected, yet we must still call disconnect() to cancel
     // that pending retry loop and clear the connect intent — otherwise a dead
     // module is stuck on "Connecting..." forever with no way out.
     if (bleDevice == null) return;
 
-    // Disconnect from device also disable auto connect
-    await bleDevice?.disconnect();
-
-    // cancel to prevent duplicate listeners
-    subscription?.cancel();
-
-    // Explicit user disconnect — stop intending to be connected so the status
-    // reads "Disconnected" rather than "Connecting...".
+    // Clear the connect intent *synchronously* before the async disconnect, so
+    // the disconnect event that disconnect() triggers reads as an intended
+    // "Disconnected" (not "Connecting...") and the OS autoConnect is not seen as
+    // something to keep showing as in-progress.
     _connectIntent = false;
     _isConnected = false;
-    bleStatus = 'Disconnected';
-
+    bleStatus = reason ?? 'Disconnected';
     notifyListeners();
+
+    // Cancel the connection-state listener BEFORE disconnecting so the teardown
+    // disconnect event can't drive any further status work.
+    // (Same cancel-first ordering as setBleDevice().)
+    subscription?.cancel();
+    _rxSubscription?.cancel();
+    _rxSubscription = null;
+
+    // Disconnect from device also disables auto connect
+    await bleDevice?.disconnect();
 
 
 
@@ -354,6 +398,7 @@ class Module with ChangeNotifier {
   }
 
   void playOrDamage() {
+    _clearRestoreSuppress();
     _lastState = _state;
     if (_penaltyTime > 0) {
       _playStatus(false);
@@ -366,9 +411,14 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    // Single-module action (not the simultaneous START/STOP fan-out), so a
+    // scheduled flush is latency-safe and persists it even when the clock is
+    // stopped (e.g. a robot toggled while the cold-resumed clock is frozen).
+    _game.markMatchStateDirtyAndFlush();
   }
 
   void play() async {
+    _clearRestoreSuppress();
     // Clearing or expiring a penalty for a module that was not playing before
     // the penalty (e.g. a no-module penalty recorded on a stopped module) must
     // return it to stop, not promote it to playing.
@@ -386,9 +436,11 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    _game.markMatchStateDirtyAndFlush();
   }
 
   void playOrDamageAll() async {
+    _clearRestoreSuppress();
     _lastState = _state;
     if (_penaltyTime > 0) {
       _playStatus(false);
@@ -406,9 +458,11 @@ class Module with ChangeNotifier {
       // Send it one more time with acknowledgment to ensure all modules are in play state
       bleSendPlay();
     }
+    _game.markMatchStateDirty();
   }
 
   void playAll() async {
+    _clearRestoreSuppress();
     _lastState = _state;
     _playStatus(true);
     _penaltyTime = 0;
@@ -422,6 +476,16 @@ class Module with ChangeNotifier {
     }
     // Send it one more time with acknowledgment to ensure all modules are in play state
     bleSendPlay();
+    _game.markMatchStateDirty();
+  }
+
+  // Cancel a pending cold-resume restore suppression: once the referee starts a
+  // robot (any START path), subsequent reconnect bleNotify()s must reflect the
+  // real state, not a lingering STOP. Without this a late reconnect after START
+  // would STOP an already-playing robot (the play START path does not itself
+  // call bleNotify, so it would not otherwise consume the one-shot).
+  void _clearRestoreSuppress() {
+    _suppressNextRestoreNotify = false;
   }
 
   void stopAll(bool removePenalty, {bool force = false}) async {
@@ -441,6 +505,7 @@ class Module with ChangeNotifier {
           await Future.delayed(const Duration(milliseconds: 100));
         }
     }
+    _game.markMatchStateDirty();
   }
 
   void stop() {
@@ -464,6 +529,7 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    _game.markMatchStateDirty();
   }
 
   void penalty(int seconds) {
@@ -474,6 +540,9 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    // Penalty given is a discrete recoverable event; flush it (off the hot path)
+    // so it survives a crash even if the clock isn't running to drive a heartbeat.
+    _game.markMatchStateDirtyAndFlush();
   }
 
   void _askForPenalty() {
@@ -492,6 +561,7 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    _game.markMatchStateDirty();
   }
 
   void halfTimeSyncTime() {
@@ -508,6 +578,7 @@ class Module with ChangeNotifier {
 
     bleNotify();
     notifyListeners();
+    _game.markMatchStateDirty();
   }
 
 
@@ -528,8 +599,21 @@ class Module with ChangeNotifier {
     if (bleDevice != null) {
       debugPrint('try disconect previos one');
       bleDevice?.disconnect();
+      // Cancel the old device's connection-state and RX listeners so they can't
+      // drive reconnect work or duplicate-deliver messages against a device
+      // we're replacing.
+      subscription?.cancel();
+      _rxSubscription?.cancel();
+      _rxSubscription = null;
     }
-    
+
+    // Swapping the device is a fresh-connection boundary: clear the old
+    // device's reconnect lifecycle so no stale intent carries over (issue #38).
+    // Callers that want a connection call bleConnect() right after, which
+    // re-establishes intent.
+    _connectIntent = false;
+    _isConnected = false;
+
      bleDevice = device;
 
      if (bleDevice == null) return;
@@ -542,27 +626,37 @@ class Module with ChangeNotifier {
       debugPrint('BLE device status: $state');
       if (state == BluetoothConnectionState.disconnected) {
         _isConnected = false;
-        // 1. typically, start a periodic timer that tries to
-        //    reconnect, or just call connect() again right now
-        // 2. you must always re-discover services after disconnection!
-        // While we still intend to be connected (autoConnect is retrying in the
-        // background), report "Connecting..." instead of "Disconnected" — this
-        // also covers the initial disconnected event right after connect().
+        debugPrint('disconnect');
+
+        // Reconnection is owned entirely by connect(autoConnect:true): the OS
+        // keeps retrying on the SAME GATT client, unbounded, until disconnect()
+        // is called. That is exactly the in-match behavior we need — a penalised
+        // robot (~1 min off) or a halftime power-down (~5 min) rejoins the
+        // instant it returns, with no referee action. We deliberately do NOT
+        // re-enter bleConnect() here: each call registers a fresh GATT clientIf
+        // without close()-ing the previous BluetoothGatt, leaking ~1 client per
+        // reconnect per module (device-verified on a Pixel 10) and exhausting
+        // Android's ~30-client ceiling within minutes of penalty/halftime
+        // cycling across 10 modules — a tournament-killer. See CLAUDE.md
+        // invariant #5 and docs/ai/02_RUNTIME_ARCHITECTURE.md.
+        //
+        // So this handler only reflects status: while we still intend to be
+        // connected, show "Connecting..." (also covers the initial disconnected
+        // event right after connect()). Post-match teardown of powered-down
+        // modules is a one-shot at the full-time transition
+        // (Game.disconnectInactiveModules), not a per-disconnect action here —
+        // doing it here would also tear down a fresh post-match connect on its
+        // initial disconnected event.
         bleStatus = _connectIntent ? 'Connecting...' : 'Disconnected';
         notifyListeners();
-        debugPrint("disconnect");
       } else if (state == BluetoothConnectionState.connected) {
-        //bleCheckServicesAndGetCharacteristics();
         _isConnected = true;
-        debugPrint("Connect");
+        debugPrint('Connect');
         bleStatus = 'Connected';
-        //bleSendTest();
         notifyListeners();
-        //bleSendCurrentState();
         bleInitModule();
       }
     });
-    //device.cancelWhenDisconnected(subscription, delayed:true, next:true);
   }
 
 
@@ -584,6 +678,10 @@ class Module with ChangeNotifier {
   bool get hasCustomLabel => _label != null && _label!.isNotEmpty;
   int get penaltyTime => _penaltyTime;
   ModuleState get state => _state;
+  @visibleForTesting
+  ModuleState get lastState => _lastState;
+  @visibleForTesting
+  bool get suppressNextRestoreNotify => _suppressNextRestoreNotify;
 
   void setLabel(String label) {
     _label = label.trim();
@@ -592,6 +690,11 @@ class Module with ChangeNotifier {
     // bleSendName() self-guards on connection, so this is a no-op otherwise.
     // (Not in the START/STOP critical path — fire-and-forget is fine.)
     unawaited(bleSendName());
+    // A module label is recoverable state. Schedule a flush (not just a dirty
+    // flag): labels are typically edited pre-match while the clock is stopped,
+    // when the heartbeat isn't running, so a bare flag could be lost on a crash.
+    // Off the START/STOP hot path, so the scheduled flush is fine.
+    _game.markMatchStateDirtyAndFlush();
   }
 
   void applyPresetConfig(String macAddress, String label) {
@@ -610,6 +713,74 @@ class Module with ChangeNotifier {
     setBleDevice(BluetoothDevice.fromId(newMac));
     if (_isEnabled) {
       bleConnect();
+    }
+  }
+
+  // ---- Cold-resume snapshot / restore (#45) ----
+
+  /// Capture this module's recoverable state for the match snapshot.
+  ModuleSnapshot toSnapshot() => ModuleSnapshot(
+        moduleId: moduleId,
+        isEnabled: _isEnabled,
+        macAddress: macAddress,
+        customLabel: hasCustomLabel ? _label : null,
+        state: _state.name,
+        lastState: _lastState.name,
+        penaltyTime: _penaltyTime,
+      );
+
+  /// Restore this module from a cold-resume snapshot. Ordering matters:
+  ///   1. apply `isEnabled` first — `disable()` disconnects and
+  ///      `applyPresetConfig` only reconnects when enabled, so the flag must be
+  ///      correct before the reconnect step;
+  ///   2. set the normalized state/penalty and arm the restore-notify one-shot;
+  ///   3. re-establish the BLE device (a cold kill built a fresh Module with no
+  ///      device), reusing the preset-load path for the auto-reconnect.
+  void restoreFromSnapshot(ModuleSnapshot s) {
+    if (s.isEnabled) {
+      enable();
+    } else {
+      disable();
+    }
+
+    _penaltyTime = s.penaltyTime;
+    // Normalize play/halfTime/fullTime -> stop for BOTH _state and _lastState:
+    // a restored `play` _state would make the reconnect bleNotify() emit
+    // bleSendPlay() (auto-PLAY), and a `play` _lastState would make the
+    // single-tap Module.stop() (switches on _lastState) a silent no-op. Keep
+    // damage/stop as-is.
+    _state = _normalizeRestoredState(_parseState(s.state));
+    _lastState = _normalizeRestoredState(_parseState(s.lastState));
+    _suppressNextRestoreNotify = true;
+
+    if (s.isEnabled && s.macAddress.isNotEmpty) {
+      // applyPresetConfig() sets the label, builds the device and reconnects.
+      // It takes a non-null label, hence `?? ''` (an empty label resolves to
+      // the default name via the `name` getter).
+      applyPresetConfig(s.macAddress, s.customLabel ?? '');
+    } else {
+      // Not reconnecting: still record the MAC (for a later manual connect) and
+      // apply the label, mirroring applyPresetConfig's always-apply-label rule.
+      macAddress = s.macAddress;
+      setLabel(s.customLabel ?? '');
+    }
+    notifyListeners();
+  }
+
+  ModuleState _parseState(String name) => ModuleState.values.firstWhere(
+        (s) => s.name == name,
+        orElse: () => ModuleState.stop,
+      );
+
+  ModuleState _normalizeRestoredState(ModuleState state) {
+    switch (state) {
+      case ModuleState.damage:
+        return ModuleState.damage;
+      case ModuleState.stop:
+      case ModuleState.play:
+      case ModuleState.halfTime:
+      case ModuleState.fullTime:
+        return ModuleState.stop;
     }
   }
 

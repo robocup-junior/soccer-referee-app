@@ -32,3 +32,89 @@ jobs:
 
       - name: Build check
         run: flutter build bundle
+
+  # On-device smoke test (integration_test/) on a headless Android emulator.
+  # Gates the double-tap/single-tap safety invariant (CLAUDE.md #2) that the
+  # headless `flutter test` above cannot exercise (real gesture arena + the
+  # Settings → toggle → Home wiring). Gated behind quality-gate so a failed
+  # analyze/test/build never pays the (slower) emulator boot.
+  integration-test:
+    name: Integration Test (Android emulator)
+    runs-on: ubuntu-latest
+    needs: quality-gate
+    # Fail fast if the emulator wedges or `flutter test` hangs, rather than
+    # holding a runner for GitHub's 6h default job timeout on a stuck gate.
+    timeout-minutes: 30
+    # One source of truth for the AVD definition. The snapshot-create and
+    # test-run steps below must describe the SAME device, or the cached
+    # snapshot won't match the AVD the tests boot on — and the cache key is
+    # derived from these so a bump auto-invalidates the old snapshot.
+    # Pixel 6 / API 34 match the device PR #46 was verified on; the default
+    # AVD is a short 320x640 screen on which Home's portrait Column overflows
+    # (Flutter raises an overflow as a thrown error → test failure).
+    env:
+      EMULATOR_API_LEVEL: 34
+      EMULATOR_ARCH: x86_64
+      EMULATOR_PROFILE: pixel_6
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # KVM hardware acceleration — without it the x86_64 emulator boots far
+      # slower (or falls back to ARM emulation). ubuntu-latest runners expose
+      # /dev/kvm; this just opens its permissions to the runner user.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # Cache the cold-booted AVD so most runs skip the multi-minute first boot.
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          # Key tracks the AVD config (bump -vN to force a fresh snapshot).
+          key: avd-${{ env.EMULATOR_API_LEVEL }}-${{ env.EMULATOR_ARCH }}-${{ env.EMULATOR_PROFILE }}-v1
+
+      # On a cache miss, create the AVD; android-emulator-runner saves its
+      # state on exit, which actions/cache then stores via the `path` above so
+      # later runs restore it instead of cold-booting.
+      - name: Create AVD snapshot
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.EMULATOR_API_LEVEL }}
+          arch: ${{ env.EMULATOR_ARCH }}
+          profile: ${{ env.EMULATOR_PROFILE }}
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "Generated AVD snapshot for caching."
+
+      - name: Run integration tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.EMULATOR_API_LEVEL }}
+          arch: ${{ env.EMULATOR_ARCH }}
+          profile: ${{ env.EMULATOR_PROFILE }}
+          force-avd-creation: false
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          # Pin to the emulator explicitly — android-emulator-runner always
+          # boots it on port 5554 as `emulator-5554`. `flutter test` can prompt
+          # for a target when more than one is selectable (the repo has a web/
+          # target), which would hang this non-interactive step.
+          script: flutter test integration_test -d emulator-5554

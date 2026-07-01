@@ -1,10 +1,13 @@
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../models/game.dart';
 import '../services/ble_bridge_service.dart';
 import '../services/mqtt.dart';
 import '../services/notification_service.dart';
 import '../services/preset_service.dart';
 import '../services/vibration_service.dart';
+import '../utils/ble_address.dart';
 import '../utils/colors.dart';
 import 'mac_qr_scanner.dart';
 
@@ -14,7 +17,8 @@ class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key, required this.game});
 
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();}
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
 
 class _SettingsScreenState extends State<SettingsScreen> {
   late SetItem _selectedGameDuration;
@@ -48,25 +52,81 @@ class _SettingsScreenState extends State<SettingsScreen> {
   final List<SetItem> _penaltyTimes = [
     SetItem('30 sec', 30),
     SetItem('60 sec', 60),
-    SetItem('90 mins', 90),
+    SetItem('90 sec', 90),
   ];
+
+  // iOS addresses a BLE device by a CoreBluetooth UUID, not a MAC; the mask,
+  // length and hint differ by platform. Shared with the per-module address field
+  // via utils/ble_address.dart so both screens stay in sync.
+  final _bridgeAddressMask = buildBleAddressMask();
 
   @override
   void initState() {
     super.initState();
-    _selectedGameDuration =
-        _gameDurations.firstWhere((item) => item.values == widget.game.periodTime, orElse: () => _gameDurations[4]);
-    _selectedHalftimeBreak = _halftimeBreaks.firstWhere((item) => item.values == widget.game.halfTimeDuration,
+    _selectedGameDuration = _gameDurations.firstWhere(
+        (item) => item.values == widget.game.periodTime,
+        orElse: () => _gameDurations[4]);
+    _selectedHalftimeBreak = _halftimeBreaks.firstWhere(
+        (item) => item.values == widget.game.halfTimeDuration,
         orElse: () => _halftimeBreaks[2]);
-    _selectedNumberOfPlayers = _numberOfPlayersList.firstWhere((item) => item.values == widget.game.numberOfPLayers,
+    _selectedNumberOfPlayers = _numberOfPlayersList.firstWhere(
+        (item) => item.values == widget.game.numberOfPlayers,
         orElse: () => _numberOfPlayersList[1]);
-    _selectedPenaltyTime =
-        _penaltyTimes.firstWhere((item) => item.values == widget.game.penaltyTime, orElse: () => _penaltyTimes[1]);
+    _selectedPenaltyTime = _penaltyTimes.firstWhere(
+        (item) => item.values == widget.game.penaltyTime,
+        orElse: () => _penaltyTimes[1]);
   }
 
   @override
   void dispose() {
     super.dispose();
+  }
+
+  // Apply a scanned bridge QR result to the bridge address. QR codes always
+  // encode a MAC (mac_qr_scanner only accepts a 17-char MAC), but iOS cannot
+  // connect by MAC — it needs the device's CoreBluetooth UUID, so resolve it via
+  // the shared BLE scan (utils/ble_address.dart). On Android the scanned MAC is
+  // the address, so it is applied directly.
+  Future<void> _applyBridgeQrResult(String macResult) async {
+    if (!useIosBleUuid) {
+      setState(() {
+        widget.game.bleBridgeService.bridgeMacAddress = macResult;
+      });
+      return;
+    }
+
+    final resolvedUuid = await resolveIosDeviceUuid(macResult);
+
+    if (resolvedUuid != null) {
+      if (mounted) {
+        setState(() {
+          widget.game.bleBridgeService.bridgeMacAddress = resolvedUuid;
+        });
+      }
+      return;
+    }
+
+    if (mounted) {
+      await showCupertinoDialog(
+        context: context,
+        builder: (BuildContext context) {
+          return CupertinoAlertDialog(
+            title: const Text('No device found'),
+            content: const Text(
+                'No device was found matching the MAC address you scanned'),
+            actions: [
+              CupertinoDialogAction(
+                isDefaultAction: true,
+                onPressed: () {
+                  Navigator.of(context).pop();
+                },
+                child: const Text('OK'),
+              ),
+            ],
+          );
+        },
+      );
+    }
   }
 
   Future<void> _confirmStartNoShowPenaltyGoals(int scoringTeamIndex) async {
@@ -166,6 +226,108 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               );
                             }),
                         AnimatedBuilder(
+                          animation: widget.game.scoreboardResultService,
+                          builder: (context, child) {
+                            final service = widget.game.scoreboardResultService;
+                            final config = service.matchConfig;
+                            return SettingsSection(
+                              title: 'Scoreboard Result API',
+                              locked: false,
+                              settings: [
+                                SettingStatus(
+                                  title: 'Link status',
+                                  status: service.statusMessage,
+                                ),
+                                SettingStatus(
+                                  title: 'Match code',
+                                  status: config?.matchCode.isNotEmpty == true
+                                      ? config!.matchCode
+                                      : 'Not loaded',
+                                ),
+                                SettingStatus(
+                                  title: 'Venue',
+                                  status:
+                                      config?.venueShortName.isNotEmpty == true
+                                          ? config!.venueShortName
+                                          : 'Not loaded',
+                                ),
+                                SettingStatus(
+                                  title: 'Outbox',
+                                  status:
+                                      'Pending ${service.pendingCount}, conflict ${service.conflictCount}, submitted ${service.submittedCount}',
+                                ),
+                                SettingButton(
+                                  title: 'Refresh linked match',
+                                  buttonText: 'Refresh',
+                                  onPressed: () {
+                                    service.refreshMatchConfig();
+                                  },
+                                ),
+                                SettingButton(
+                                  title: 'Retry pending result',
+                                  buttonText: 'Retry',
+                                  onPressed: () {
+                                    service.retryPendingNow();
+                                  },
+                                ),
+                                SettingButton(
+                                  title: 'Clear linked match',
+                                  buttonText: 'Clear',
+                                  onPressed: () {
+                                    // Clearing wipes the whole outbox. Confirm
+                                    // first if any results haven't been
+                                    // confirmed sent, so a stray tap can't
+                                    // silently discard undelivered results
+                                    // (RAVF003). Nothing undelivered → clear
+                                    // straight away (no friction).
+                                    final undelivered =
+                                        service.undeliveredCount;
+                                    if (undelivered == 0) {
+                                      service.clearLinkedMatchData();
+                                      return;
+                                    }
+                                    final plural = undelivered == 1 ? '' : 's';
+                                    showDialog(
+                                      context: context,
+                                      builder: (ctx) => AlertDialog(
+                                        title:
+                                            const Text('Clear linked match?'),
+                                        content: Text(
+                                          '$undelivered result$plural '
+                                          '${undelivered == 1 ? 'has' : 'have'} '
+                                          'not been confirmed sent to the '
+                                          'scoreboard yet. Clearing the linked '
+                                          'match permanently discards '
+                                          '${undelivered == 1 ? 'it' : 'them'} '
+                                          '— ${undelivered == 1 ? 'it' : 'they'} '
+                                          'will not be sent.',
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.of(ctx).pop(),
+                                            child: const Text('Cancel'),
+                                          ),
+                                          TextButton(
+                                            style: TextButton.styleFrom(
+                                              foregroundColor: Colors.red,
+                                            ),
+                                            onPressed: () {
+                                              Navigator.of(ctx).pop();
+                                              service.clearLinkedMatchData();
+                                            },
+                                            child: const Text('Clear anyway'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                        AnimatedBuilder(
                           animation: widget.game,
                           builder: (context, child) {
                             final noShowActive =
@@ -187,12 +349,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   SettingButton(
                                     title: 'Reset current game',
                                     buttonText: 'Reset',
-                                    onPressed: () {
+                                    onPressed: () async {
                                       setState(() {
                                         widget.game.setTeamToDefaultOrder();
                                         widget.game.gameInit();
                                         widget.game.resetModuleNames();
                                       });
+                                      // gameInit() deliberately does not clear
+                                      // the cold-resume snapshot; an intentional
+                                      // reset must, or a kill would re-offer this
+                                      // match. Awaited so the clear lands before
+                                      // a possible immediate kill (off the
+                                      // robot-command path).
+                                      await widget.game.clearMatchSnapshot();
                                     },
                                   ),
                                 SettingStatus(
@@ -263,13 +432,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                             ? 'Connecting...'
                                             : bridgeState ==
                                                     BridgeConnectionState.error
-                                                ? 'Error'
+                                                ? (widget.game.bleBridgeService
+                                                        .lastErrorMessage ??
+                                                    'Error')
                                                 : 'Disconnected',
                                   ),
                                   SettingInputField(
-                                    title: 'Bridge MAC',
+                                    title: useIosBleUuid
+                                        ? 'Bridge UUID'
+                                        : 'Bridge MAC',
                                     initialValue: widget
                                         .game.bleBridgeService.bridgeMacAddress,
+                                    inputFormatters: [_bridgeAddressMask],
+                                    maxLength: bleAddressMaxLength,
+                                    hintText: bleAddressHint,
                                     onChanged: (value) {
                                       widget.game.bleBridgeService
                                           .bridgeMacAddress = value;
@@ -288,10 +464,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       );
                                       if (!context.mounted) return;
                                       if (result is String) {
-                                        setState(() {
-                                          widget.game.bleBridgeService
-                                              .bridgeMacAddress = result;
-                                        });
+                                        await _applyBridgeQrResult(result);
                                       }
                                     },
                                   ),
@@ -479,7 +652,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                               onChanged: (value) {
                                 setState(() {
                                   _selectedNumberOfPlayers = value!;
-                                  widget.game.numberOfPLayers = value.values;
+                                  widget.game.numberOfPlayers = value.values;
                                 });
                                 if (value!.values >= 4) {
                                   showDialog(
@@ -589,6 +762,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             );
                           },
                         ),
+                        AnimatedBuilder(
+                          animation: widget.game,
+                          builder: (context, child) {
+                            return SettingsSection(
+                              title: 'Controls',
+                              locked: false,
+                              settings: [
+                                SettingSwitch(
+                                  title: 'Single-tap actions',
+                                  subtitle:
+                                      'Off by default. When on, start/stop, '
+                                      'scoring and robot controls fire on a '
+                                      'single tap — removes the accidental-touch '
+                                      'protection.',
+                                  value: widget.game.singleTapEnabled,
+                                  onChanged: (value) {
+                                    widget.game.singleTapEnabled = value;
+                                  },
+                                ),
+                              ],
+                            );
+                          },
+                        ),
                         const SettingsSection(
                           title: 'About',
                           locked: false,
@@ -600,24 +796,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('Author: Martin Faltus',
+                              child: Text('Author: Martin Faltus, Fabian Weller, Marek Šuppa',
                                   style: TextStyle(fontSize: 14)),
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('iOS adaption: Fabian Weller',
-                                  style: TextStyle(fontSize: 14)),
-                            ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('AI co-authors: Claude (Anthropic) '
-                                  '& Codex (OpenAI) '
-                                  '& GitHub Copilot (Microsoft)',
-                                  style: TextStyle(fontSize: 14)),
-                            ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('Version: 0.10.2',
+                              child: Text('Version: 0.10.4',
                                   style: TextStyle(fontSize: 14)),
                             ),
                             Padding(
@@ -663,7 +847,8 @@ class SettingsSection extends StatelessWidget {
   final ValueChanged<bool>? onToggle;
 
   const SettingsSection(
-      {super.key, required this.title,
+      {super.key,
+      required this.title,
       required this.settings,
       this.locked = false,
       this.enabled,
@@ -683,7 +868,8 @@ class SettingsSection extends StatelessWidget {
               Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 Text(
                   title,
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.bold),
                 ),
                 if (enabled != null && onToggle != null)
                   Switch(
@@ -709,7 +895,8 @@ class SettingDropdownButton extends StatelessWidget {
   final List<SetItem> options;
   final ValueChanged<SetItem?> onChanged;
 
-  const SettingDropdownButton({super.key,
+  const SettingDropdownButton({
+    super.key,
     required this.title,
     required this.value,
     required this.options,
@@ -749,7 +936,8 @@ class SettingButton extends StatelessWidget {
   final String buttonText;
   final Function()? onPressed;
 
-  const SettingButton({super.key,
+  const SettingButton({
+    super.key,
     required this.title,
     required this.buttonText,
     required this.onPressed,
@@ -770,7 +958,8 @@ class SettingButton extends StatelessWidget {
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.grey[700],
               ),
-              child: Text(buttonText, style: const TextStyle(color: Colors.white)),
+              child:
+                  Text(buttonText, style: const TextStyle(color: Colors.white)),
             ),
           )
         ],
@@ -826,16 +1015,23 @@ class SettingInputField extends StatefulWidget {
   final String initialValue;
   final ValueChanged<String> onChanged;
   final bool isPassword;
+  final List<TextInputFormatter>? inputFormatters;
+  final int? maxLength;
+  final String? hintText;
 
-  const SettingInputField({super.key,
+  const SettingInputField({
+    super.key,
     required this.title,
     required this.initialValue,
     required this.onChanged,
     this.isPassword = false,
+    this.inputFormatters,
+    this.maxLength,
+    this.hintText,
   });
 
   @override
-  State <SettingInputField> createState() => _SettingInputFieldState();
+  State<SettingInputField> createState() => _SettingInputFieldState();
 }
 
 class _SettingInputFieldState extends State<SettingInputField> {
@@ -888,11 +1084,22 @@ class _SettingInputFieldState extends State<SettingInputField> {
               focusNode: _focusNode,
               onChanged: widget.onChanged,
               obscureText: _obscure,
+              inputFormatters: widget.inputFormatters,
+              maxLength: widget.maxLength,
+              // Suppress the character counter so the longer UUID limit doesn't
+              // grow the compact settings row.
+              buildCounter: (context,
+                      {required currentLength,
+                      required isFocused,
+                      maxLength}) =>
+                  null,
               style: const TextStyle(color: Colors.white),
               decoration: InputDecoration(
                 border: const OutlineInputBorder(),
                 filled: true,
                 fillColor: Colors.grey[800],
+                hintText: widget.hintText,
+                hintStyle: const TextStyle(color: Colors.grey),
               ),
             ),
           ),
@@ -910,7 +1117,7 @@ class SettingStatus extends StatefulWidget {
   const SettingStatus({super.key, required this.title, required this.status});
 
   @override
-  State <SettingStatus> createState() => _SettingStatusState();
+  State<SettingStatus> createState() => _SettingStatusState();
 }
 
 class _SettingStatusState extends State<SettingStatus> {
@@ -962,11 +1169,13 @@ class SettingSwitch extends StatelessWidget {
   final String title;
   final bool value;
   final ValueChanged<bool> onChanged;
+  final String? subtitle;
 
   const SettingSwitch({
     required this.title,
     required this.value,
     required this.onChanged,
+    this.subtitle,
     super.key,
   });
 
@@ -976,8 +1185,26 @@ class SettingSwitch extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 8.0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Expanded(flex: 5, child: Text(title)),
+          Expanded(
+            flex: 5,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title),
+                if (subtitle != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4.0),
+                    child: Text(
+                      subtitle!,
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                  ),
+              ],
+            ),
+          ),
           Expanded(
             flex: 2,
             child: Switch(
@@ -1080,7 +1307,10 @@ class SetItem {
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is SetItem && runtimeType == other.runtimeType && values == other.values && name == other.name;
+      other is SetItem &&
+          runtimeType == other.runtimeType &&
+          values == other.values &&
+          name == other.name;
 
   @override
   int get hashCode => values.hashCode ^ name.hashCode;
@@ -1162,7 +1392,8 @@ class _ModulePresetsSectionState extends State<ModulePresetsSection> {
     widget.game.applyPreset(preset);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Loaded "${preset.name}" – connecting robots...')),
+        SnackBar(
+            content: Text('Loaded "${preset.name}" – connecting robots...')),
       );
     }
   }

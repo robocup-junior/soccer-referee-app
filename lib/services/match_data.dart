@@ -2,7 +2,19 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
+import 'package:rcj_scoreboard/services/error_messages.dart';
 
+
+/// Extract the field number from a raw venue/pitch string: the first run of
+/// digits, with leading zeros stripped (e.g. "Field 03" -> "3", "Pitch 12" ->
+/// "12"). Returns '' when there is no digit. Note a venue whose only digit is
+/// zero ("Field 0") also yields '' — acceptable since RCJ field numbers start
+/// at 1. Shared by the catigoal path (`Match.fromJson`) and the scoreboard
+/// referee-link path (`Game._applyScoreboardMatchConfig`) so the two stay
+/// aligned (#50).
+String fieldNumberFromVenue(String raw) =>
+    RegExp(r'\d+').firstMatch(raw)?.group(0)?.replaceFirst(RegExp(r'^0+'), '') ??
+    '';
 
 class Match {
   final String id;
@@ -25,11 +37,8 @@ class Match {
       fieldRaw: json['pitch'] as String? ?? '', // Safely extract pitch
       team1: json['team1']?['name'] as String? ?? 'Unknown Team 1', // Safely extract team1 name
       team2: json['team2']?['name'] as String? ?? 'Unknown Team 2', // Safely extract team2 name
-      field: RegExp(r'\d+')
-              .firstMatch(json['pitch'] as String? ?? '')
-              ?.group(0)
-              ?.replaceFirst(RegExp(r'^0+'), '') ??
-          '', // Safely extract field number
+      field: fieldNumberFromVenue(
+          json['pitch'] as String? ?? ''), // Safely extract field number
     );
   }
 }
@@ -64,7 +73,7 @@ class MatchDataService {
       debugPrint('Number of matches: ${matchesList.length}');
       return matchesList.map((matchJson) => Match.fromJson(matchJson)).toList();
     } else {
-      throw Exception('Failed to load matches');
+      throw HttpStatusException(response.statusCode, url: url);
     }
   }
 
@@ -115,7 +124,7 @@ class MatchDataService {
       _matches = await fetchMatches(_url);
       debugPrint('Matches loaded: ${_matches.length}');
     } catch (e) {
-      stateNotifier.value = 'Error loading matches';
+      stateNotifier.value = describeError(e).message;
       debugPrint('Error loading matches: $e');
       return null;
     }

@@ -8,6 +8,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/models/game.dart';
+import 'package:rcj_scoreboard/services/error_messages.dart';
 
 
 
@@ -157,7 +158,10 @@ class MqttService {
 
 
     _client!.keepAlivePeriod = 300;
-    _client!.onDisconnected = _onDisconnected;
+    // Capture the current connection in the callback closures so a stale
+    // callback from a previous connect() can never read a newer _client.
+    final capturedClient = _client!;
+    _client!.onDisconnected = () => _onDisconnected(capturedClient);
     _client!.onConnected = _onConnected;
     _client!.onSubscribed = _onSubscribed;
     _client!.pongCallback = _pong; // Optional: for keep alive
@@ -166,14 +170,10 @@ class MqttService {
 
     final connMess = MqttConnectMessage()
         .withClientIdentifier(_clientIdentifier)
-        .withWillTopic('willtopic') // Optional: Example Will topic
-        .withWillMessage('Last will message :)') // Optional: Example Will message
-        .startClean() // Non persistent session
+        .withWillTopic('willtopic')
+        .withWillMessage('Last will message :)')
+        .startClean()
         .withWillQos(MqttQos.atLeastOnce);
-
-  if (_username.isNotEmpty && _password.isNotEmpty) {
-    connMess.authenticateAs(_username, _password);
-  }
 
     _client!.connectionMessage = connMess;
 
@@ -196,21 +196,8 @@ class MqttService {
     } else {
       debugPrint('MQTT_LOGS::ERROR Mosquitto client connection failed - disconnecting, status is ${_client!.connectionStatus}');
       final status = _client!.connectionStatus!;
-      if (status.returnCode == MqttConnectReturnCode.unacceptedProtocolVersion) {
-        _lastErrorMessage = 'Connection failed: Invalid protocol version';
-      } else if (status.returnCode == MqttConnectReturnCode.identifierRejected) {
-        _lastErrorMessage = 'Connection failed: Invalid client identifier';
-      } else if (status.returnCode == MqttConnectReturnCode.brokerUnavailable) {
-        _lastErrorMessage = 'Connection failed: Broker unavailable';
-      } else if (status.returnCode == MqttConnectReturnCode.badUsernameOrPassword) {
-        _lastErrorMessage = 'Auth failed: Bad username/password';
-      } else if (status.returnCode == MqttConnectReturnCode.notAuthorized) {
-        _lastErrorMessage = 'Auth failed: Invalid credentials';
-      } else if (status.returnCode == MqttConnectReturnCode.noneSpecified) {
-        _lastErrorMessage = 'Connection failed: No return code specified';
-      } else {
-        _lastErrorMessage = 'Connection failed: ${status.returnCode}';
-      }
+      _lastErrorMessage = describeMqttReturnCode(
+          status.returnCode ?? MqttConnectReturnCode.noneSpecified);
       connectionStateNotifier.value = MqttConnectionStateEx.error;
       return false;
     }
@@ -304,26 +291,57 @@ class MqttService {
     connectionStateNotifier.value = MqttConnectionStateEx.connected;
   }
 
-  void _onDisconnected() {
+  // Max reconnect attempts before giving up (circuit-breaker for #37).
+  static const int _maxReconnectAttempts = 10;
+
+  void _onDisconnected(MqttServerClient disconnectedClient) {
     debugPrint('MQTT_LOGS::Client disconnected');
-    if (_client != null &&
-        _client!.connectionStatus!.disconnectionOrigin ==
+    // Ignore callbacks from a stale client. A delayed disconnect from a
+    // previous connect() must never mutate the state of a newer connection:
+    // the closure capture in connect() prevents *reading* a newer _client, and
+    // this identical() check additionally refuses to *write* _client /
+    // connection state / reconnect work unless the callback belongs to the
+    // currently active client.
+    if (!identical(_client, disconnectedClient)) {
+      debugPrint('MQTT_LOGS::Ignoring disconnect callback from a stale client');
+      return;
+    }
+    if (disconnectedClient.connectionStatus?.disconnectionOrigin ==
             MqttDisconnectionOrigin.solicited) {
       _client = null;
       debugPrint('MQTT_LOGS::Disconnected callback is solicited, not attempting reconnection');
       connectionStateNotifier.value = MqttConnectionStateEx.disconnected;
       return;
     }
-    // Unintentional disconnect: try to reconnect after a delay
+    // Unintentional disconnect: try to reconnect with bounded retries.
     Future<void> attemptReconnect() async {
-      while (_isEnabled == true && _client != null && !isConnected) {
+      int attempts = 0;
+      while (_isEnabled == true && _client != null && !isConnected &&
+             attempts < _maxReconnectAttempts) {
+        attempts++;
         connectionStateNotifier.value = MqttConnectionStateEx.connecting;
-        debugPrint('MQTT_LOGS::Attempting to reconnect...');
+        debugPrint('MQTT_LOGS::Attempting to reconnect ($attempts/$_maxReconnectAttempts)...');
         bool success = await connect();
         if (success) break;
+        // Don't wait after the final failed attempt: the trailing delay would
+        // otherwise open a 5s window in which a user disable/disconnect could
+        // be clobbered by the exhausted-retry error below.
+        if (attempts >= _maxReconnectAttempts) break;
         debugPrint('MQTT_LOGS::Reconnection failed, retrying in 5 seconds...');
         connectionStateNotifier.value = MqttConnectionStateEx.connecting;
         await Future.delayed(const Duration(seconds: 5));
+      }
+      // Only report exhaustion if this reconnect session is still active: a
+      // user disable (_isEnabled == false) or solicited disconnect
+      // (_client == null) during the loop must not be flipped back into error.
+      if (_isEnabled == true && _client != null && !isConnected &&
+          attempts >= _maxReconnectAttempts) {
+        // Preserve the specific cause connect() recorded on the last attempt
+        // instead of hiding it behind a generic message.
+        final cause = _lastErrorMessage.isNotEmpty ? ' ($_lastErrorMessage)' : '';
+        _lastErrorMessage =
+            'Reconnection failed after $_maxReconnectAttempts attempts$cause';
+        connectionStateNotifier.value = MqttConnectionStateEx.error;
       }
     }
 
