@@ -40,10 +40,6 @@ Map<String, dynamic> _matchJson({
       'timezone': 'Europe/Prague',
       'version': version,
       'status': 'SCHEDULED',
-      'home_inspection_status': 'ok',
-      'away_inspection_status': 'missing',
-      'home_inspection_notes': const [],
-      'away_inspection_notes': const [],
       'home_inspection_robots': const [],
       'away_inspection_robots': const [],
     };
@@ -84,91 +80,105 @@ void main() {
       expect(config.status, 'SCHEDULED');
     });
 
-    test('parses inspection status and notes', () {
+    test('parses per-robot inspection status and notes, in order', () {
       final config = ScoreboardMatchConfig.fromJson({
         ..._matchJson(),
-        'home_inspection_status': 'ok',
-        'away_inspection_status': 'failed',
-        'home_inspection_notes': const [],
-        'away_inspection_notes': const [
-          {'robot': 1, 'note': 'battery low'},
-          {'robot': 2, 'note': 'wheels re-seated'},
+        'home_inspection_robots': const [
+          {'robot': 1, 'status': 'ok', 'note': ''},
+        ],
+        'away_inspection_robots': const [
+          {'robot': 1, 'status': 'failed', 'note': 'battery low'},
+          {'robot': 2, 'status': 'ok', 'note': 'wheels re-seated'},
         ],
       });
 
-      expect(config.homeInspectionStatus, InspectionStatus.ok);
-      expect(config.awayInspectionStatus, InspectionStatus.failed);
-      expect(config.homeInspectionNotes, isEmpty);
-      expect(config.awayInspectionNotes, const [
-        InspectionNote(robot: 1, note: 'battery low'),
-        InspectionNote(robot: 2, note: 'wheels re-seated'),
+      expect(config.homeInspectionRobots, const [
+        InspectionRobot(robot: 1, status: InspectionStatus.ok, note: ''),
+      ]);
+      expect(config.awayInspectionRobots, const [
+        InspectionRobot(
+            robot: 1, status: InspectionStatus.failed, note: 'battery low'),
+        InspectionRobot(
+            robot: 2, status: InspectionStatus.ok, note: 'wheels re-seated'),
       ]);
     });
 
-    test('unknown/absent inspection status falls back to unknown', () {
+    test('absent robots -> empty; garbage status -> unknown', () {
       final absent = ScoreboardMatchConfig.fromJson(_matchJson()
-        ..remove('home_inspection_status')
-        ..remove('away_inspection_status')
-        ..remove('home_inspection_notes')
-        ..remove('away_inspection_notes'));
-      expect(absent.homeInspectionStatus, InspectionStatus.unknown);
-      expect(absent.awayInspectionStatus, InspectionStatus.unknown);
-      expect(absent.homeInspectionNotes, isEmpty);
-      expect(absent.awayInspectionNotes, isEmpty);
+        ..remove('home_inspection_robots')
+        ..remove('away_inspection_robots'));
+      expect(absent.homeInspectionRobots, isEmpty);
+      expect(absent.awayInspectionRobots, isEmpty);
 
       final garbage = ScoreboardMatchConfig.fromJson({
         ..._matchJson(),
-        'home_inspection_status': 'exploded',
+        'home_inspection_robots': const [
+          {'robot': 1, 'status': 'exploded', 'note': ''},
+        ],
       });
-      expect(garbage.homeInspectionStatus, InspectionStatus.unknown);
+      expect(
+          garbage.homeInspectionRobots.single.status, InspectionStatus.unknown);
     });
 
-    test('inspection notes drop blank text and malformed entries', () {
+    test('robot id parses from int, float and string; bad rows dropped', () {
       final config = ScoreboardMatchConfig.fromJson({
         ..._matchJson(),
-        'home_inspection_notes': const [
-          {'robot': 1, 'note': 'cracked chassis'},
-          {'robot': 2, 'note': '   '},
-          {'robot': 3, 'note': ''},
-          'not-a-map',
+        'home_inspection_robots': const [
+          {'robot': 1, 'status': 'ok', 'note': ''}, // int
+          {'robot': 3.0, 'status': 'ok', 'note': ''}, // float -> 3
+          {'robot': '2', 'status': 'failed', 'note': 'x'}, // string -> 2
+          {'robot': 0, 'status': 'ok', 'note': ''}, // non-positive -> dropped
+          {'robot': 'nope', 'status': 'ok', 'note': ''}, // unparseable -> dropped
+          'not-a-map', // dropped
         ],
-        'away_inspection_notes': 'not-a-list',
+        'away_inspection_robots': 'not-a-list',
       });
-      expect(config.homeInspectionNotes,
-          const [InspectionNote(robot: 1, note: 'cracked chassis')]);
-      expect(config.awayInspectionNotes, isEmpty);
+      expect(config.homeInspectionRobots.map((r) => r.robot), [1, 3, 2]);
+      expect(config.awayInspectionRobots, isEmpty);
     });
 
-    test('inspection status and notes survive a toJson/fromJson round-trip', () {
+    test('robot note is trimmed; status normalizes case + whitespace', () {
+      final config = ScoreboardMatchConfig.fromJson({
+        ..._matchJson(),
+        'home_inspection_robots': const [
+          {'robot': 1, 'status': 'OK', 'note': '  spaced out  '},
+          {'robot': 2, 'status': ' Failed ', 'note': '   '},
+        ],
+      });
+      expect(config.homeInspectionRobots[0].status, InspectionStatus.ok);
+      expect(config.homeInspectionRobots[0].note, 'spaced out');
+      expect(config.homeInspectionRobots[1].status, InspectionStatus.failed);
+      expect(config.homeInspectionRobots[1].note, '');
+    });
+
+    test('per-robot inspection survives a toJson/fromJson round-trip', () {
       final original = ScoreboardMatchConfig.fromJson({
         ..._matchJson(),
-        'home_inspection_status': 'failed',
-        'away_inspection_status': 'missing',
-        'home_inspection_notes': const [
-          {'robot': 2, 'note': 'loose wiring'},
+        'home_inspection_robots': const [
+          {'robot': 2, 'status': 'failed', 'note': 'loose wiring'},
         ],
-        'away_inspection_notes': const [],
+        'away_inspection_robots': const [],
       });
 
       final restored = ScoreboardMatchConfig.fromJson(
         jsonDecode(jsonEncode(original.toJson())) as Map<String, dynamic>,
       );
 
-      expect(restored.homeInspectionStatus, InspectionStatus.failed);
-      expect(restored.awayInspectionStatus, InspectionStatus.missing);
-      expect(restored.homeInspectionNotes,
-          const [InspectionNote(robot: 2, note: 'loose wiring')]);
-      expect(restored.awayInspectionNotes, isEmpty);
+      expect(restored.homeInspectionRobots, const [
+        InspectionRobot(
+            robot: 2, status: InspectionStatus.failed, note: 'loose wiring'),
+      ]);
+      expect(restored.awayInspectionRobots, isEmpty);
     });
 
-    test('inspection status is not part of the load signature', () {
+    test('inspection is not part of the load signature', () {
       final base = ScoreboardMatchConfig.fromJson(_matchJson());
       final flipped = base.copyWith(
-        homeInspectionStatus: InspectionStatus.failed,
-        awayInspectionStatus: InspectionStatus.ok,
-        homeInspectionNotes: const [InspectionNote(robot: 1, note: 'x')],
+        homeInspectionRobots: const [
+          InspectionRobot(robot: 1, status: InspectionStatus.failed, note: 'x'),
+        ],
       );
-      // Inspection state is cosmetic: a status/notes change must not re-fire the
+      // Inspection state is cosmetic: a change must not re-fire the
       // confirm-on-load / apply-dedupe logic keyed on `signature`.
       expect(flipped.signature, base.signature);
     });

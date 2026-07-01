@@ -2,11 +2,12 @@ import 'dart:convert';
 
 enum ResultSubmissionState { pending, submitted, conflict, failed }
 
-/// Soft per-team inspection status the scoreboard reports for the current
-/// competition day (rcj-scoreboard #112). [unknown] is the client-side fallback
-/// for an absent/unrecognised value — treat both [unknown] and [missing] as
-/// "not applicable / not yet cleared", never as a hard "blocked": the server's
-/// "missing" conflates a non-inspecting league with an uninspected team.
+/// Soft inspection status the scoreboard reports per fielded robot for the
+/// current competition day (rcj-scoreboard #112). [unknown] is the client-side
+/// fallback for an absent/unrecognised value — treat both [unknown] and
+/// [missing] as "not applicable / not yet cleared", never as a hard "blocked":
+/// the server's "missing" conflates a non-inspecting league with an uninspected
+/// robot.
 enum InspectionStatus { ok, failed, missing, unknown }
 
 InspectionStatus _inspectionStatusFromJson(dynamic value) {
@@ -15,41 +16,6 @@ InspectionStatus _inspectionStatusFromJson(dynamic value) {
     (s) => s.name == name,
     orElse: () => InspectionStatus.unknown,
   );
-}
-
-/// One inspection note the scoreboard reports for a fielded robot on the current
-/// competition day (rcj-scoreboard #112): the free text explaining why a side is
-/// flagged. [robot] is the robot number the note was recorded against.
-class InspectionNote {
-  final int robot;
-  final String note;
-
-  const InspectionNote({required this.robot, required this.note});
-
-  factory InspectionNote.fromJson(Map<String, dynamic> json) => InspectionNote(
-        robot: (json['robot'] as num?)?.toInt() ?? 0,
-        note: (json['note']?.toString() ?? '').trim(),
-      );
-
-  Map<String, dynamic> toJson() => {'robot': robot, 'note': note};
-
-  @override
-  bool operator ==(Object other) =>
-      other is InspectionNote && other.robot == robot && other.note == note;
-
-  @override
-  int get hashCode => Object.hash(robot, note);
-}
-
-/// Parses the `*_inspection_notes` array, dropping malformed entries and any
-/// note that arrives with empty text so the UI never renders a blank line.
-List<InspectionNote> _inspectionNotesFromJson(dynamic value) {
-  if (value is! List) return const [];
-  return value
-      .whereType<Map>()
-      .map((m) => InspectionNote.fromJson(Map<String, dynamic>.from(m)))
-      .where((n) => n.note.isNotEmpty)
-      .toList(growable: false);
 }
 
 /// One fielded robot's soft inspection result for the current competition day
@@ -67,7 +33,9 @@ class InspectionRobot {
   });
 
   factory InspectionRobot.fromJson(Map<String, dynamic> json) => InspectionRobot(
-        robot: int.tryParse(json['robot']?.toString() ?? '') ?? 0,
+        // num.tryParse handles an int (3), a float (3.0), and a string ("3")
+        // without ever throwing or silently dropping a valid robot.
+        robot: num.tryParse(json['robot']?.toString() ?? '')?.toInt() ?? 0,
         status: _inspectionStatusFromJson(json['status']),
         note: (json['note']?.toString() ?? '').trim(),
       );
@@ -109,10 +77,6 @@ class ScoreboardMatchConfig {
   final String timezone;
   final int version;
   final String status;
-  final InspectionStatus homeInspectionStatus;
-  final InspectionStatus awayInspectionStatus;
-  final List<InspectionNote> homeInspectionNotes;
-  final List<InspectionNote> awayInspectionNotes;
   final List<InspectionRobot> homeInspectionRobots;
   final List<InspectionRobot> awayInspectionRobots;
 
@@ -136,10 +100,6 @@ class ScoreboardMatchConfig {
     required this.status,
     this.homeModuleMacs = const [],
     this.awayModuleMacs = const [],
-    this.homeInspectionStatus = InspectionStatus.unknown,
-    this.awayInspectionStatus = InspectionStatus.unknown,
-    this.homeInspectionNotes = const [],
-    this.awayInspectionNotes = const [],
     this.homeInspectionRobots = const [],
     this.awayInspectionRobots = const [],
   });
@@ -157,10 +117,6 @@ class ScoreboardMatchConfig {
     String? status,
     List<String>? homeModuleMacs,
     List<String>? awayModuleMacs,
-    InspectionStatus? homeInspectionStatus,
-    InspectionStatus? awayInspectionStatus,
-    List<InspectionNote>? homeInspectionNotes,
-    List<InspectionNote>? awayInspectionNotes,
     List<InspectionRobot>? homeInspectionRobots,
     List<InspectionRobot>? awayInspectionRobots,
   }) {
@@ -177,10 +133,6 @@ class ScoreboardMatchConfig {
       status: status ?? this.status,
       homeModuleMacs: homeModuleMacs ?? this.homeModuleMacs,
       awayModuleMacs: awayModuleMacs ?? this.awayModuleMacs,
-      homeInspectionStatus: homeInspectionStatus ?? this.homeInspectionStatus,
-      awayInspectionStatus: awayInspectionStatus ?? this.awayInspectionStatus,
-      homeInspectionNotes: homeInspectionNotes ?? this.homeInspectionNotes,
-      awayInspectionNotes: awayInspectionNotes ?? this.awayInspectionNotes,
       homeInspectionRobots: homeInspectionRobots ?? this.homeInspectionRobots,
       awayInspectionRobots: awayInspectionRobots ?? this.awayInspectionRobots,
     );
@@ -239,12 +191,6 @@ class ScoreboardMatchConfig {
       status: (json['status']?.toString() ?? '').toUpperCase(),
       homeModuleMacs: moduleMacs(json['home_module_macs']),
       awayModuleMacs: moduleMacs(json['away_module_macs']),
-      homeInspectionStatus:
-          _inspectionStatusFromJson(json['home_inspection_status']),
-      awayInspectionStatus:
-          _inspectionStatusFromJson(json['away_inspection_status']),
-      homeInspectionNotes: _inspectionNotesFromJson(json['home_inspection_notes']),
-      awayInspectionNotes: _inspectionNotesFromJson(json['away_inspection_notes']),
       homeInspectionRobots: _inspectionRobotsFromJson(json['home_inspection_robots']),
       awayInspectionRobots: _inspectionRobotsFromJson(json['away_inspection_robots']),
     );
@@ -291,12 +237,6 @@ class ScoreboardMatchConfig {
         'status': status,
         'home_module_macs': homeModuleMacs,
         'away_module_macs': awayModuleMacs,
-        'home_inspection_status': homeInspectionStatus.name,
-        'away_inspection_status': awayInspectionStatus.name,
-        'home_inspection_notes':
-            homeInspectionNotes.map((n) => n.toJson()).toList(),
-        'away_inspection_notes':
-            awayInspectionNotes.map((n) => n.toJson()).toList(),
         'home_inspection_robots':
             homeInspectionRobots.map((r) => r.toJson()).toList(),
         'away_inspection_robots':
