@@ -31,19 +31,28 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   static const String _singleTapEnabledKey = 'gesture_single_tap_enabled';
   static const String _notifPermissionRequestedKey =
       'notif_permission_requested';
+  static const int _defaultPeriodTimeSeconds = 600;
+  static const int _defaultHalfTimeDurationSeconds = 300;
+  static const int _defaultPenaltyTimeSeconds = 60;
+  static const int _defaultPlayersPerTeam = 2;
+  static const int _noShowPenaltyGoalIntervalSeconds = 30;
+  static const int _maxNoShowPenaltyGoalDifference = 10;
 
   String timerButtonText = 'START';
   final int _maxPlayer = 5;
   List<Team> teams = [];
-  int _numberOfPlayers = 2;
+  int _numberOfPlayers = _defaultPlayersPerTeam;
   int _remainingTime = 0;
-  int _penaltyTime = 60;
-  int _periodTime = 600;
-  int _halfTimeDuration = 300;
+  int _penaltyTime = _defaultPenaltyTimeSeconds;
+  int _periodTime = _defaultPeriodTimeSeconds;
+  int _halfTimeDuration = _defaultHalfTimeDurationSeconds;
   bool _isGameRunning = false;
   bool inGame = false;
   bool isTimeRunning = false;
   int _numberOfPlaying = 0;
+  bool _noShowPenaltyGoalsActive = false;
+  String? _noShowPenaltyScoringTeamId;
+  int _lastNoShowPenaltyGoalElapsed = 0;
   MatchStage currentStage = MatchStage.firstHalf;
   Timer? _timer;
   DateTime? _runClockStartedAt;
@@ -216,11 +225,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   Future<void> _loadPrefs() async {
     _prefs = await SharedPreferences.getInstance();
     _stateStore = MatchStateStore(_prefs!);
-    _periodTime = _prefs!.getInt(_periodTimeKey) ?? 600;
-    _halfTimeDuration = _prefs!.getInt(_halfTimeDurationKey) ?? 300;
-    _numberOfPlayers =
-        (_prefs!.getInt(_numberOfPlayersKey) ?? 2).clamp(1, _maxPlayer).toInt();
-    _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? 60;
+    _periodTime = _prefs!.getInt(_periodTimeKey) ?? _defaultPeriodTimeSeconds;
+    _halfTimeDuration =
+        _prefs!.getInt(_halfTimeDurationKey) ?? _defaultHalfTimeDurationSeconds;
+    _numberOfPlayers = (_prefs!.getInt(_numberOfPlayersKey) ??
+            _defaultPlayersPerTeam)
+        .clamp(1, _maxPlayer)
+        .toInt();
+    _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
 
     // Single-tap pref: flush a pre-load toggle if one happened, otherwise adopt
     // the stored value. Reading unconditionally would clobber an early toggle.
@@ -286,7 +298,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     callback();
   }
 
-  void gameInit() {
+  void gameInit({bool resetModules = true}) {
     currentStage = MatchStage.firstHalf;
     _remainingTime = periodTime;
     isTimeRunning = false;
@@ -297,17 +309,20 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _resumedFixtureMatchCode = null;
     _resumedFixtureVersion = null;
     _fullTimeResultSignature = null;
+    _resetNoShowPenaltyGoals();
 
     stopTimer();
 
     // enable or disable players based on player number;
     for (var team in teams) {
       team.score = 0;
-      for (var i = 0; i < _maxPlayer; i++) {
-        i < numberOfPlayers
-            ? team.modules[i].enable()
-            : team.modules[i].disable();
-        team.modules[i].init();
+      if (resetModules) {
+        for (var i = 0; i < _maxPlayer; i++) {
+          i < numberOfPlayers
+              ? team.modules[i].enable()
+              : team.modules[i].disable();
+          team.modules[i].init();
+        }
       }
     }
     notifyListeners();
@@ -738,7 +753,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (_remainingTime > 0) {
       _remainingTime--;
       _checkGameTimerVibration();
-      notifyAllModulesTimer();
+      if (!_noShowPenaltyGoalsActive) {
+        notifyAllModulesTimer();
+      }
       mqttService.publishTime(_remainingTime);
       // ~5 s heartbeat for the clock freeze point. Placed only in the normal
       // decrement branch (before any stage-transition reset below), so the % 5
@@ -748,6 +765,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       if (!_replaying && _remainingTime % 5 == 0) {
         _flushMatchStateNow();
       }
+      _maybeAwardNoShowPenaltyGoal();
     }
 
     if (_remainingTime <= 0) {
@@ -755,31 +773,40 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       isTimeRunning = false;
       _timer?.cancel();
 
+      final noShowModeActive = _noShowPenaltyGoalsActive;
       switch (currentStage) {
         case MatchStage.firstHalf:
           currentStage = MatchStage.halfTime;
           _remainingTime = halfTimeDuration;
           startTimer();
           timerButtonText = 'SKIP';
-          halfTimeAll();
-          _markDirtyFlush();
-          // Trigger the callback to show the dialog
-          if (onRequestSwitchTeamOrderDialog != null) {
-            onRequestSwitchTeamOrderDialog!();
+          if (!noShowModeActive) {
+            halfTimeAll();
+            // Trigger the callback to show the dialog
+            if (onRequestSwitchTeamOrderDialog != null) {
+              onRequestSwitchTeamOrderDialog!();
+            }
           }
+          _markDirtyFlush();
           break;
         case MatchStage.halfTime:
           currentStage = MatchStage.secondHalf;
           _remainingTime = periodTime;
-          stopAll(true, force: true);
+          _lastNoShowPenaltyGoalElapsed = 0;
+          if (!noShowModeActive) {
+            stopAll(true, force: true);
+          }
           timerButtonText = 'START';
           _markDirtyFlush();
           break;
         case MatchStage.secondHalf:
           currentStage = MatchStage.fullTime;
-          stopAll(true);
+          _resetNoShowPenaltyGoals();
+          if (!noShowModeActive) {
+            stopAll(true);
+            gameOverAll();
+          }
           timerButtonText = 'REPEAT';
-          gameOverAll();
           _enterFullTimeResultReview();
           // The match is over: stop the OS autoConnect from chasing modules
           // that are powered down for good (e.g. a unit still off from a
@@ -795,7 +822,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       _broadcastStageAndTime();
     }
 
-    if (currentStage == MatchStage.halfTime && _remainingTime % 30 == 0) {
+    if (!_noShowPenaltyGoalsActive &&
+        currentStage == MatchStage.halfTime &&
+        _remainingTime % 30 == 0) {
       halfTimeSyncTimeAll();
     }
 
@@ -827,11 +856,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       if (_isGameRunning) {
         stopTimer();
         timerButtonText = 'START';
-        stopAll(false);
+        if (!_noShowPenaltyGoalsActive) {
+          stopAll(false);
+        }
       } else {
         timerButtonText = 'STOP';
         startTimer();
-        playAll(false);
+        if (!_noShowPenaltyGoalsActive) {
+          playAll(false);
+        }
       }
     } else if (currentStage == MatchStage.halfTime) {
       // SKIP
@@ -842,7 +875,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       _runClockStartRemainingTime = null;
       currentStage = MatchStage.secondHalf;
       _remainingTime = periodTime;
-      stopAll(true, force: true);
+      _lastNoShowPenaltyGoalElapsed = 0;
+      if (!_noShowPenaltyGoalsActive) {
+        stopAll(true, force: true);
+      }
       timerButtonText = 'START';
 
       _broadcastStageAndTime();
@@ -878,6 +914,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   /// Toggles all modules based on the current game stage.
   void toggleAllModules() {
+    if (_noShowPenaltyGoalsActive) {
+      return;
+    }
     if (currentStage == MatchStage.fullTime) {
       disconnectAll();
     } else if (_numberOfPlaying > 0) {
@@ -909,6 +948,76 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         module.setLabel(module.defaultName);
       }
     }
+  }
+
+  void _maybeAwardNoShowPenaltyGoal() {
+    if (!_noShowPenaltyGoalsActive || !_isGameRunning) return;
+    if (currentStage != MatchStage.firstHalf &&
+        currentStage != MatchStage.secondHalf) {
+      return;
+    }
+
+    final scoringTeamId = _noShowPenaltyScoringTeamId;
+    if (scoringTeamId == null) return;
+
+    final elapsed = periodTime - _remainingTime;
+    if (elapsed <= 0 ||
+        elapsed == _lastNoShowPenaltyGoalElapsed ||
+        elapsed % _noShowPenaltyGoalIntervalSeconds != 0) {
+      return;
+    }
+
+    final scoringTeam = _noShowPenaltyScoringTeam;
+    if (scoringTeam == null || !_canAwardNoShowPenaltyGoal(scoringTeam)) {
+      return;
+    }
+
+    scoringTeam.addScore(1);
+    _lastNoShowPenaltyGoalElapsed = elapsed;
+    notifyModulesScore();
+  }
+
+  void startNoShowPenaltyGoals(Team scoringTeam) {
+    gameInit(resetModules: false);
+    _noShowPenaltyGoalsActive = true;
+    _noShowPenaltyScoringTeamId = scoringTeam.id;
+    _lastNoShowPenaltyGoalElapsed = 0;
+    timerButtonText = 'STOP';
+    startTimer();
+  }
+
+  void stopNoShowPenaltyGoals() {
+    _resetNoShowPenaltyGoals();
+    timerButtonText = 'START';
+    stopTimer();
+  }
+
+  void _resetNoShowPenaltyGoals() {
+    _noShowPenaltyGoalsActive = false;
+    _noShowPenaltyScoringTeamId = null;
+    _lastNoShowPenaltyGoalElapsed = 0;
+  }
+
+  Team? get _noShowPenaltyScoringTeam {
+    final scoringTeamId = _noShowPenaltyScoringTeamId;
+    if (scoringTeamId == null) return null;
+    for (final team in teams) {
+      if (team.id == scoringTeamId) return team;
+    }
+    return null;
+  }
+
+  bool _canAwardNoShowPenaltyGoal(Team scoringTeam) {
+    Team? opposingTeam;
+    for (final team in teams) {
+      if (team.id != scoringTeam.id) {
+        opposingTeam = team;
+        break;
+      }
+    }
+    if (opposingTeam == null) return true;
+    return scoringTeam.score - opposingTeam.score <
+        _maxNoShowPenaltyGoalDifference;
   }
 
   void notifyAllModulesTimer() {
@@ -1921,7 +2030,25 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _markDirtyFlush();
   }
 
+  bool get noShowPenaltyGoalsActive => _noShowPenaltyGoalsActive;
+  String get noShowPenaltyGoalIntervalLabel {
+    if (_noShowPenaltyGoalIntervalSeconds % 60 == 0) {
+      const minutes = _noShowPenaltyGoalIntervalSeconds ~/ 60;
+      return minutes == 1 ? '1 goal/min' : '1 goal/$minutes min';
+    }
+    return '1 goal/$_noShowPenaltyGoalIntervalSeconds sec';
+  }
+  String get noShowPenaltyScoringTeamName =>
+      _noShowPenaltyScoringTeam?.name ?? '';
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;
+  // True iff at least one enabled module is connected across either team.
+  // Gates the no-module penalty path (issue #22): when the app is used purely
+  // for time/score/penalty tracking with no robots, a module double-tap records
+  // a penalty directly instead of "starting" a robot that does not exist. The
+  // isEnabled filter mirrors the other connection/fan-out scans in this file.
+  bool get anyModuleConnected => teams.any((team) =>
+      team.modules.any((module) => module.isEnabled && module.isConnected));
+  bool get noModuleConnected => !anyModuleConnected;
   bool get isTimerRunning => isTimeRunning;
   bool get isGameRunning => _isGameRunning;
   String get gameStageString {

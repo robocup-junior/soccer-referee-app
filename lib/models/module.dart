@@ -60,6 +60,11 @@ class Module with ChangeNotifier {
   // per-module so each module's own late reconnect is covered, and one-shot so
   // it can't linger and suppress the referee's later START.
   bool _suppressNextRestoreNotify = false;
+  // Whether the module should resume playing when its penalty is cleared or
+  // expires. Captured at penalty() entry: a module penalised from the play
+  // state (the only way a connected module is penalised) resumes play, while a
+  // no-module penalty recorded on a stopped module returns to stop.
+  bool _resumeAfterPenalty = false;
   String macAddress = '';
   String bleStatus = 'Disconnected';
   // True while we want to be connected (connect tapped, autoConnect active).
@@ -86,6 +91,7 @@ class Module with ChangeNotifier {
     _penaltyTime = 0;
     _state = ModuleState.stop;
     _lastState = ModuleState.stop;
+    _resumeAfterPenalty = false;
   }
 
   void enable() {
@@ -413,6 +419,16 @@ class Module with ChangeNotifier {
 
   void play() async {
     _clearRestoreSuppress();
+    // Clearing or expiring a penalty for a module that was not playing before
+    // the penalty (e.g. a no-module penalty recorded on a stopped module) must
+    // return it to stop, not promote it to playing.
+    if (_state == ModuleState.damage && !_resumeAfterPenalty) {
+      _penaltyTime = 0;
+      _stop();
+      return;
+    }
+    _resumeAfterPenalty = false;
+
     _lastState = _state;
     _playStatus(true);
     _penaltyTime = 0;
@@ -517,6 +533,7 @@ class Module with ChangeNotifier {
   }
 
   void penalty(int seconds) {
+    _resumeAfterPenalty = _isPlaying || _state == ModuleState.play;
     _playStatus(false);
     _penaltyTime = seconds;
     _state = ModuleState.damage;
