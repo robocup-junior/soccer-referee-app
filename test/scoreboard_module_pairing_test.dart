@@ -6,9 +6,7 @@
 // Uses testWidgets for the same reason as scoreboard_field_test/game_recovery_
 // test: the Game constructor stands up wakelock/notification/MQTT/bridge
 // services whose platform-channel calls reject asynchronously in the headless
-// test VM, which the widget binding tolerates. applyPresetConfig sets each
-// slot's macAddress synchronously (before the BLE connect), so the assertions
-// hold; a trailing pump drains the 100 ms connect fan-out so no Timer leaks.
+// test VM, which the widget binding tolerates.
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -47,9 +45,18 @@ void main() {
     await prefs.clear();
   });
 
-  Future<void> settleLoad(WidgetTester tester) async {
+  // A loaded Game with every slot disabled. applyPresetConfig then sets each
+  // module's macAddress (the mapping under test) WITHOUT a real bleConnect(),
+  // which is unsupported in the headless test VM — mirroring game_recovery_
+  // test's disabled-during-restore pattern; on a real device the enabled slots
+  // connect as normal. numberOfPlayers is set AFTER the two pumps that drain the
+  // async _loadPrefs(), so its default (2) doesn't overwrite the 0.
+  Future<Game> loadedGame(WidgetTester tester) async {
+    final game = Game();
     await tester.pump();
     await tester.pump();
+    game.numberOfPlayers = 0;
+    return game;
   }
 
   Team teamById(Game game, String id) =>
@@ -63,8 +70,7 @@ void main() {
 
   testWidgets('pairs home MACs onto team A and away MACs onto team B',
       (tester) async {
-    final game = Game();
-    await settleLoad(tester);
+    final game = await loadedGame(tester);
 
     apply(
       game,
@@ -80,14 +86,12 @@ void main() {
     expect(teamById(game, 'A').modules[1].macAddress, '11:22:33:44:55:66');
     expect(teamById(game, 'B').modules[0].macAddress, 'AA:BB:CC:DD:EE:FF');
 
-    await tester.pump(const Duration(milliseconds: 400)); // drain connect fan-out
     game.dispose();
   });
 
   testWidgets('a right-side home maps home MACs onto team B (keyed by ID)',
       (tester) async {
-    final game = Game();
-    await settleLoad(tester);
+    final game = await loadedGame(tester);
 
     apply(
       game,
@@ -103,27 +107,23 @@ void main() {
     expect(teamById(game, 'B').modules[0].macAddress, 'A1:B2:C3:D4:E5:F6');
     expect(teamById(game, 'A').modules[0].macAddress, 'AA:BB:CC:DD:EE:FF');
 
-    await tester.pump(const Duration(milliseconds: 400));
     game.dispose();
   });
 
   testWidgets('lower-case MACs are normalised to upper-case', (tester) async {
-    final game = Game();
-    await settleLoad(tester);
+    final game = await loadedGame(tester);
 
     apply(game, _config(homeMacs: ['a1:b2:c3:d4:e5:f6']));
     await tester.pump();
 
     expect(teamById(game, 'A').modules[0].macAddress, 'A1:B2:C3:D4:E5:F6');
 
-    await tester.pump(const Duration(milliseconds: 400));
     game.dispose();
   });
 
   testWidgets('a partial MAC list only fills the slots it provides',
       (tester) async {
-    final game = Game();
-    await settleLoad(tester);
+    final game = await loadedGame(tester);
 
     apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
     await tester.pump();
@@ -132,13 +132,11 @@ void main() {
     expect(teamById(game, 'A').modules[0].macAddress, 'A1:B2:C3:D4:E5:F6');
     expect(teamById(game, 'A').modules[1].macAddress, '');
 
-    await tester.pump(const Duration(milliseconds: 400));
     game.dispose();
   });
 
   testWidgets('no module keys leaves every slot unpaired', (tester) async {
-    final game = Game();
-    await settleLoad(tester);
+    final game = await loadedGame(tester);
 
     apply(game, _config());
     await tester.pump();
