@@ -14,7 +14,7 @@ import 'package:rcj_scoreboard/screens/settings.dart';
 import 'package:rcj_scoreboard/screens/scoreboard_result_review.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
 import 'package:rcj_scoreboard/widgets/critical_gesture_detector.dart';
-import 'package:rcj_scoreboard/widgets/inspection_status_badge.dart';
+import 'package:rcj_scoreboard/widgets/inspection_robot_list.dart';
 import 'package:rcj_scoreboard/widgets/scrolling_status_text.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/services/ble_adapter_monitor.dart';
@@ -982,26 +982,22 @@ Future<void> _openScoreboardResultReview(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Team names with their soft inspection-status badges
-                    // (rcj-scoreboard #112). A Wrap keeps long names + badges
-                    // from overflowing the dialog width.
-                    Wrap(
-                      crossAxisAlignment: WrapCrossAlignment.center,
-                      spacing: 6,
-                      runSpacing: 4,
-                      children: [
-                        Text(config.homeTeamName,
-                            style: const TextStyle(color: Colors.white)),
-                        InspectionStatusBadge(
-                            status: config.homeInspectionStatus),
-                        const Text('vs',
-                            style: TextStyle(color: Colors.white70)),
-                        Text(config.awayTeamName,
-                            style: const TextStyle(color: Colors.white)),
-                        InspectionStatusBadge(
-                            status: config.awayInspectionStatus),
-                      ],
+                    // Per-team, per-robot inspection (rcj-scoreboard #112): each
+                    // fielded robot's own status + note. Row count follows the
+                    // list (1v1 -> 1 row, 2v2 -> 2). Informational only.
+                    Text(
+                      config.homeTeamName,
+                      style: const TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w600),
                     ),
+                    InspectionRobotList(robots: config.homeInspectionRobots),
+                    const SizedBox(height: 6),
+                    Text(
+                      config.awayTeamName,
+                      style: const TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w600),
+                    ),
+                    InspectionRobotList(robots: config.awayInspectionRobots),
                     const SizedBox(height: 8),
                     for (final line in details)
                       Padding(
@@ -1018,35 +1014,6 @@ Future<void> _openScoreboardResultReview(
                           ),
                         ),
                       ),
-                    // Inspection notes under the fixture details, so a referee
-                    // can see WHY a side is flagged before loading. Rendered per
-                    // side only when that side actually has notes.
-                    for (final side in [
-                      (config.homeTeamName, config.homeInspectionNotes),
-                      (config.awayTeamName, config.awayInspectionNotes),
-                    ])
-                      if (side.$2.isNotEmpty) ...[
-                        const SizedBox(height: 8),
-                        Text(
-                          '${side.$1} inspection notes:',
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 13,
-                          ),
-                        ),
-                        for (final note in side.$2)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 2, left: 8),
-                            child: Text(
-                              'Robot ${note.robot}: ${note.note}',
-                              style: const TextStyle(
-                                color: Colors.white70,
-                                fontSize: 13,
-                              ),
-                            ),
-                          ),
-                      ],
                   ],
                 ),
               ),
