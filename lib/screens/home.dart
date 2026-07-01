@@ -1006,7 +1006,7 @@ Future<void> _openScoreboardResultReview(
       // newer pending link that replaced it after this dialog was built.
       final expectedSignature = config.signature;
       final duration = _formatMatchDuration(config.durationSeconds);
-      final kickoff = _formatLocalKickoff(config.scheduledStart);
+      final kickoff = formatLocalKickoff(config.scheduledStart);
       final details = <String>[
         if (config.venueShortName.isNotEmpty)
           'Field ${config.venueShortName} · $duration'
@@ -1182,7 +1182,8 @@ String _formatMatchDuration(int seconds) {
 // from the payload's ISO-8601 (UTC/offset) value; toLocal() converts it to the
 // device zone. Formatted by hand (no intl dependency). Returns null when the
 // payload carries no scheduled_start.
-String? _formatLocalKickoff(DateTime? scheduledStart) {
+@visibleForTesting
+String? formatLocalKickoff(DateTime? scheduledStart) {
   if (scheduledStart == null) return null;
   final dt = scheduledStart.toLocal();
   const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
