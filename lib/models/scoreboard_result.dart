@@ -52,6 +52,52 @@ List<InspectionNote> _inspectionNotesFromJson(dynamic value) {
       .toList(growable: false);
 }
 
+/// One fielded robot's soft inspection result for the current competition day
+/// (rcj-scoreboard #112): its [status] and free-text [note]. [robot] is the
+/// robot number.
+class InspectionRobot {
+  final int robot;
+  final InspectionStatus status;
+  final String note;
+
+  const InspectionRobot({
+    required this.robot,
+    required this.status,
+    required this.note,
+  });
+
+  factory InspectionRobot.fromJson(Map<String, dynamic> json) => InspectionRobot(
+        robot: int.tryParse(json['robot']?.toString() ?? '') ?? 0,
+        status: _inspectionStatusFromJson(json['status']),
+        note: (json['note']?.toString() ?? '').trim(),
+      );
+
+  Map<String, dynamic> toJson() =>
+      {'robot': robot, 'status': status.name, 'note': note};
+
+  @override
+  bool operator ==(Object other) =>
+      other is InspectionRobot &&
+      other.robot == robot &&
+      other.status == status &&
+      other.note == note;
+
+  @override
+  int get hashCode => Object.hash(robot, status, note);
+}
+
+/// Parses the `*_inspection_robots` array, dropping non-map entries and any
+/// entry with an invalid/non-positive robot number so the UI is never fed a
+/// malformed row (this keeps a bad note from breaking the whole match load).
+List<InspectionRobot> _inspectionRobotsFromJson(dynamic value) {
+  if (value is! List) return const [];
+  return value
+      .whereType<Map>()
+      .map((m) => InspectionRobot.fromJson(Map<String, dynamic>.from(m)))
+      .where((r) => r.robot > 0)
+      .toList(growable: false);
+}
+
 class ScoreboardMatchConfig {
   final String matchCode;
   final String homeTeamName;
@@ -67,6 +113,8 @@ class ScoreboardMatchConfig {
   final InspectionStatus awayInspectionStatus;
   final List<InspectionNote> homeInspectionNotes;
   final List<InspectionNote> awayInspectionNotes;
+  final List<InspectionRobot> homeInspectionRobots;
+  final List<InspectionRobot> awayInspectionRobots;
 
   /// MAC addresses of the home/away robots' comm modules, ordered by robot
   /// number (server payload keys `home_module_macs`/`away_module_macs`, #70).
@@ -92,6 +140,8 @@ class ScoreboardMatchConfig {
     this.awayInspectionStatus = InspectionStatus.unknown,
     this.homeInspectionNotes = const [],
     this.awayInspectionNotes = const [],
+    this.homeInspectionRobots = const [],
+    this.awayInspectionRobots = const [],
   });
 
   ScoreboardMatchConfig copyWith({
@@ -111,6 +161,8 @@ class ScoreboardMatchConfig {
     InspectionStatus? awayInspectionStatus,
     List<InspectionNote>? homeInspectionNotes,
     List<InspectionNote>? awayInspectionNotes,
+    List<InspectionRobot>? homeInspectionRobots,
+    List<InspectionRobot>? awayInspectionRobots,
   }) {
     return ScoreboardMatchConfig(
       matchCode: matchCode ?? this.matchCode,
@@ -129,6 +181,8 @@ class ScoreboardMatchConfig {
       awayInspectionStatus: awayInspectionStatus ?? this.awayInspectionStatus,
       homeInspectionNotes: homeInspectionNotes ?? this.homeInspectionNotes,
       awayInspectionNotes: awayInspectionNotes ?? this.awayInspectionNotes,
+      homeInspectionRobots: homeInspectionRobots ?? this.homeInspectionRobots,
+      awayInspectionRobots: awayInspectionRobots ?? this.awayInspectionRobots,
     );
   }
 
@@ -191,6 +245,8 @@ class ScoreboardMatchConfig {
           _inspectionStatusFromJson(json['away_inspection_status']),
       homeInspectionNotes: _inspectionNotesFromJson(json['home_inspection_notes']),
       awayInspectionNotes: _inspectionNotesFromJson(json['away_inspection_notes']),
+      homeInspectionRobots: _inspectionRobotsFromJson(json['home_inspection_robots']),
+      awayInspectionRobots: _inspectionRobotsFromJson(json['away_inspection_robots']),
     );
   }
 
@@ -241,6 +297,10 @@ class ScoreboardMatchConfig {
             homeInspectionNotes.map((n) => n.toJson()).toList(),
         'away_inspection_notes':
             awayInspectionNotes.map((n) => n.toJson()).toList(),
+        'home_inspection_robots':
+            homeInspectionRobots.map((r) => r.toJson()).toList(),
+        'away_inspection_robots':
+            awayInspectionRobots.map((r) => r.toJson()).toList(),
       };
 }
 
