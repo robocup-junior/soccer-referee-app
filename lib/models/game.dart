@@ -87,6 +87,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   WakelockService wakelockService = WakelockService();
   ScoreboardResultService scoreboardResultService = ScoreboardResultService();
   String? _lastAppliedScoreboardSignature;
+  // MAC-set fingerprint of the last module auto-pair (see
+  // _syncScoreboardModulePairing). Separate from _lastAppliedScoreboardSignature
+  // so a MAC-only change (e.g. a refresh on the upgrade path) still re-pairs even
+  // when the fixture signature is unchanged.
+  String? _lastPairedModuleMacsSignature;
   // Signature of the fixture the user just CONFIRMED loading (set by
   // [confirmScoreboardMatch]). Lets _applyScoreboardMatchConfig tell a
   // user-confirmed new-fixture Load — which must reset a match in
@@ -254,6 +259,16 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           (snapshot.scoreboardMatchCode?.isNotEmpty ?? false)) {
         _restoreFullTimeResultReview(snapshot);
       }
+    }
+
+    // #70: re-pair the linked fixture's modules now that the saved player count
+    // is loaded. On a cold start scoreboardResultService.initialize() may have
+    // run the first pairing while numberOfPlayers was still the default, leaving
+    // the extra slots disabled and unconnected; force a re-pair against the real
+    // count. Skip it when a mid-match resume is pending — that path restores
+    // modules from the snapshot, not from the fixture MACs.
+    if (_pendingResume == null) {
+      _syncScoreboardModulePairing(force: true);
     }
 
     // Prompt for notification permission once on first launch (one-shot), now
@@ -1107,6 +1122,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       team.name = team.id == 'A' ? 'Team A' : 'Team B';
     }
     _lastAppliedScoreboardSignature = null;
+    _lastPairedModuleMacsSignature = null;
     _scoreboardHomeTeamId = null;
     _scoreboardAwayTeamId = null;
     _fullTimeResultSignature = null;
@@ -1135,6 +1151,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     final config = scoreboardResultService.matchConfig;
     if (config != null) {
       _applyScoreboardMatchConfig(config);
+      // Pair modules AFTER the apply so gameInit()'s enable/disable state is
+      // settled. Runs even when _applyScoreboardMatchConfig deduped on an
+      // unchanged fixture signature, so a refresh that only adds MACs (the
+      // upgrade path) still pairs — the MAC-signature dedupe inside keeps it a
+      // no-op otherwise.
+      _syncScoreboardModulePairing();
     }
     notifyListeners();
   }
@@ -1355,6 +1377,51 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       _enterFullTimeResultReview();
       _persistOrClearAtFullTime();
     }
+  }
+
+  void _autoPairScoreboardModules(ScoreboardMatchConfig config) {
+    // Map each side's MACs onto that side's fixed module slots, keyed by team ID
+    // (not list position) so a swapped team order can't cross the sides. The
+    // home->id rule mirrors _deriveScoreboardSideMapping but is computed locally
+    // from config.homeIsLeft so pairing never depends on _scoreboardHomeTeamId
+    // being derived first (it can run before/independently of an apply). Only
+    // the slots the server supplies a MAC for are touched, so a partial list
+    // never clobbers a hand-paired spare slot; the server config is
+    // authoritative only for the modules it actually names. The empty label lets
+    // each slot fall back to its default name (A1..A5) via Module.name;
+    // applyPresetConfig is idempotent (skips a slot already on that MAC) so a
+    // re-pair won't churn live BLE links.
+    final homeId = config.homeIsLeft ? 'A' : 'B';
+    for (final team in teams) {
+      final macs =
+          team.id == homeId ? config.homeModuleMacs : config.awayModuleMacs;
+      for (var i = 0; i < team.modules.length && i < macs.length; i++) {
+        team.modules[i].applyPresetConfig(macs[i], '');
+      }
+    }
+  }
+
+  /// Pair the linked fixture's modules if the MAC set (or side) changed since the
+  /// last pairing. Runs only between matches (`!inGame`) so a live match keeps
+  /// whatever the referee has connected. Deduped on a MAC signature — NOT the
+  /// fixture signature — so a refresh that adds MACs to an already-applied
+  /// fixture (e.g. the upgrade path where the persisted config predates the MAC
+  /// fields) still pairs even though `_applyScoreboardMatchConfig` deduped it
+  /// away. `force` bypasses the dedupe to re-pair after the saved player count
+  /// loads on a cold start (the first pass may have run while numberOfPlayers was
+  /// still the default, leaving the extra slots disabled and unconnected).
+  void _syncScoreboardModulePairing({bool force = false}) {
+    final config = scoreboardResultService.matchConfig;
+    if (config == null || inGame) return;
+    // A MAC-set fingerprint. MACs are validated hex + colons, so ','/'|' can't
+    // occur in them and this delimiter join can't alias two different sets
+    // (avoids pulling in dart:convert for a jsonEncode).
+    final macSignature = '${config.homeIsLeft}'
+        '|${config.homeModuleMacs.join(',')}'
+        '|${config.awayModuleMacs.join(',')}';
+    if (!force && macSignature == _lastPairedModuleMacsSignature) return;
+    _lastPairedModuleMacsSignature = macSignature;
+    _autoPairScoreboardModules(config);
   }
 
   bool _canSubmitScoreboardResult([ScoreboardMatchConfig? config]) {

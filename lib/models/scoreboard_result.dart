@@ -14,6 +14,13 @@ class ScoreboardMatchConfig {
   final int version;
   final String status;
 
+  /// MAC addresses of the home/away robots' comm modules, ordered by robot
+  /// number (server payload keys `home_module_macs`/`away_module_macs`, #70).
+  /// The app maps these onto the fixed per-side module slots for auto-pairing.
+  /// Empty for older payloads that never carried them.
+  final List<String> homeModuleMacs;
+  final List<String> awayModuleMacs;
+
   const ScoreboardMatchConfig({
     required this.matchCode,
     required this.homeTeamName,
@@ -25,6 +32,8 @@ class ScoreboardMatchConfig {
     required this.timezone,
     required this.version,
     required this.status,
+    this.homeModuleMacs = const [],
+    this.awayModuleMacs = const [],
   });
 
   ScoreboardMatchConfig copyWith({
@@ -38,6 +47,8 @@ class ScoreboardMatchConfig {
     String? timezone,
     int? version,
     String? status,
+    List<String>? homeModuleMacs,
+    List<String>? awayModuleMacs,
   }) {
     return ScoreboardMatchConfig(
       matchCode: matchCode ?? this.matchCode,
@@ -50,6 +61,8 @@ class ScoreboardMatchConfig {
       timezone: timezone ?? this.timezone,
       version: version ?? this.version,
       status: status ?? this.status,
+      homeModuleMacs: homeModuleMacs ?? this.homeModuleMacs,
+      awayModuleMacs: awayModuleMacs ?? this.awayModuleMacs,
     );
   }
 
@@ -85,6 +98,14 @@ class ScoreboardMatchConfig {
         scheduledStartRaw == null ? null : DateTime.tryParse(scheduledStartRaw);
     final durationSeconds = (json['duration_seconds'] as num?)?.toInt() ?? 600;
 
+    List<String> moduleMacs(dynamic value) {
+      if (value is! List) return const [];
+      return value
+          .map((e) => e.toString().trim().toUpperCase())
+          .where((mac) => mac.isNotEmpty)
+          .toList();
+    }
+
     return ScoreboardMatchConfig(
       matchCode: (json['match_code']?.toString() ?? '').trim(),
       homeTeamName: teamName(json['home_team'], 'Home'),
@@ -96,6 +117,8 @@ class ScoreboardMatchConfig {
       timezone: (json['timezone']?.toString() ?? 'UTC').trim(),
       version: (json['version'] as num?)?.toInt() ?? 0,
       status: (json['status']?.toString() ?? '').toUpperCase(),
+      homeModuleMacs: moduleMacs(json['home_module_macs']),
+      awayModuleMacs: moduleMacs(json['away_module_macs']),
     );
   }
 
@@ -111,6 +134,12 @@ class ScoreboardMatchConfig {
   /// only the venue (same match/version) still re-applies and updates the MQTT
   /// field number (#50); this keeps the apply-dedupe and the cold-resume re-arm
   /// in lock-step on a single signature.
+  ///
+  /// The module MACs are deliberately NOT part of the signature: auto-pairing
+  /// runs at match (re)load (see Game._applyScoreboardMatchConfig), and folding
+  /// MACs into the fixture identity would make an out-of-band module-assignment
+  /// change re-trigger the "Load match?" overwrite and the result-review guards
+  /// mid-match. A MAC-only correction therefore does not force a re-pair.
   String get signature => jsonEncode(<dynamic>[
         matchCode,
         version,
@@ -132,6 +161,8 @@ class ScoreboardMatchConfig {
         'timezone': timezone,
         'version': version,
         'status': status,
+        'home_module_macs': homeModuleMacs,
+        'away_module_macs': awayModuleMacs,
       };
 }
 
