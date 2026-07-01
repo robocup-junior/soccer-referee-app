@@ -284,6 +284,74 @@ void main() {
     });
   });
 
+  group('inspectionRobotsForTeam side mapping (#77)', () {
+    Map<String, dynamic> configWithInspection({required bool homeIsLeft}) => {
+          ..._scoreboardConfig(
+              matchCode: 'M-INSP', version: 1, homeIsLeft: homeIsLeft),
+          'home_inspection_robots': const [
+            {'robot': 1, 'status': 'ok', 'note': ''},
+            {'robot': 2, 'status': 'failed', 'note': 'battery low'},
+          ],
+          'away_inspection_robots': const [
+            {'robot': 1, 'status': 'missing', 'note': ''},
+          ],
+        };
+
+    testWidgets('maps home rows to the home-side team, away to the other',
+        (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(configWithInspection(homeIsLeft: true)),
+        token: 'test-token',
+      );
+      await tester.pump();
+
+      final teamA = game.teams.firstWhere((t) => t.id == 'A');
+      final teamB = game.teams.firstWhere((t) => t.id == 'B');
+      // homeIsLeft -> team A is home.
+      expect(game.inspectionRobotsForTeam(teamA), const [
+        InspectionRobot(robot: 1, status: InspectionStatus.ok, note: ''),
+        InspectionRobot(
+            robot: 2, status: InspectionStatus.failed, note: 'battery low'),
+      ]);
+      expect(game.inspectionRobotsForTeam(teamB), const [
+        InspectionRobot(robot: 1, status: InspectionStatus.missing, note: ''),
+      ]);
+      game.dispose();
+    });
+
+    testWidgets('a home/away swap (homeIsLeft:false) crosses the sides by id',
+        (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(configWithInspection(homeIsLeft: false)),
+        token: 'test-token',
+      );
+      await tester.pump();
+
+      final teamA = game.teams.firstWhere((t) => t.id == 'A');
+      final teamB = game.teams.firstWhere((t) => t.id == 'B');
+      // homeIsLeft:false -> team B is home, so team A gets the AWAY rows.
+      expect(game.inspectionRobotsForTeam(teamB).map((r) => r.robot), [1, 2]);
+      expect(game.inspectionRobotsForTeam(teamA), const [
+        InspectionRobot(robot: 1, status: InspectionStatus.missing, note: ''),
+      ]);
+      game.dispose();
+    });
+
+    testWidgets('no linked fixture -> empty for both teams', (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+      await tester.pump();
+      for (final team in game.teams) {
+        expect(game.inspectionRobotsForTeam(team), isEmpty);
+      }
+      game.dispose();
+    });
+  });
+
   group('cold-launch detection', () {
     testWidgets('an in-progress snapshot is offered for resume',
         (tester) async {

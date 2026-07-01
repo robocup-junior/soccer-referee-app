@@ -27,7 +27,8 @@ class InspectionStatusBadge extends StatelessWidget {
       case InspectionStatus.unknown:
         return const Text(
           '—',
-          style: TextStyle(color: Colors.white38, fontWeight: FontWeight.w600),
+          style: TextStyle(
+              color: Colors.white38, fontWeight: FontWeight.w600, fontSize: 16),
         );
     }
   }
@@ -42,13 +43,13 @@ class InspectionStatusBadge extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 12, color: color),
-          const SizedBox(width: 3),
+          Icon(icon, size: 15, color: color),
+          const SizedBox(width: 4),
           Text(
             label,
             style: TextStyle(
               color: color,
-              fontSize: 11,
+              fontSize: 13,
               fontWeight: FontWeight.w600,
             ),
           ),

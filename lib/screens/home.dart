@@ -442,11 +442,13 @@ Widget buildTeamContainer(Team team, Game game) {
                 isScrollControlled: true,
                 builder: (context) {
                   return FractionallySizedBox(
-                    heightFactor: 0.7,
+                    heightFactor: 0.85,
                     child: Container(
                       color: Colors.grey[800],
-                      padding: const EdgeInsets.symmetric(
-                          vertical: 20.0, horizontal: 20.0),
+                      // Bottom pad by the system nav inset so the last scrolled
+                      // inspection line clears the gesture bar.
+                      padding: EdgeInsets.fromLTRB(20.0, 20.0, 20.0,
+                          20.0 + MediaQuery.viewPaddingOf(context).bottom),
                       child: TeamSettingsWidget(team: team, game: game),
                     ),
                   );
@@ -592,6 +594,7 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
   Widget build(BuildContext context) {
     final team = widget.team;
     final game = widget.game;
+    final robots = game.inspectionRobotsForTeam(team);
     return Column(
       children: [
         Text(
@@ -646,6 +649,19 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
               icon: const Icon(Icons.remove, color: Colors.white),
               label: const Text('Sub', style: TextStyle(color: Colors.white)),
             ),
+            // Live score of the team being edited, between the -/+ buttons, so
+            // Sub/Add visibly change it (team is a ChangeNotifier).
+            ListenableBuilder(
+              listenable: team,
+              builder: (context, _) => Text(
+                team.score.toString(),
+                style: const TextStyle(
+                  fontSize: 28.0,
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blue,
@@ -659,6 +675,36 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
             ),
           ],
         ),
+        // Per-robot inspection status for this team's side of the linked fixture
+        // (rcj-scoreboard #112), so a referee can check it DURING a loaded
+        // match. Kept in its OWN scroll area (Expanded) below the pinned name +
+        // score controls, so a long note scrolls here instead of pushing the
+        // Score buttons out of reach. Only shown when this side has rows.
+        if (robots.isNotEmpty)
+          Expanded(
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(height: 20.0),
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Inspection',
+                      style: TextStyle(
+                        fontSize: 16.0,
+                        color: Colors.white70,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 4.0),
+                  InspectionRobotList(robots: robots),
+                ],
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -982,23 +1028,15 @@ Future<void> _openScoreboardResultReview(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // Per-team, per-robot inspection (rcj-scoreboard #112): each
-                    // fielded robot's own status + note. Row count follows the
-                    // list (1v1 -> 1 row, 2v2 -> 2). Informational only.
+                    // Matchup + fixture details first...
                     Text(
-                      config.homeTeamName,
+                      '${config.homeTeamName} vs ${config.awayTeamName}',
                       style: const TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.w600),
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 16,
+                      ),
                     ),
-                    InspectionRobotList(robots: config.homeInspectionRobots),
-                    const SizedBox(height: 6),
-                    Text(
-                      config.awayTeamName,
-                      style: const TextStyle(
-                          color: Colors.white, fontWeight: FontWeight.w600),
-                    ),
-                    InspectionRobotList(robots: config.awayInspectionRobots),
-                    const SizedBox(height: 8),
                     for (final line in details)
                       Padding(
                         padding: const EdgeInsets.only(top: 4),
@@ -1014,6 +1052,33 @@ Future<void> _openScoreboardResultReview(
                           ),
                         ),
                       ),
+                    // ...then the per-team, per-robot inspection section
+                    // (rcj-scoreboard #112): each fielded robot's own status +
+                    // note, grouped under an underlined team name. Row count
+                    // follows the list (1v1 -> 1 row, 2v2 -> 2). Informational
+                    // only.
+                    const SizedBox(height: 12),
+                    Text(
+                      config.homeTeamName,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 16,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                    InspectionRobotList(robots: config.homeInspectionRobots),
+                    const SizedBox(height: 10),
+                    Text(
+                      config.awayTeamName,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 16,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                    InspectionRobotList(robots: config.awayInspectionRobots),
                   ],
                 ),
               ),
