@@ -64,3 +64,20 @@ Cross-platform **Android + iOS (iPhone)** Flutter app (portrait-only) that contr
 
 ## Where to read more
 See `docs/ai/00_CONTEXT_INDEX.md` for the full reading order and per-topic pointers.
+
+## Device-testing the scoreboard flow (local mock)
+Runbook: `docs/ai/07_SCOREBOARD_DEVICE_TESTING.md`; mock: `docs/ai/tools/mock_scoreboard.py`
+(stdlib GET/POST mock; now also serves `home/away_inspection_robots`). Flow:
+`adb reverse tcp:8000 tcp:8000` → start mock → `adb shell am start -a
+android.intent.action.VIEW -d 'rcjrefmate://r/tok?base_url=http://127.0.0.1:8000'`.
+Android app id is **`com.robocup.rcj_soccer`**.
+
+> **Env gotcha — `pkill -f mock_scoreboard.py` self-kills the shell (exit 144).**
+> A Bash tool call runs as `bash -c '…mock_scoreboard.py…'`, so its **own argv
+> contains the pattern** — `pkill -f mock_scoreboard.py` matches and kills the
+> launching shell before anything runs, surfacing as **exit code 144** (looks
+> like a network/sandbox block, but isn't). Fixes:
+> - **Launch** the mock as a `run_in_background` Bash task with **no** self-matching
+>   `pkill` in the same command (log to the scratchpad dir, not `/tmp`).
+> - **Kill** it with the bracket trick so the pattern can't match the killer:
+>   `pkill -f '[m]ock_scoreboard\.py'` (or kill by PID). Same rule for `pgrep`.
