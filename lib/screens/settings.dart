@@ -796,20 +796,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('Author: Martin Faltus',
-                                  style: TextStyle(fontSize: 14)),
-                            ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('iOS adaption: Fabian Weller',
-                                  style: TextStyle(fontSize: 14)),
-                            ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text(
-                                  'AI co-authors: Claude (Anthropic) '
-                                  '& Codex (OpenAI) '
-                                  '& GitHub Copilot (Microsoft)',
+                              child: Text('Author: Martin Faltus, Fabian Weller, Marek Šuppa',
                                   style: TextStyle(fontSize: 14)),
                             ),
                             Padding(
