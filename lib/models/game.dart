@@ -1607,6 +1607,20 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _scoreboardAwayTeamId = config.homeIsLeft ? 'B' : 'A';
   }
 
+  /// The scoreboard's per-robot inspection rows for [team]'s side of the linked
+  /// fixture, so the loaded-match team-settings view can surface inspection
+  /// status during a match (not only in the "Load match?" dialog). Returns an
+  /// empty list when no fixture is linked or the side mapping is unresolved.
+  /// Routes through the home/away->team-id mapping ([_deriveScoreboardSideMapping])
+  /// so callers never re-derive that rule and can't cross the sides.
+  List<InspectionRobot> inspectionRobotsForTeam(Team team) {
+    final config = scoreboardResultService.matchConfig;
+    if (config == null) return const [];
+    if (team.id == _scoreboardHomeTeamId) return config.homeInspectionRobots;
+    if (team.id == _scoreboardAwayTeamId) return config.awayInspectionRobots;
+    return const [];
+  }
+
   void _enterFullTimeResultReview() {
     final config = scoreboardResultService.matchConfig;
     if (config != null &&
