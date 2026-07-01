@@ -87,6 +87,23 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   WakelockService wakelockService = WakelockService();
   ScoreboardResultService scoreboardResultService = ScoreboardResultService();
   String? _lastAppliedScoreboardSignature;
+  // Signature of the fixture the user just CONFIRMED loading (set by
+  // [confirmScoreboardMatch]). Lets _applyScoreboardMatchConfig tell a
+  // user-confirmed new-fixture Load — which must reset a match in
+  // progress/finished (RAVF002) — apart from an automatic same-fixture refresh
+  // (version bump / #50 venue correction), which preserves the just-played
+  // scores. Keyed on the signature (not a bare flag) so a stale-dialog reject,
+  // which re-applies the UNCHANGED committed config, can never be mistaken for
+  // the confirmed Load. Consumed on the next apply.
+  String? _confirmedLoadSignature;
+  // Future of the resumable-snapshot clear started by a confirmed new-fixture
+  // Load reset (RAVF002). _applyScoreboardMatchConfig runs synchronously inside
+  // confirmPendingMatch's notify, so it cannot await the tombstone itself;
+  // instead it stashes the awaitable clear here and confirmScoreboardMatch (the
+  // only path that can reach the reset branch) awaits it before the Load dialog
+  // dismisses. An immediate kill must not preserve the snapshot of the match the
+  // referee just replaced — mirrors discardPendingMatch's awaited clear.
+  Future<void>? _confirmedLoadClear;
   String? _lastPromptedPendingSignature;
   String? _scoreboardHomeTeamId;
   String? _scoreboardAwayTeamId;
@@ -325,6 +342,22 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void _flushMatchStateNow() {
     markMatchStateDirty();
     _persistMatchState();
+  }
+
+  /// Same as [_flushMatchStateNow] but awaits the underlying store write, for
+  /// paths where the persisted snapshot must be DURABLE before the caller
+  /// continues — e.g. the RAVF004 corrected-score write-back, whose whole
+  /// purpose is that a kill cannot resurface the pre-correction score on a later
+  /// terminal-rejection re-open. Forces the save (the explicit-flush intent),
+  /// bypassing the `_dirty` short-circuit, but still honours `_suppressPersist`
+  /// and a null store. Awaitable callers must be off the robot START/STOP hot
+  /// path (invariant #1).
+  Future<void> _flushMatchStateNowAndWait() async {
+    if (_suppressPersist) return;
+    final store = _stateStore;
+    if (store == null) return;
+    _dirty = false;
+    await store.save(_buildSnapshot());
   }
 
   /// Public clear for intentional fresh-start paths outside the resume flow
@@ -1050,7 +1083,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // gameInit() the new, live in-progress match (RAVF001). Only reset while we
     // are STILL on the exact full-time match this delivery belongs to: REPEAT /
     // a new match move the stage off fullTime and clear the captured full-time
-    // signature (gameInit), so this guard cleanly distinguishes the two.
+    // signature (gameInit), so this guard cleanly distinguishes the two. A late
+    // 200 for a result queued against a SINCE-REPLACED fixture can't reach here
+    // either: a confirmed new-fixture Load resets to firstHalf (RAVF002), so the
+    // stage guard rejects it, and the service only fires this for an item still
+    // matching the committed fixture.
     if (currentStage != MatchStage.fullTime ||
         _fullTimeResultSignature == null) {
       return;
@@ -1127,13 +1164,67 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _maybeFirePendingMatchPrompt();
   }
 
+  /// Confirm the staged "Load match?" deep link (called by Home's Load button).
+  /// Wraps the service promotion so the resulting _applyScoreboardMatchConfig
+  /// knows this is a USER-CONFIRMED Load — which must reset a match already in
+  /// progress/finished (RAVF002) — rather than an automatic same-fixture
+  /// refresh. confirmPendingMatch promotes + notifies SYNCHRONOUSLY, so the flag
+  /// is in place when the apply runs. After the await we await the snapshot clear
+  /// the reset stashed (RAVF002 durability), and the `finally` clears the
+  /// confirmed-load signals so a rejected/no-op promotion leaves nothing armed
+  /// for a later apply.
+  Future<void> confirmScoreboardMatch({String? expectedSignature}) async {
+    // Capture the signature of the fixture being confirmed so the resulting
+    // apply only treats THAT exact fixture as a confirmed Load. confirmPendingMatch
+    // promotes + notifies synchronously, so the apply runs while this is set; the
+    // finally clears it if a stale-dialog reject promoted nothing. Mirror
+    // confirmPendingMatch's own stale-dialog guard: only arm when the current
+    // pending fixture matches the dialog's expectedSignature, otherwise the
+    // promotion will be rejected and we must NOT arm (else a stale Load whose
+    // pending happens to share an unapplied committed config's signature could
+    // still trigger a reset).
+    final pendingSignature =
+        scoreboardResultService.pendingMatchConfig?.signature;
+    _confirmedLoadSignature = (pendingSignature != null &&
+            (expectedSignature == null ||
+                expectedSignature == pendingSignature))
+        ? pendingSignature
+        : null;
+    try {
+      await scoreboardResultService.confirmPendingMatch(
+          expectedSignature: expectedSignature);
+      // If the synchronous apply above reset a live match (RAVF002), it stashed
+      // the awaitable snapshot clear; await it so the Load dialog does not dismiss
+      // before the tombstone lands. This await is on the dialog/Load path only,
+      // never the robot START/STOP hot path (invariant #1).
+      final clear = _confirmedLoadClear;
+      _confirmedLoadClear = null;
+      if (clear != null) await clear;
+    } finally {
+      _confirmedLoadSignature = null;
+      _confirmedLoadClear = null;
+    }
+  }
+
   void _applyScoreboardMatchConfig(ScoreboardMatchConfig config) {
     // Team names AND venue are part of the signature (see
     // ScoreboardMatchConfig.signature) so a corrected schedule payload that
     // changes only a name or the venue (without bumping version/duration/side)
     // still updates the displayed names and the MQTT field (#50); the
     // `if (!inGame)` guard below still gates timing.
+    // Consume the "user confirmed a Load" signal up front so it never leaks to a
+    // later apply. It is the signature of the fixture the user confirmed: a
+    // confirmed Load (the warned "Load match?" overwrite) resets a match in
+    // progress/finished (RAVF002) whenever the applied config IS that fixture —
+    // including re-loading the SAME fixture (the dialog warns it replaces the
+    // match, so the intent is a clean start regardless of whether the fixture
+    // changed). A stale-dialog reject re-applies the unchanged committed config,
+    // whose signature won't match the confirmed one, so it never resets.
+    final confirmedSignature = _confirmedLoadSignature;
+    _confirmedLoadSignature = null;
     final signature = config.signature;
+    final isConfirmedNewFixtureLoad =
+        confirmedSignature != null && confirmedSignature == signature && inGame;
     // Dedupe on an unchanged signature - EXCEPT while a resumed match is still
     // suppressed. `_lastAppliedScoreboardSignature` is in-memory and is never
     // cleared when the service drops `_matchConfig` to null (a token-changing
@@ -1142,8 +1233,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // re-arrives, an early dedupe return here would skip the re-arm below and
     // leave the final result suppressed forever (#53). While suppressed, fall
     // through to the re-arm guard, which re-arms the bound fixture or rejects a
-    // different one.
-    if (!(inGame && _suppressScoreboardFinalResult) &&
+    // different one. A confirmed Load is never deduped away — re-loading the
+    // SAME fixture (same signature) must still reset.
+    if (!isConfirmedNewFixtureLoad &&
+        !(inGame && _suppressScoreboardFinalResult) &&
         _lastAppliedScoreboardSignature == signature) {
       return;
     }
@@ -1157,9 +1250,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       if (resumedCode == null ||
           resumedCode.isEmpty ||
           config.matchCode != resumedCode) {
-        return;
+        // A DIFFERENT fixture surfaced while this resume is still suppressed.
+        // Normally reject it (an automatic config must not retarget a suppressed
+        // match's result), but a user-CONFIRMED Load means the referee chose to
+        // abandon the resume for this fixture — fall through to the reset below.
+        if (!isConfirmedNewFixtureLoad) return;
+      } else {
+        reArmedFromSuppression = true;
       }
-      reArmedFromSuppression = true;
     }
     _lastAppliedScoreboardSignature = signature;
     _suppressScoreboardFinalResult = false;
@@ -1195,9 +1293,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // subscribers on the corrected field_N would otherwise see a previous
       // match's retained data (or nothing) until the next score/stage event.
       // Rebroadcast current state once, only when the topic actually changed, so
-      // an idempotent re-apply of the same field doesn't spam the bus.
+      // an idempotent re-apply of the same field doesn't spam the bus. Skip it
+      // for a confirmed new-fixture Load: that resets below and gameInit()
+      // broadcasts the clean 0-0 state to the new field — rebroadcasting here
+      // would briefly publish the PREVIOUS match's scores under the new fixture.
       // _broadcastFullState is off the robot START/STOP hot path (invariant #1).
-      if (inGame && mqttService.topic != previousTopic) {
+      if (inGame &&
+          !isConfirmedNewFixtureLoad &&
+          mqttService.topic != previousTopic) {
         _broadcastFullState();
       }
     }
@@ -1214,6 +1317,34 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // prefs and clobber their setting). gameInit() applies it to the clock.
       _periodTime = config.durationSeconds;
       gameInit();
+    } else if (isConfirmedNewFixtureLoad) {
+      // RAVF002: the referee confirmed the "Load match?" overwrite while a match
+      // is in progress or finished. The dialog warns it "replaces the match in
+      // progress", so reset to a clean match bound to the new fixture.
+      // gameInit() zeroes scores/clock/stage and clears the old full-time review
+      // subject + resumed binding (_fullTimeResultSignature,
+      // _resumedFixtureMatchCode, _suppressScoreboardFinalResult); the new
+      // fixture's names/side mapping were applied above and gameInit() leaves
+      // names untouched. gameInit() runs BEFORE setTeamToDefaultOrder() so the
+      // scores are already zeroed when the order toggle broadcasts — otherwise a
+      // second-half-swapped order would publish the previous match's scores
+      // under the new fixture's names. setTeamToDefaultOrder() then restores the
+      // default order for the new first half. gameInit() never touches the
+      // outbox, so an already-submitted result for the PREVIOUS fixture survives
+      // and keeps retrying; its late 200 no longer matches the committed
+      // fixture, so it can't reset this match (rule 3). Clear the stale snapshot
+      // so a kill resumes the new match.
+      _periodTime = config.durationSeconds;
+      gameInit();
+      setTeamToDefaultOrder();
+      // Use the AWAITABLE clear (not the fire-and-forget _clearMatchState) and
+      // stash its future so confirmScoreboardMatch can await the tombstone before
+      // the Load dialog dismisses (RAVF002 durability). discardPendingMatch — the
+      // sibling destructive "replace the match" path — awaits its clear for the
+      // same reason: an immediate kill must not re-offer the replaced match. The
+      // synchronous part (_dirty=false + initiating the tombstone write) runs now;
+      // only the disk completion is awaited later, off the robot hot path.
+      _confirmedLoadClear = _clearMatchStateAndWait();
     } else if (reArmedFromSuppression && currentStage == MatchStage.fullTime) {
       // The bound fixture's config only surfaced AFTER this resumed match had
       // already run to full-time while suppressed. Now that the bound fixture's
@@ -1386,6 +1517,21 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       return false;
     }
 
+    // Capture the side mapping BEFORE awaiting the enqueue. The signature guard
+    // above proved matchConfig.signature == expectedSignature, so this mapping is
+    // exactly the one the review screen submitted against. An already-in-flight
+    // refreshMatchConfig() can complete during the await below, reassign the
+    // committed config, and (for a same-fixture side swap) flip homeIsLeft —
+    // re-deriving the mapping AFTER the await would then write these goals onto
+    // the WRONG physical teams. Capturing here keeps the write-back correct
+    // regardless of a concurrent refresh, while still letting a benign
+    // version/name refresh through (the team IDs are stable, so the submitted
+    // homeGoals always belong to homeTeamId). Same homeIsLeft fallback as
+    // buildScoreboardResultReview.
+    final homeIsLeft = scoreboardResultService.matchConfig?.homeIsLeft ?? true;
+    final homeTeamId = _scoreboardHomeTeamId ?? (homeIsLeft ? 'A' : 'B');
+    final awayTeamId = _scoreboardAwayTeamId ?? (homeIsLeft ? 'B' : 'A');
+
     final trimmedComment = comment?.trim();
     final submitted = await scoreboardResultService.enqueueFinalResult(
       homeGoals: homeGoals,
@@ -1405,12 +1551,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // the wrong values (RAVF004). teams[*].score is a plain field (no
       // MQTT/bridge broadcast), so this updates local truth + the snapshot
       // only; the POST payload already carries the homeGoals/awayGoals passed
-      // above. Map via the captured side mapping, with the same homeIsLeft
-      // fallback buildScoreboardResultReview uses.
-      final homeIsLeft =
-          scoreboardResultService.matchConfig?.homeIsLeft ?? true;
-      final homeTeamId = _scoreboardHomeTeamId ?? (homeIsLeft ? 'A' : 'B');
-      final awayTeamId = _scoreboardAwayTeamId ?? (homeIsLeft ? 'B' : 'A');
+      // above. Map via the side mapping captured above (pre-await).
       for (final team in teams) {
         if (team.id == homeTeamId) {
           team.score = homeGoals;
@@ -1418,7 +1559,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           team.score = awayGoals;
         }
       }
-      _flushMatchStateNow();
+      // Await the snapshot write so the corrected scores are DURABLE before
+      // submit returns. enqueueFinalResult already persisted the outbox item
+      // durably; a kill in the gap between that and a fire-and-forget snapshot
+      // save would restore the OLD scores, and a later terminal 401/422 rejection
+      // would re-open the review reading the stale teams[*].score — the exact
+      // RAVF004 loss this write-back exists to prevent. submitScoreboardResult is
+      // async and awaited by the review screen, never the robot hot path.
+      await _flushMatchStateNowAndWait();
     }
     // enqueueFinalResult already notifies on every outcome it can change
     // (queued / already-tracked), and Game listens to the service and re-emits,

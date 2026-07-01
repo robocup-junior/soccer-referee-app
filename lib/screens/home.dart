@@ -1010,9 +1010,11 @@ Future<void> _openScoreboardResultReview(
                           backgroundColor: Colors.green[600],
                         ),
                         onPressed: () async {
-                          await game.scoreboardResultService
-                              .confirmPendingMatch(
-                                  expectedSignature: expectedSignature);
+                          // Route through Game (not the service directly) so a
+                          // confirmed Load resets a match in progress/finished
+                          // (RAVF002).
+                          await game.confirmScoreboardMatch(
+                              expectedSignature: expectedSignature);
                           if (dialogContext.mounted) {
                             Navigator.of(dialogContext).pop();
                           }
