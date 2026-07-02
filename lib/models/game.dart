@@ -236,11 +236,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _periodTime = _prefs!.getInt(_periodTimeKey) ?? _defaultPeriodTimeSeconds;
     _halfTimeDuration =
         _prefs!.getInt(_halfTimeDurationKey) ?? _defaultHalfTimeDurationSeconds;
-    _numberOfPlayers = (_prefs!.getInt(_numberOfPlayersKey) ??
-            _defaultPlayersPerTeam)
-        .clamp(1, _maxPlayer)
-        .toInt();
-    _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
+    _numberOfPlayers =
+        (_prefs!.getInt(_numberOfPlayersKey) ?? _defaultPlayersPerTeam)
+            .clamp(1, _maxPlayer)
+            .toInt();
+    _penaltyTime =
+        _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
 
     // Single-tap pref: flush a pre-load toggle if one happened, otherwise adopt
     // the stored value. Reading unconditionally would clobber an early toggle.
@@ -808,7 +809,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           _markDirtyFlush();
           break;
         case MatchStage.secondHalf:
-          _completeMatchToFullTime(noShowModeActive: noShowModeActive);
+          _completeMatchToFullTime();
           break;
         default:
           debugPrint('unknown match stage');
@@ -826,18 +827,27 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     notifyListeners();
   }
 
-  /// The one true secondHalf->fullTime transition. Runs the full set of
-  /// full-time side-effects: stage flip, no-show reset, robot stop + game-over
-  /// (skipped when no-show mode owned the robots), REPEAT affordance, result
-  /// review arming (RAVF003 snapshot + unresolved-result gate), module
-  /// teardown, and snapshot persist-or-clear. Called from the natural
-  /// second-half tick expiry and from endMatchEarly() (#84) — never build a
-  /// bespoke shortcut around it.
-  void _completeMatchToFullTime({required bool noShowModeActive}) {
+  /// The one true *->fullTime transition. Runs the full set of full-time
+  /// side-effects: stage flip, no-show reset, robot stop + game-over (skipped
+  /// when no-show mode owned the robots), REPEAT affordance, result review
+  /// arming (RAVF003 snapshot + unresolved-result gate), module teardown, and
+  /// snapshot persist-or-clear. Called from the natural second-half tick
+  /// expiry and from endMatchEarly() (#84) — never build a bespoke shortcut
+  /// around it. [forceStop] is for ending early out of the half-time break:
+  /// modules parked there have _lastState == halfTime, which an unforced
+  /// Module.stopAll re-dispatches to halfTime() (a fresh break countdown)
+  /// instead of STOP — the same reason the halfTime->secondHalf paths use
+  /// stopAll(true, force: true). The natural second-half expiry keeps the
+  /// unforced call it always had.
+  void _completeMatchToFullTime({bool forceStop = false}) {
+    // Captured before _resetNoShowPenaltyGoals() below clears the flag; when
+    // no-show mode owned the robots they were never started, so the stop +
+    // game-over fan-out is skipped exactly as the pre-#84 tick block did.
+    final noShowModeActive = _noShowPenaltyGoalsActive;
     currentStage = MatchStage.fullTime;
     _resetNoShowPenaltyGoals();
     if (!noShowModeActive) {
-      stopAll(true);
+      stopAll(true, force: forceStop);
       gameOverAll();
     }
     timerButtonText = 'REPEAT';
@@ -1593,6 +1603,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     final config = scoreboardResultService.matchConfig;
     if (config == null || config.matchCode.isEmpty) return false;
     if (!scoreboardResultService.hasToken) return false;
+    // A still-unresolved prior result for this fixture (REPEAT while the first
+    // run's POST is in flight) means _enterFullTimeResultReview would refuse
+    // to arm the review — ending early would strand the referee at full time
+    // with no result editor, breaking the dialog's promise. Hide the button
+    // instead, matching the review suppression at a natural full time.
+    if (scoreboardResultService.hasUnresolvedResultFor(config.matchCode)) {
+      return false;
+    }
     return _canSubmitScoreboardResult(config);
   }
 
@@ -1604,11 +1622,18 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   /// it is a no-op for manual matches and once already at full time.
   void endMatchEarly() {
     if (!canEndMatchEarly) return;
-    final noShowModeActive = _noShowPenaltyGoalsActive;
+    // Modules parked in the half-time break need the forced STOP dispatch —
+    // decided here, before the transition below moves the stage off halfTime.
+    final endedFromHalfTime = currentStage == MatchStage.halfTime;
     // Cancels a running half clock OR the half-time break countdown, and
     // clears the background run-clock anchors so a backgrounded app cannot
     // catch the ended match up later.
     stopTimer();
+    // Every natural path reaches fullTime only when the clock hits 0:00, and
+    // Home, the MQTT/bridge sinks, and the persisted RAVF003 snapshot all
+    // surface _remainingTime as-is — an early end must not present "full time
+    // with 10:00 left".
+    _remainingTime = 0;
     // A match ended administratively "happened" even if the clock never
     // started (inGame is otherwise only set by startTimer). Required twice
     // over: Home's return-from-Settings path calls gameInit() when !inGame,
@@ -1616,7 +1641,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // path only restores a snapshot when snapshot.inGame is true, so the
     // RAVF003 kill-before-submit review snapshot must record an in-game match.
     inGame = true;
-    _completeMatchToFullTime(noShowModeActive: noShowModeActive);
+    _completeMatchToFullTime(forceStop: endedFromHalfTime);
     _broadcastStageAndTime();
     notifyListeners();
   }
@@ -2122,6 +2147,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
     return '1 goal/$_noShowPenaltyGoalIntervalSeconds sec';
   }
+
   String get noShowPenaltyScoringTeamName =>
       _noShowPenaltyScoringTeam?.name ?? '';
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;
