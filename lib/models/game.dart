@@ -37,15 +37,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   static const int _defaultPlayersPerTeam = 2;
   static const int _noShowPenaltyGoalIntervalSeconds = 30;
   static const int _maxNoShowPenaltyGoalDifference = 10;
-  // Workaround (issue #71) for the scoreboard sending the 25-min scheduling
-  // SLOT as `duration_seconds` (rcj-scoreboard#108). A standard RCJ Soccer
-  // 25-min slot is 10+5+10 — two 10-min halves + a 5-min half-time break — so
-  // map that one value to a 10-min half + 5-min break instead of treating
-  // 25 min as the per-half length (which would run 2x25=50 min). Any other
-  // duration passes through unchanged until the server sends a real half time.
-  static const int _scoreboardSlot25MinSeconds = 25 * 60; // 1500
-  static const int _scoreboardSlot25HalfSeconds = 10 * 60; // 600
-  static const int _scoreboardSlot25HalfTimeSeconds = 5 * 60; // 300
+  // A scoreboard fixture's `duration_seconds` is the SCHEDULING SLOT (e.g. the
+  // 40-min slot; was 25 — rcj-scoreboard#108), NOT the play time. A standard RCJ
+  // Soccer match is always 10 + 5 + 10 (two 10-min halves + a 5-min half-time
+  // break) regardless of the slot length, so every scoreboard match is forced to
+  // that and the payload duration is ignored (#71). TODO: expose these as an
+  // operator setting if an event ever needs a different format.
+  static const int _scoreboardHalfSeconds = 10 * 60; // 600
+  static const int _scoreboardHalfTimeSeconds = 5 * 60; // 300
 
   String timerButtonText = 'START';
   final int _maxPlayer = 5;
@@ -1348,10 +1347,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
   }
 
-  // Set the LIVE match timing from a scoreboard config, applying the #71
-  // 25-min-slot workaround. Sets the fields directly (NOT via the periodTime/
-  // halfTimeDuration setters) so the link's timing is used for this match only
-  // and never persisted as the operator's stored defaults.
+  // Set the LIVE match timing for a scoreboard match. New scoreboard servers
+  // send explicit period/half-time fields; older servers only send legacy
+  // `duration_seconds` (a scheduling slot, not play time), so fall back to the
+  // standard 10 + 5 + 10 RCJ Soccer clock. Sets fields directly (NOT via the
+  // periodTime/halfTimeDuration setters) so linked-match timing is never
+  // persisted as the operator defaults.
   void _applyScoreboardTiming(ScoreboardMatchConfig config) {
     if (config.hasExplicitTiming) {
       _periodTime = config.periodDurationSeconds;
@@ -1359,12 +1360,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       return;
     }
 
-    if (config.durationSeconds == _scoreboardSlot25MinSeconds) {
-      _periodTime = _scoreboardSlot25HalfSeconds;
-      _halfTimeDuration = _scoreboardSlot25HalfTimeSeconds;
-    } else {
-      _periodTime = config.durationSeconds;
-    }
+    _periodTime = _scoreboardHalfSeconds;
+    _halfTimeDuration = _scoreboardHalfTimeSeconds;
   }
 
   void _applyScoreboardMatchConfig(ScoreboardMatchConfig config) {
