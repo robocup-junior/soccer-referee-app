@@ -5,6 +5,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/services/error_messages.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
+import 'package:rcj_scoreboard/utils/ble_address.dart';
 
 
 enum ModuleState {
@@ -66,6 +67,13 @@ class Module with ChangeNotifier {
   // no-module penalty recorded on a stopped module returns to stop.
   bool _resumeAfterPenalty = false;
   String macAddress = '';
+  // The module's permanent hardware MAC (uppercase, '' if unknown) — the
+  // stable identity the scoreboard server knows (#82). On Android it equals
+  // [macAddress] (a BLE peripheral is addressed by its MAC); on iOS
+  // [macAddress] is a per-phone CoreBluetooth UUID and this is recovered from
+  // the QR scan, the advertised name `RCJs-m_<MAC>`, or the match-load
+  // resolver. Reported in the scoreboard result POST instead of [macAddress].
+  String hardwareMac = '';
   String bleStatus = 'Disconnected';
   // True while we want to be connected (connect tapped, autoConnect active).
   // Lets a device-level disconnect read as "Connecting..." (still trying) rather
@@ -171,9 +179,30 @@ class Module with ChangeNotifier {
       bleStatus = describeError(e).message;
       debugPrint('BLE connect error: $e');
       subscription?.cancel();
+      // #82 (iOS): connect() never even started because the identity is not
+      // connectable — a stale cached UUID ("Peripheral not found") or a
+      // MAC-shaped id fed to fromId ("invalid remoteId"). When the hardware
+      // MAC is known, hand the module to the match-load resolver (it scans
+      // only while no half runs) instead of leaving a dead error status. This
+      // fires once per failed connect() CALL, never from disconnect events —
+      // it is identity resolution, not reconnection (invariant #5).
+      if (useIosBleUuid &&
+          hardwareMac.isNotEmpty &&
+          _isIosUnknownPeripheralError(e)) {
+        _game.enrollIosMacResolve(this);
+      }
     }
     notifyListeners();
 
+  }
+
+  /// The two iOS connect() failures that mean "this connection id cannot ever
+  /// connect" (see flutter_blue_plus_darwin FlutterBluePlusPlugin.m): the UUID
+  /// is unknown to CoreBluetooth, or the id was not a UUID at all.
+  static bool _isIosUnknownPeripheralError(Object e) {
+    final msg = e.toString();
+    return msg.contains('Peripheral not found') ||
+        msg.contains('invalid remoteId');
   }
 
   Future<bool> bleCheckServicesAndGetCharacteristics() async {
@@ -362,11 +391,22 @@ class Module with ChangeNotifier {
 
 
   void bleDisconnect({String? reason}) async {
+    // #82: a module can be "Searching..." — enrolled with the iOS resolver,
+    // no device yet. Cancel must reach that state too, and an in-flight scan
+    // hit for it must not revive it (the resolver drops non-pending hits).
+    _game.cancelIosMacResolve(this);
     // Note: no `!isConnected` guard. While autoConnect is still retrying the
     // device is NOT connected, yet we must still call disconnect() to cancel
     // that pending retry loop and clear the connect intent — otherwise a dead
     // module is stuck on "Connecting..." forever with no way out.
-    if (bleDevice == null) return;
+    if (bleDevice == null) {
+      // Device-less Cancel (a Searching module): reflect the stop in status.
+      if (bleStatus != 'Disconnected') {
+        bleStatus = reason ?? 'Disconnected';
+        notifyListeners();
+      }
+      return;
+    }
 
     // Clear the connect intent *synchronously* before the async disconnect, so
     // the disconnect event that disconnect() triggers reads as an intended
@@ -619,6 +659,16 @@ class Module with ChangeNotifier {
      if (bleDevice == null) return;
 
      macAddress = bleDevice!.remoteId.toString();
+     // #82: keep the stable hardware identity in step, never clobbering a
+     // known value with an unknown one. On Android remoteId IS the MAC; on iOS
+     // it is a UUID, so try the (possibly empty, e.g. fromId-built) platform
+     // name — the connected event backfills reliably once the name is known.
+     if (isMacFormat(macAddress)) {
+       hardwareMac = macAddress.toUpperCase();
+     } else {
+       final parsed = macFromAdvertisedName(bleDevice!.platformName);
+       if (parsed != null) hardwareMac = parsed;
+     }
   }
 
   void _registerBleSubscriber(BluetoothDevice device) {
@@ -653,6 +703,13 @@ class Module with ChangeNotifier {
         _isConnected = true;
         debugPrint('Connect');
         bleStatus = 'Connected';
+        // #82: once connected the advertised name is reliably cached, so a
+        // module connected by UUID without a QR scan (saved device, scan-list
+        // pick) still learns its hardware MAC for the scoreboard report.
+        if (hardwareMac.isEmpty) {
+          final parsed = macFromAdvertisedName(device.platformName);
+          if (parsed != null) hardwareMac = parsed;
+        }
         notifyListeners();
         bleInitModule();
       }
@@ -697,17 +754,55 @@ class Module with ChangeNotifier {
     _game.markMatchStateDirtyAndFlush();
   }
 
-  void applyPresetConfig(String macAddress, String label) {
+  /// #82 (iOS): resolver status surface — the module is waiting for the
+  /// match-load scan to learn its CoreBluetooth UUID. Guarded so it can never
+  /// stomp a live or in-progress connection's status.
+  void markSearching() {
+    if (_isConnected || _connectIntent) return;
+    bleStatus = 'Searching...';
+    notifyListeners();
+  }
+
+  /// #82 (iOS): the resolver stopped (kickoff) without finding this module.
+  /// The referee's manual scan/QR pairing stays available.
+  void markSearchGaveUp() {
+    if (_isConnected || _connectIntent) return;
+    bleStatus = 'Not found';
+    notifyListeners();
+  }
+
+  void applyPresetConfig(String macAddress, String label,
+      {String? hardwareMac}) {
     // Always apply the label: an empty label resolves to the default name via
     // the `name` getter, so reloading a preset whose module used the default
     // name correctly clears any custom label left over from a previous preset.
     setLabel(label);
+    // #82: record the stable hardware identity when the caller knows it
+    // (snapshots, presets, iOS auto-pair). Android callers pass the MAC as the
+    // connection id, so it doubles as the hardware MAC. Never clobber a known
+    // value with an unknown one.
+    if (hardwareMac != null && hardwareMac.isNotEmpty) {
+      this.hardwareMac = hardwareMac.toUpperCase();
+    } else if (isMacFormat(macAddress)) {
+      this.hardwareMac = macAddress.toUpperCase();
+    }
+    // A slot may now carry only a hardware MAC while the iOS resolver looks
+    // for its UUID — no connection identity yet means nothing to connect.
     if (macAddress.isEmpty) return;
     final newMac = macAddress.toUpperCase();
     // Already connected to this exact module: just (re)label it. Re-running
     // setBleDevice()+bleConnect() would disconnect the live link and then race
     // bleConnect()'s isConnected guard, leaving it stuck on "Connecting...".
     if (_isConnected && this.macAddress.toUpperCase() == newMac) {
+      return;
+    }
+    // Same, keyed on the HARDWARE identity (#82): on iOS the stored connection
+    // id is a UUID, so a re-pair passing the module's hardware MAC would never
+    // match the guard above and would churn a live link — the auto-pair path
+    // relies on re-pairs being no-ops (see _syncScoreboardModulePairing).
+    if (_isConnected &&
+        this.hardwareMac.isNotEmpty &&
+        this.hardwareMac == newMac) {
       return;
     }
     setBleDevice(BluetoothDevice.fromId(newMac));
@@ -723,6 +818,7 @@ class Module with ChangeNotifier {
         moduleId: moduleId,
         isEnabled: _isEnabled,
         macAddress: macAddress,
+        hardwareMac: hardwareMac,
         customLabel: hasCustomLabel ? _label : null,
         state: _state.name,
         lastState: _lastState.name,
@@ -756,12 +852,22 @@ class Module with ChangeNotifier {
     if (s.isEnabled && s.macAddress.isNotEmpty) {
       // applyPresetConfig() sets the label, builds the device and reconnects.
       // It takes a non-null label, hence `?? ''` (an empty label resolves to
-      // the default name via the `name` getter).
-      applyPresetConfig(s.macAddress, s.customLabel ?? '');
+      // the default name via the `name` getter). The hardware MAC rides along
+      // (#82); a pre-split Android snapshot has none, but applyPresetConfig
+      // backfills it from the MAC-shaped connection id.
+      applyPresetConfig(s.macAddress, s.customLabel ?? '',
+          hardwareMac: s.hardwareMac);
     } else {
-      // Not reconnecting: still record the MAC (for a later manual connect) and
-      // apply the label, mirroring applyPresetConfig's always-apply-label rule.
+      // Not reconnecting: still record the identities (for a later manual
+      // connect / the iOS resolver) and apply the label, mirroring
+      // applyPresetConfig's always-apply-label rule.
       macAddress = s.macAddress;
+      if (s.hardwareMac.isNotEmpty) {
+        hardwareMac = s.hardwareMac.toUpperCase();
+      } else if (isMacFormat(s.macAddress)) {
+        // Pre-split snapshot on Android: the stored connection id IS the MAC.
+        hardwareMac = s.macAddress.toUpperCase();
+      }
       setLabel(s.customLabel ?? '');
     }
     notifyListeners();

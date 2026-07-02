@@ -46,6 +46,12 @@ class ModuleSnapshot {
   final int moduleId;
   final bool isEnabled;
   final String macAddress;
+
+  /// The module's permanent hardware MAC (#82) — '' when unknown. Additive
+  /// optional field: pre-split snapshots simply lack the key (lenient read, no
+  /// schema-version bump — a bump would discard every in-flight snapshot on
+  /// app upgrade for a compatible change).
+  final String hardwareMac;
   final String? customLabel;
 
   /// `ModuleState.name` of `_state` at save time.
@@ -61,6 +67,7 @@ class ModuleSnapshot {
     required this.moduleId,
     required this.isEnabled,
     required this.macAddress,
+    this.hardwareMac = '',
     required this.customLabel,
     required this.state,
     required this.lastState,
@@ -71,6 +78,7 @@ class ModuleSnapshot {
         'moduleId': moduleId,
         'isEnabled': isEnabled,
         'macAddress': macAddress,
+        'hardwareMac': hardwareMac,
         'customLabel': customLabel,
         'state': state,
         'lastState': lastState,
@@ -81,6 +89,7 @@ class ModuleSnapshot {
         moduleId: (json['moduleId'] as num).toInt(),
         isEnabled: json['isEnabled'] as bool,
         macAddress: json['macAddress'] as String,
+        hardwareMac: json['hardwareMac'] as String? ?? '',
         customLabel: json['customLabel'] as String?,
         state: json['state'] as String,
         lastState: json['lastState'] as String,
