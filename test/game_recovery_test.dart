@@ -8,6 +8,7 @@
 // delays) by either not starting the clock or cancelling/draining it before the
 // test returns.
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -101,12 +102,20 @@ class _RecordingBleBridgeService extends BleBridgeService {
     connectionStateNotifier.value = BridgeConnectionState.connected;
   }
 
+  // When set, disconnectAfterDrain blocks on it — lets a test hold the
+  // teardown "mid-drain" and race a REPEAT/Load against it.
+  Completer<void>? drainGate;
+
   @override
   Future<void> disconnectAfterDrain({
     Duration timeout = const Duration(seconds: 3),
   }) async {
     disconnectAfterDrainCalls++;
     log.add('bridge:disconnectAfterDrain');
+    final gate = drainGate;
+    if (gate != null) {
+      await gate.future;
+    }
     connectionStateNotifier.value = BridgeConnectionState.disconnected;
   }
 }
@@ -2524,6 +2533,38 @@ void main() {
 
       game.dispose();
     });
+
+    testWidgets('REPEAT mid-drain does not disconnect the new match MQTT',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      final mqtt = _RecordingMqttService(log);
+      final bridge = _RecordingBleBridgeService(log);
+      bridge.connectionStateNotifier.value = BridgeConnectionState.connected;
+      bridge.drainGate = Completer<void>();
+      game.mqttService = mqtt;
+      game.bleBridgeService = bridge;
+
+      game.endMatchEarly();
+      // Past the 1 s delay: the teardown is now blocked inside the bridge
+      // drain (the longest real window — up to 3 s when a bridge is live).
+      await pumpPastTransportTeardownDelay(tester);
+      expect(bridge.disconnectAfterDrainCalls, 1);
+      expect(mqtt.disconnectCalls, 0);
+
+      // REPEAT lands mid-drain: a new match starts (gameInit re-arms the
+      // teardown epoch), then the drain finally completes.
+      game.toggleTimer();
+      expect(game.currentStage, MatchStage.firstHalf);
+      bridge.drainGate!.complete();
+      await tester.pump();
+      await tester.pump();
+
+      // The stale teardown must not touch the new match's MQTT session.
+      expect(mqtt.disconnectCalls, 0);
+
+      game.dispose();
+    });
   });
 
   group('mqtt auto-connect on match load (#88)', () {
@@ -2570,6 +2611,28 @@ void main() {
       await tester.pump();
 
       expect(mqtt.connectCalls, 1);
+      game.dispose();
+    });
+
+    testWidgets('successful auto-connect rebroadcasts the loaded match state',
+        (tester) async {
+      final game = await gameWithRecordingMqtt(tester);
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      applyConfig(game);
+      await tester.pump();
+
+      // The load path's gameInit() broadcasts ran while MQTT was still
+      // disconnected (dropped), so the hook must rebroadcast after the
+      // connect succeeds — otherwise the new field_N keeps the previous
+      // match's retained data until the first in-match event.
+      final connectIndex = mqtt.log.indexOf('mqtt:connect');
+      final stateIndex =
+          mqtt.log.lastIndexOf('mqtt:publishGameState:firstHalf');
+      expect(connectIndex, isNonNegative);
+      expect(stateIndex, isNonNegative);
+      expect(stateIndex, greaterThan(connectIndex));
+
       game.dispose();
     });
 

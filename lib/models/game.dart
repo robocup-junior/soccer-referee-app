@@ -891,6 +891,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         bridgeState == BridgeConnectionState.connecting) {
       await bleBridgeService.disconnectAfterDrain();
     }
+    // The drain above can take seconds. If a REPEAT or a confirmed Load
+    // started a new match meanwhile (gameInit re-arms the teardown flag and
+    // moves the stage off fullTime — and a Load may have just auto-connected
+    // MQTT via #88), a stale disconnect here would silently freeze the new
+    // match's scoreboard, so re-check the epoch before touching MQTT.
+    if (!_fullTimeTransportTeardownDone ||
+        currentStage != MatchStage.fullTime) {
+      return;
+    }
     mqttService.disconnect();
   }
 
@@ -904,8 +913,17 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       return;
     }
     // Fire-and-forget: a broker outage must not delay match load, and the
-    // Settings status label reports the outcome.
-    unawaited(mqttService.connect());
+    // Settings status label reports the outcome. On success, rebroadcast the
+    // CURRENT state: the load path's gameInit() broadcasts ran while MQTT was
+    // still disconnected (publishMessage drops them), so without this the new
+    // match's retained topics would keep the previous match's data until the
+    // first in-match event. Broadcasting whatever is live now is always safe,
+    // even if the fixture changed again while connecting.
+    unawaited(mqttService.connect().then((connected) {
+      if (connected) {
+        _broadcastFullState();
+      }
+    }));
   }
 
   // Upper bound on background catch-up ticks: only the window the timer runs
