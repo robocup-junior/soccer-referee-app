@@ -236,12 +236,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _periodTime = _prefs!.getInt(_periodTimeKey) ?? _defaultPeriodTimeSeconds;
     _halfTimeDuration =
         _prefs!.getInt(_halfTimeDurationKey) ?? _defaultHalfTimeDurationSeconds;
-    _numberOfPlayers =
-        (_prefs!.getInt(_numberOfPlayersKey) ?? _defaultPlayersPerTeam)
-            .clamp(1, _maxPlayer)
-            .toInt();
-    _penaltyTime =
-        _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
+    _numberOfPlayers = (_prefs!.getInt(_numberOfPlayersKey) ??
+            _defaultPlayersPerTeam)
+        .clamp(1, _maxPlayer)
+        .toInt();
+    _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
 
     // Single-tap pref: flush a pre-load toggle if one happened, otherwise adopt
     // the stored value. Reading unconditionally would clobber an early toggle.
@@ -2150,7 +2149,6 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
     return '1 goal/$_noShowPenaltyGoalIntervalSeconds sec';
   }
-
   String get noShowPenaltyScoringTeamName =>
       _noShowPenaltyScoringTeam?.name ?? '';
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;

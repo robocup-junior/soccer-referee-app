@@ -870,8 +870,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text(
-                                  'Author: Martin Faltus, Fabian Weller, Marek Šuppa',
+                              child: Text('Author: Martin Faltus, Fabian Weller, Marek Šuppa',
                                   style: TextStyle(fontSize: 14)),
                             ),
                             Padding(
