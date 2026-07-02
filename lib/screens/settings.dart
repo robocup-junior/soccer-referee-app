@@ -160,6 +160,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _confirmEndMatchEarly() async {
     final game = widget.game;
+    // Pin the fixture the referee is confirming. A new deep link can be
+    // loaded while this dialog sits open (Home's "Load match?" dialog renders
+    // in the same root overlay, above us), swapping matchConfig under a stale
+    // confirm — the same stale-dialog class the load/review paths guard with
+    // expectedSignature. Version bumps of the same fixture change the
+    // signature too; the conservative no-op just makes the referee re-tap.
+    final expectedSignature =
+        game.scoreboardResultService.matchConfig?.signature;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -183,8 +191,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
     if (!mounted || confirmed != true) return;
     // The fixture can be cleared/changed while the dialog sits open; re-check
-    // the gate so a stale confirm can't end a match that no longer qualifies.
+    // the gate AND that it is still the exact fixture this dialog showed, so
+    // a stale confirm can't end a different (or edited) match.
     if (!game.canEndMatchEarly) return;
+    if (expectedSignature == null ||
+        game.scoreboardResultService.matchConfig?.signature !=
+            expectedSignature) {
+      return;
+    }
     // Pop Settings back to Home FIRST (returning the game so Home's
     // _navigateToSettings continuation runs gameRefresh(), not gameInit() —
     // endMatchEarly sets inGame synchronously below, before that continuation's
@@ -839,7 +853,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('Author: Martin Faltus, Fabian Weller, Marek Šuppa',
+                              child: Text(
+                                  'Author: Martin Faltus, Fabian Weller, Marek Šuppa',
                                   style: TextStyle(fontSize: 14)),
                             ),
                             Padding(
