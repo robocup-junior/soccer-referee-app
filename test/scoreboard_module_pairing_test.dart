@@ -10,6 +10,7 @@
 
 import 'dart:convert';
 
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -266,6 +267,86 @@ void main() {
       // Drain any scan/retry timers the resolve loop may have scheduled
       // before the kickoff stopped it.
       await tester.pump(const Duration(seconds: 10));
+    });
+
+    testWidgets(
+        'retargeting a CONNECTED slot to a different MAC replaces the '
+        'identity instead of silently keeping the old link (RAVF003)',
+        (tester) async {
+      final game = await loadedGame(tester);
+      final module = teamById(game, 'A').modules[0];
+      // Disabled so applyPresetConfig skips the real bleConnect (headless VM);
+      // the guards under test only read the connected flag.
+      module.disable();
+      module.macAddress = 'AA:AA:AA:AA:AA:01';
+      module.hardwareMac = 'AA:AA:AA:AA:AA:01';
+      module.debugIsConnected = true;
+
+      module.applyPresetConfig('BB:BB:BB:BB:BB:02', '');
+
+      expect(module.macAddress, 'BB:BB:BB:BB:BB:02');
+      expect(module.hardwareMac, 'BB:BB:BB:BB:BB:02');
+      expect(module.isConnected, isFalse); // old link dropped, fresh boundary
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        're-pairing the SAME hardware identity on a connected iOS slot stays '
+        'a no-op (idempotency guard reads the previous identity)',
+        (tester) async {
+      final game = await loadedGame(tester);
+      final module = teamById(game, 'A').modules[0];
+      module.macAddress = '12345678-1234-1234-1234-1234567890AB';
+      module.hardwareMac = 'AA:AA:AA:AA:AA:01';
+      module.debugIsConnected = true;
+
+      module.applyPresetConfig('AA:AA:AA:AA:AA:01', '');
+
+      expect(module.macAddress, '12345678-1234-1234-1234-1234567890AB');
+      expect(module.isConnected, isTrue);
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'retargeting a connected slot to a hardware MAC awaiting resolution '
+        'drops the live link (empty connection id path)', (tester) async {
+      final game = await loadedGame(tester);
+      final module = teamById(game, 'A').modules[0];
+      module.macAddress = '12345678-1234-1234-1234-1234567890AB';
+      module.hardwareMac = 'AA:AA:AA:AA:AA:01';
+      module.debugIsConnected = true;
+
+      module.applyPresetConfig('', '', hardwareMac: 'BB:BB:BB:BB:BB:02');
+
+      expect(module.hardwareMac, 'BB:BB:BB:BB:BB:02');
+      expect(module.isConnected, isFalse);
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'connecting a different UUID with no derivable MAC clears the stale '
+        'hardwareMac instead of reporting the previous module (RAVF002)',
+        (tester) async {
+      final game = await loadedGame(tester);
+      final module = teamById(game, 'A').modules[0];
+      module.hardwareMac = 'AA:AA:AA:AA:AA:01';
+
+      module.setBleDevice(
+          BluetoothDevice.fromId('12345678-1234-1234-1234-1234567890AB'));
+
+      expect(module.hardwareMac, '');
+
+      // And a caller that DOES know the MAC keeps it through setBleDevice.
+      module.setBleDevice(
+          BluetoothDevice.fromId('87654321-4321-4321-4321-BA0987654321'),
+          hardwareMac: 'BB:BB:BB:BB:BB:02');
+      expect(module.hardwareMac, 'BB:BB:BB:BB:BB:02');
+
+      game.dispose();
     });
 
     testWidgets(

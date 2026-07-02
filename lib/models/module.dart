@@ -400,7 +400,10 @@ class Module with ChangeNotifier {
     // that pending retry loop and clear the connect intent — otherwise a dead
     // module is stuck on "Connecting..." forever with no way out.
     if (bleDevice == null) {
-      // Device-less Cancel (a Searching module): reflect the stop in status.
+      // Device-less Cancel (a Searching module): clear the lifecycle flags
+      // and reflect the stop in status.
+      _connectIntent = false;
+      _isConnected = false;
       if (bleStatus != 'Disconnected') {
         bleStatus = reason ?? 'Disconnected';
         notifyListeners();
@@ -634,11 +637,15 @@ class Module with ChangeNotifier {
     }
   }
 
-  void setBleDevice(BluetoothDevice? device) {
+  void setBleDevice(BluetoothDevice? device, {String? hardwareMac}) {
     // check if there is currently some device saved in devices if so try to call proper disconnect to it
     if (bleDevice != null) {
       debugPrint('try disconect previos one');
-      bleDevice?.disconnect();
+      // Fire-and-forget teardown of the replaced device; a failure (BLE off /
+      // unsupported platform) must not surface as an unhandled async error.
+      unawaited(bleDevice?.disconnect().catchError((Object e) {
+        debugPrint('setBleDevice disconnect error: $e');
+      }));
       // Cancel the old device's connection-state and RX listeners so they can't
       // drive reconnect work or duplicate-deliver messages against a device
       // we're replacing.
@@ -658,16 +665,27 @@ class Module with ChangeNotifier {
 
      if (bleDevice == null) return;
 
+     final previousId = macAddress;
      macAddress = bleDevice!.remoteId.toString();
-     // #82: keep the stable hardware identity in step, never clobbering a
-     // known value with an unknown one. On Android remoteId IS the MAC; on iOS
-     // it is a UUID, so try the (possibly empty, e.g. fromId-built) platform
-     // name — the connected event backfills reliably once the name is known.
-     if (isMacFormat(macAddress)) {
-       hardwareMac = macAddress.toUpperCase();
+     // #82: keep the stable hardware identity in step. Callers that know the
+     // MAC pass it; otherwise derive it from the connection id (Android: the
+     // remoteId IS the MAC) or the advertised/GAP name caches. A CHANGED
+     // connection id with nothing derivable means this is a different physical
+     // module whose MAC we don't know yet — clear the stale value rather than
+     // report the previous module's MAC to the scoreboard (RAVF002); the
+     // connected event re-derives it from the name once the link is up.
+     if (hardwareMac != null && hardwareMac.isNotEmpty) {
+       this.hardwareMac = hardwareMac.toUpperCase();
+     } else if (isMacFormat(macAddress)) {
+       this.hardwareMac = macAddress.toUpperCase();
      } else {
-       final parsed = macFromAdvertisedName(bleDevice!.platformName);
-       if (parsed != null) hardwareMac = parsed;
+       final parsed = macFromAdvertisedName(bleDevice!.platformName) ??
+           macFromAdvertisedName(bleDevice!.advName);
+       if (parsed != null) {
+         this.hardwareMac = parsed;
+       } else if (previousId.toUpperCase() != macAddress.toUpperCase()) {
+         this.hardwareMac = '';
+       }
      }
   }
 
@@ -703,12 +721,15 @@ class Module with ChangeNotifier {
         _isConnected = true;
         debugPrint('Connect');
         bleStatus = 'Connected';
-        // #82: once connected the advertised name is reliably cached, so a
-        // module connected by UUID without a QR scan (saved device, scan-list
-        // pick) still learns its hardware MAC for the scoreboard report.
-        if (hardwareMac.isEmpty) {
-          final parsed = macFromAdvertisedName(device.platformName);
-          if (parsed != null) hardwareMac = parsed;
+        // #82: once connected the advertised/GAP name is authoritative for
+        // THIS device — (re)derive the hardware MAC so a module connected by
+        // UUID without a QR scan (saved device, scan-list pick) learns it,
+        // and a stale value from a previously-held module can't survive a
+        // retarget (RAVF002).
+        final parsedMac = macFromAdvertisedName(device.platformName) ??
+            macFromAdvertisedName(device.advName);
+        if (parsedMac != null && parsedMac != hardwareMac) {
+          hardwareMac = parsedMac;
         }
         notifyListeners();
         bleInitModule();
@@ -739,6 +760,10 @@ class Module with ChangeNotifier {
   ModuleState get lastState => _lastState;
   @visibleForTesting
   bool get suppressNextRestoreNotify => _suppressNextRestoreNotify;
+  // A live BLE link can't be stood up headless; retarget/idempotency guard
+  // tests (#82) flip the connected flag directly instead.
+  @visibleForTesting
+  set debugIsConnected(bool value) => _isConnected = value;
 
   void setLabel(String label) {
     _label = label.trim();
@@ -777,35 +802,55 @@ class Module with ChangeNotifier {
     // the `name` getter, so reloading a preset whose module used the default
     // name correctly clears any custom label left over from a previous preset.
     setLabel(label);
-    // #82: record the stable hardware identity when the caller knows it
-    // (snapshots, presets, iOS auto-pair). Android callers pass the MAC as the
-    // connection id, so it doubles as the hardware MAC. Never clobber a known
-    // value with an unknown one.
-    if (hardwareMac != null && hardwareMac.isNotEmpty) {
-      this.hardwareMac = hardwareMac.toUpperCase();
-    } else if (isMacFormat(macAddress)) {
-      this.hardwareMac = macAddress.toUpperCase();
+    // #82: resolve the target hardware identity WITHOUT mutating state yet —
+    // the idempotency guards below must compare against the PREVIOUS identity.
+    // (Writing first made "retarget a connected slot to a new MAC" a silent
+    // no-op: the guard read the freshly-written value, returned early, and the
+    // old link stayed up while the slot claimed the new module — RAVF003.)
+    // Android callers pass the MAC as the connection id, so it doubles as the
+    // hardware MAC; snapshots/presets/iOS auto-pair pass it explicitly.
+    final targetHardwareMac = (hardwareMac != null && hardwareMac.isNotEmpty)
+        ? hardwareMac.toUpperCase()
+        : (isMacFormat(macAddress) ? macAddress.toUpperCase() : '');
+    // A slot may carry only a hardware MAC while the iOS resolver looks for
+    // its UUID — no connection identity yet means nothing to connect. But a
+    // LIVE link belonging to a DIFFERENT module must be dropped on retarget:
+    // keeping it would leave START/STOP going to the old robot while the slot
+    // claims the new one.
+    if (macAddress.isEmpty) {
+      if (targetHardwareMac.isEmpty) return;
+      final isRetargetOfLiveLink = _isConnected &&
+          this.hardwareMac.isNotEmpty &&
+          this.hardwareMac != targetHardwareMac;
+      this.hardwareMac = targetHardwareMac;
+      if (isRetargetOfLiveLink) {
+        bleDisconnect();
+      }
+      return;
     }
-    // A slot may now carry only a hardware MAC while the iOS resolver looks
-    // for its UUID — no connection identity yet means nothing to connect.
-    if (macAddress.isEmpty) return;
     final newMac = macAddress.toUpperCase();
     // Already connected to this exact module: just (re)label it. Re-running
     // setBleDevice()+bleConnect() would disconnect the live link and then race
     // bleConnect()'s isConnected guard, leaving it stuck on "Connecting...".
     if (_isConnected && this.macAddress.toUpperCase() == newMac) {
+      if (targetHardwareMac.isNotEmpty) {
+        this.hardwareMac = targetHardwareMac;
+      }
       return;
     }
-    // Same, keyed on the HARDWARE identity (#82): on iOS the stored connection
-    // id is a UUID, so a re-pair passing the module's hardware MAC would never
-    // match the guard above and would churn a live link — the auto-pair path
-    // relies on re-pairs being no-ops (see _syncScoreboardModulePairing).
+    // Same, keyed on the PREVIOUS hardware identity (#82): on iOS the stored
+    // connection id is a UUID, so a re-pair passing the module's hardware MAC
+    // would never match the guard above and would churn a live link — the
+    // auto-pair path relies on re-pairs being no-ops (see
+    // _syncScoreboardModulePairing). A DIFFERENT MAC falls through to
+    // setBleDevice, which replaces the link.
     if (_isConnected &&
         this.hardwareMac.isNotEmpty &&
         this.hardwareMac == newMac) {
       return;
     }
-    setBleDevice(BluetoothDevice.fromId(newMac));
+    setBleDevice(BluetoothDevice.fromId(newMac),
+        hardwareMac: targetHardwareMac);
     if (_isEnabled) {
       bleConnect();
     }

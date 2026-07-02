@@ -1657,10 +1657,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _iosMacUuidCache[mac] = uuid;
     _persistIosMacUuidCache();
     // Already connected/connecting on this identity → nothing to do; churning
-    // setBleDevice would drop a live/in-flight link.
+    // setBleDevice would drop a live/in-flight link. (isConnected with the
+    // matching hardwareMac guard above implies the link IS this module — the
+    // retarget paths clear/replace stale identities before enrolling.)
     if (module.isConnected) return;
     if (module.macAddress.toUpperCase() == uuid.toUpperCase()) return;
-    module.setBleDevice(BluetoothDevice.fromId(uuid));
+    module.setBleDevice(BluetoothDevice.fromId(uuid), hardwareMac: mac);
     if (module.isEnabled) {
       module.bleConnect();
     }
