@@ -808,20 +808,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           _markDirtyFlush();
           break;
         case MatchStage.secondHalf:
-          currentStage = MatchStage.fullTime;
-          _resetNoShowPenaltyGoals();
-          if (!noShowModeActive) {
-            stopAll(true);
-            gameOverAll();
-          }
-          timerButtonText = 'REPEAT';
-          _enterFullTimeResultReview();
-          // The match is over: stop the OS autoConnect from chasing modules
-          // that are powered down for good (e.g. a unit still off from a
-          // late penalty). In-match these reconnect unbounded on purpose; at
-          // full time we settle the ones still off to "Disconnected".
-          disconnectInactiveModules();
-          _persistOrClearAtFullTime();
+          _completeMatchToFullTime(noShowModeActive: noShowModeActive);
           break;
         default:
           debugPrint('unknown match stage');
@@ -837,6 +824,30 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
 
     notifyListeners();
+  }
+
+  /// The one true secondHalf->fullTime transition. Runs the full set of
+  /// full-time side-effects: stage flip, no-show reset, robot stop + game-over
+  /// (skipped when no-show mode owned the robots), REPEAT affordance, result
+  /// review arming (RAVF003 snapshot + unresolved-result gate), module
+  /// teardown, and snapshot persist-or-clear. Called from the natural
+  /// second-half tick expiry and from endMatchEarly() (#84) — never build a
+  /// bespoke shortcut around it.
+  void _completeMatchToFullTime({required bool noShowModeActive}) {
+    currentStage = MatchStage.fullTime;
+    _resetNoShowPenaltyGoals();
+    if (!noShowModeActive) {
+      stopAll(true);
+      gameOverAll();
+    }
+    timerButtonText = 'REPEAT';
+    _enterFullTimeResultReview();
+    // The match is over: stop the OS autoConnect from chasing modules
+    // that are powered down for good (e.g. a unit still off from a
+    // late penalty). In-match these reconnect unbounded on purpose; at
+    // full time we settle the ones still off to "Disconnected".
+    disconnectInactiveModules();
+    _persistOrClearAtFullTime();
   }
 
   // Upper bound on background catch-up ticks: only the window the timer runs
@@ -1571,6 +1582,43 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       return false;
     }
     return true;
+  }
+
+  /// Whether the "End match now" early-end affordance (#84) applies: a
+  /// deep-link (scoreboard) fixture is loaded and submittable, and the match
+  /// has not already reached full time (also makes endMatchEarly idempotent).
+  /// Manual matches have nothing to confirm/submit, so they never qualify.
+  bool get canEndMatchEarly {
+    if (currentStage == MatchStage.fullTime) return false;
+    final config = scoreboardResultService.matchConfig;
+    if (config == null || config.matchCode.isEmpty) return false;
+    if (!scoreboardResultService.hasToken) return false;
+    return _canSubmitScoreboardResult(config);
+  }
+
+  /// End the match NOW (#84: team no-show -> forfeit/contumation win) and jump
+  /// to the result review. Works from any stage, clock running or not, and
+  /// reuses the exact secondHalf->fullTime side-effects so every full-time
+  /// invariant (RAVF003 kill-before-submit snapshot, unresolved-result gate,
+  /// REPEAT behaviour, module teardown) holds. Gated on [canEndMatchEarly], so
+  /// it is a no-op for manual matches and once already at full time.
+  void endMatchEarly() {
+    if (!canEndMatchEarly) return;
+    final noShowModeActive = _noShowPenaltyGoalsActive;
+    // Cancels a running half clock OR the half-time break countdown, and
+    // clears the background run-clock anchors so a backgrounded app cannot
+    // catch the ended match up later.
+    stopTimer();
+    // A match ended administratively "happened" even if the clock never
+    // started (inGame is otherwise only set by startTimer). Required twice
+    // over: Home's return-from-Settings path calls gameInit() when !inGame,
+    // which would wipe the full-time state just set below; and the cold-resume
+    // path only restores a snapshot when snapshot.inGame is true, so the
+    // RAVF003 kill-before-submit review snapshot must record an in-game match.
+    inGame = true;
+    _completeMatchToFullTime(noShowModeActive: noShowModeActive);
+    _broadcastStageAndTime();
+    notifyListeners();
   }
 
   bool get needsScoreboardResultReview {

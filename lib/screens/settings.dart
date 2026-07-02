@@ -158,6 +158,43 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  Future<void> _confirmEndMatchEarly() async {
+    final game = widget.game;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('End this match now?'),
+        content: Text(
+          'You will be taken to the result confirmation screen. '
+          'Current score: ${game.teams[0].name} ${game.teams[0].score} '
+          '– ${game.teams[1].score} ${game.teams[1].name}.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('End'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+    // The fixture can be cleared/changed while the dialog sits open; re-check
+    // the gate so a stale confirm can't end a match that no longer qualifies.
+    if (!game.canEndMatchEarly) return;
+    // Pop Settings back to Home FIRST (returning the game so Home's
+    // _navigateToSettings continuation runs gameRefresh(), not gameInit() —
+    // endMatchEarly sets inGame synchronously below, before that continuation's
+    // microtask runs). Home's onRequestReviewScoreboardResult callback is
+    // deferred to a post-frame callback, so the review route is pushed over
+    // Home, never over the disappearing Settings route.
+    Navigator.of(context).pop(game);
+    game.endMatchEarly();
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -395,6 +432,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                         widget.game.stopNoShowPenaltyGoals();
                                       });
                                     },
+                                  ),
+                                if (widget.game.canEndMatchEarly)
+                                  SettingButton(
+                                    title: 'End match now',
+                                    buttonText: 'End',
+                                    onPressed: _confirmEndMatchEarly,
                                   ),
                                 SettingButton(
                                   title: 'Disconnect all robots',
