@@ -34,6 +34,7 @@ class IosMacResolveController {
     required bool Function() canScanNow,
     required void Function(int moduleId, String mac, String uuid) onResolved,
     required void Function(int moduleId) onGaveUp,
+    bool Function()? isForeignScanRunning,
     Duration retryDelay = const Duration(seconds: 4),
     Duration preemptedRetryDelay = const Duration(milliseconds: 300),
   })  : _scan = scan ?? ble_address.resolveIosDeviceUuids,
@@ -41,6 +42,8 @@ class IosMacResolveController {
         _canScanNow = canScanNow,
         _onResolved = onResolved,
         _onGaveUp = onGaveUp,
+        _isForeignScanRunning =
+            isForeignScanRunning ?? _defaultIsForeignScanRunning,
         _retryDelay = retryDelay,
         _preemptedRetryDelay = preemptedRetryDelay;
 
@@ -54,9 +57,14 @@ class IosMacResolveController {
   final void Function() _stopScan;
   final bool Function() _canScanNow;
   final void Function(int moduleId, String mac, String uuid) _onResolved;
+  static bool _defaultIsForeignScanRunning() => FlutterBluePlus.isScanningNow;
+
   final void Function(int moduleId) _onGaveUp;
+  final bool Function() _isForeignScanRunning;
   final Duration _retryDelay;
   final Duration _preemptedRetryDelay;
+  static const int _maxConsecutiveFastRetries = 3;
+  int _consecutiveFastRetries = 0;
 
   /// moduleId → wanted hardware MAC (uppercase). Latest enroll wins per id.
   final Map<int, String> _pending = {};
@@ -106,6 +114,7 @@ class IosMacResolveController {
   void reset() {
     _pending.clear();
     _stoppedForMatch = false;
+    _consecutiveFastRetries = 0;
   }
 
   void dispose() {
@@ -125,6 +134,15 @@ class IosMacResolveController {
           !_stoppedForMatch &&
           _pending.isNotEmpty &&
           _canScanNow()) {
+        // Manual, referee-initiated scans always win the (single, process-
+        // wide) radio: starting ours would silently kill a running settings
+        // list scan or QR/MAC resolve — the exact fallback the design keeps
+        // for a module the auto-resolve hasn't found (#82 review round 2).
+        // Yield the whole round and check back on the normal cadence.
+        if (_isForeignScanRunning()) {
+          await Future.delayed(_retryDelay);
+          continue;
+        }
         final stopwatch = Stopwatch()..start();
         final hits = await _scan(_pending.values.toSet());
         stopwatch.stop();
@@ -142,10 +160,17 @@ class IosMacResolveController {
         // fbp allows ONE scan process-wide: another startScan (settings list
         // scan, a QR resolve) silently stops ours, which surfaces here as a
         // near-instant empty round. Retry quickly in that case so a
-        // preemption can't eat a whole pre-kickoff resolve window (RAVF006);
-        // a full-length empty round keeps the normal cadence.
-        final preempted =
-            hits.isEmpty && stopwatch.elapsed < const Duration(seconds: 1);
+        // preemption can't eat a whole pre-kickoff resolve window; a
+        // full-length empty round keeps the normal cadence. Two bounds keep
+        // this from degrading into a hot loop (#82 review round 2): a scan
+        // ERROR (BLE off / permission denied) also returns near-instantly
+        // empty, so consecutive fast retries are capped; and while a foreign
+        // scan is still running the loop yields above instead of retrying
+        // into it.
+        final preempted = hits.isEmpty &&
+            stopwatch.elapsed < const Duration(seconds: 1) &&
+            _consecutiveFastRetries < _maxConsecutiveFastRetries;
+        _consecutiveFastRetries = preempted ? _consecutiveFastRetries + 1 : 0;
         await Future.delayed(preempted ? _preemptedRetryDelay : _retryDelay);
       }
     } finally {

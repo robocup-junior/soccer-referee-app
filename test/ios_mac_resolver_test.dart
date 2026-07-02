@@ -5,10 +5,15 @@ import 'package:rcj_scoreboard/services/ios_mac_resolver.dart';
 
 /// Harness with every seam injected: no BLE, no timers longer than a few ms.
 class _Harness {
+  _Harness({this.retryDelay = const Duration(milliseconds: 1)});
+
+  final Duration retryDelay;
+  static const preemptedRetryDelay = Duration(milliseconds: 1);
   final resolved = <(int, String, String)>[];
   final gaveUp = <int>[];
   final scannedBatches = <Set<String>>[];
   bool canScan = true;
+  bool foreignScanRunning = false;
   int stopScanCalls = 0;
 
   /// Queue of scan outcomes; each scan pops one (empty map when exhausted).
@@ -26,9 +31,11 @@ class _Harness {
     },
     stopScan: () => stopScanCalls++,
     canScanNow: () => canScan,
+    isForeignScanRunning: () => foreignScanRunning,
     onResolved: (id, mac, uuid) => resolved.add((id, mac, uuid)),
     onGaveUp: gaveUp.add,
-    retryDelay: const Duration(milliseconds: 1),
+    retryDelay: retryDelay,
+    preemptedRetryDelay: preemptedRetryDelay,
   );
 }
 
@@ -155,6 +162,39 @@ void main() {
     h.controller.enroll(2, '11:22:33:44:55:66');
     await _settle();
     expect(h.scannedBatches.length, 1);
+  });
+
+  test(
+      'yields to a foreign (manual) scan instead of preempting it, and '
+      'resumes once the radio is free', () async {
+    final h = _Harness();
+    h.foreignScanRunning = true;
+    h.scanOutcomes.add({'AA:BB:CC:DD:EE:FF': 'uuid-1'});
+    h.controller.enroll(1, 'AA:BB:CC:DD:EE:FF');
+    await _settle();
+    // The referee's scan owns the radio: no resolver scan ran.
+    expect(h.scannedBatches, isEmpty);
+    expect(h.controller.pendingCount, 1);
+
+    h.foreignScanRunning = false;
+    await _settle();
+    expect(h.scannedBatches.length, 1);
+    expect(h.resolved, [(1, 'AA:BB:CC:DD:EE:FF', 'uuid-1')]);
+  });
+
+  test(
+      'near-instant empty rounds (scan error / preemption) cap at 3 fast '
+      'retries before falling back to the normal cadence', () async {
+    final h = _Harness(retryDelay: const Duration(milliseconds: 200));
+    // Every scan returns {} instantly — indistinguishable from an immediate
+    // scan failure (BLE off), the hot-loop hazard.
+    h.controller.enroll(1, 'AA:BB:CC:DD:EE:FF');
+    await _settle();
+    // 1 initial round + 3 fast retries; the next round waits out the normal
+    // 200 ms cadence, far beyond this window.
+    expect(h.scannedBatches.length, 4);
+    expect(h.controller.pendingCount, 1);
+    h.controller.dispose();
   });
 
   test(

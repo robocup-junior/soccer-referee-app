@@ -36,6 +36,10 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
 
   bool setMacFromModule = true;
   bool setLabelFromModule = true;
+  // #82 (iOS): the last QR resolve's (UUID, hardware MAC) pair — the MAC is
+  // only committed to the module when the user connects that exact UUID.
+  String? _qrResolvedUuid;
+  String? _qrScannedMac;
 
   bool bleIsScanning = false;
   StreamSubscription<List<ScanResult>>? _scanSubscription;
@@ -115,13 +119,19 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     if (name == null || name.trim().isEmpty) return;
 
     if (!mounted) return;
+    final module = Provider.of<Module>(context, listen: false);
     final device = SavedDevice.create(
       name: name.trim(),
       macAddress: mac,
-      // #82: keep the module's stable hardware identity with the saved device
-      // (on iOS the address above is a per-phone UUID).
-      hardwareMac:
-          Provider.of<Module>(context, listen: false).hardwareMac,
+      // #82: keep the stable hardware identity with the saved device — but
+      // only when it provably belongs to the SAVED address (the text field is
+      // free-typed and may describe a different device than the module's
+      // current pairing).
+      hardwareMac: isMacFormat(mac)
+          ? mac
+          : (mac.toUpperCase() == module.macAddress.toUpperCase()
+              ? module.hardwareMac
+              : ''),
       label: _labelController.text.trim(),
     );
     await PresetService().saveDevice(device);
@@ -394,9 +404,12 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
               child: ElevatedButton(
 
                 onPressed: () async {
-                  // Connected OR mid-connect → the button cancels/disconnects,
-                  // so a stuck "Connecting..." (dead module) can always be broken.
-                  if (module.isConnected || module.isConnecting) {
+                  // Connected OR mid-connect OR Searching (#82, iOS resolver)
+                  // → the button cancels/disconnects, so a stuck
+                  // "Connecting..."/"Searching..." can always be broken.
+                  if (module.isConnected ||
+                      module.isConnecting ||
+                      module.isSearching) {
                     module.bleDisconnect();
                   } else {
                     final address = _controller.text.trim();
@@ -434,8 +447,18 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                       module.bleConnect();
                       return;
                     }
+                    // #82: if this UUID came from the QR flow, carry the
+                    // scanned hardware MAC with the connect (see the stash in
+                    // handleIosResult); otherwise setBleDevice derives or
+                    // clears it.
+                    final qrMac = (_qrResolvedUuid != null &&
+                            address.toUpperCase() ==
+                                _qrResolvedUuid!.toUpperCase())
+                        ? _qrScannedMac
+                        : null;
                     module.setBleDevice(
-                        BluetoothDevice.fromId(address.toUpperCase()));
+                        BluetoothDevice.fromId(address.toUpperCase()),
+                        hardwareMac: qrMac);
                     module.bleConnect();
                     FlutterBluePlus.stopScan();
                   }
@@ -443,7 +466,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.grey[700],
                 ),
-                child: Text(module.isConnected ? 'Disconnect' : module.isConnecting ? 'Cancel' : 'Connect', style: const TextStyle(color: Colors.white, fontSize: 16, ),),
+                child: Text(module.isConnected ? 'Disconnect' : (module.isConnecting || module.isSearching) ? 'Cancel' : 'Connect', style: const TextStyle(color: Colors.white, fontSize: 16, ),),
               ),
             ),
 
@@ -541,10 +564,13 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
       if (resolvedUuid != null) {
         if (mounted) {
           _controller.text = resolvedUuid;
-          // #82: the QR carried the module's hardware MAC — keep it as the
-          // stable identity (the UUID above is per-phone and unreportable).
-          Provider.of<Module>(context, listen: false).hardwareMac =
-              '$pResult'.trim().toUpperCase();
+          // #82: the QR carried the module's hardware MAC. Do NOT write it to
+          // the module yet — an abandoned/mistaken scan must not retarget the
+          // slot's reported identity (least of all over a live link). Stash
+          // it; the Connect button passes it along when the user actually
+          // connects this UUID.
+          _qrResolvedUuid = resolvedUuid;
+          _qrScannedMac = '$pResult'.trim().toUpperCase();
         }
         return;
       }
