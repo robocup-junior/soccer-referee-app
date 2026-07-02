@@ -679,7 +679,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         // needsScoreboardResultReview's own unresolved-result clause, so arming
         // here does not surface the review while a result is in flight.
         if (_canSubmitScoreboardResult(config)) {
-          _fullTimeResultSignature = config.signature;
+          _fullTimeResultSignature = config.resultSignature;
         }
         _requestScoreboardResultReview();
       } else {
@@ -1268,10 +1268,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _resumedFixtureMatchCode = null;
     _resumedFixtureVersion = null;
     _suppressScoreboardFinalResult = false;
-    // The deep link had overridden the live period + half-time; restore the
-    // operator's configured defaults (or the app defaults 600 s / 300 s).
-    _periodTime = _prefs?.getInt(_periodTimeKey) ?? 600;
-    _halfTimeDuration = _prefs?.getInt(_halfTimeDurationKey) ?? 300;
+    // The deep link had overridden the live match timing; restore the operator's
+    // configured defaults (or app defaults when none are stored).
+    _periodTime = _prefs?.getInt(_periodTimeKey) ?? _defaultPeriodTimeSeconds;
+    _halfTimeDuration =
+        _prefs?.getInt(_halfTimeDurationKey) ?? _defaultHalfTimeDurationSeconds;
     setTeamToDefaultOrder();
     gameInit();
     unawaited(scoreboardResultService.resetLinkedMatchAfterSubmission());
@@ -1368,13 +1369,19 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
   }
 
-  // Set the LIVE match timing for a scoreboard match: ALWAYS 10-min halves +
-  // 5-min half-time break, regardless of the payload's `duration_seconds` (which
-  // is the scheduling slot, not play time — see the constants above). Sets the
-  // fields directly (NOT via the periodTime/halfTimeDuration setters) so it
-  // applies to this match only and is never persisted as the operator defaults.
-  // `config` is accepted for a stable call site / future per-event override.
+  // Set the LIVE match timing for a scoreboard match. New scoreboard servers
+  // send explicit period/half-time fields; older servers only send legacy
+  // `duration_seconds` (a scheduling slot, not play time), so fall back to the
+  // standard 10 + 5 + 10 RCJ Soccer clock. Sets fields directly (NOT via the
+  // periodTime/halfTimeDuration setters) so linked-match timing is never
+  // persisted as the operator defaults.
   void _applyScoreboardTiming(ScoreboardMatchConfig config) {
+    if (config.hasExplicitTiming) {
+      _periodTime = config.periodDurationSeconds;
+      _halfTimeDuration = config.halfTimeDurationSeconds;
+      return;
+    }
+
     _periodTime = _scoreboardHalfSeconds;
     _halfTimeDuration = _scoreboardHalfTimeSeconds;
   }
@@ -1651,12 +1658,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   bool get needsScoreboardResultReview {
     final config = scoreboardResultService.matchConfig;
     if (currentStage != MatchStage.fullTime) return false;
-    // The committed config must STILL be the exact fixture that just ended.
-    // Loading a different link at full time changes matchConfig, but its
-    // signature won't match the one captured at full time, so we never offer to
-    // submit the just-ended scores against a newly-loaded fixture.
+    // The committed config must STILL be the result identity that just ended.
+    // Loading a different link or organizer side/name/version edit at full time
+    // changes this signature, so we never offer to submit captured scores
+    // against a changed submission target or score mapping. Timing/venue-only
+    // corrections are allowed because they do not affect the final-result POST.
     if (_fullTimeResultSignature == null) return false;
-    if (config == null || config.signature != _fullTimeResultSignature) {
+    if (config == null || config.resultSignature != _fullTimeResultSignature) {
       return false;
     }
     if (!_canSubmitScoreboardResult(config)) return false;
@@ -1707,7 +1715,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         // single-use, so a still-unresolved prior result already owns it and the
         // review stays correctly suppressed (RAVF001, REPEAT same-fixture).
         !scoreboardResultService.hasUnresolvedResultFor(config.matchCode)) {
-      _fullTimeResultSignature = config.signature;
+      _fullTimeResultSignature = config.resultSignature;
     }
     _requestScoreboardResultReview();
   }
@@ -1774,9 +1782,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
     return (
       matchCode: config?.matchCode ?? '',
-      // Full fixture+revision identity captured at review time, so a later
-      // same-code change (side swap / version bump) is detected on submit.
-      signature: config?.signature ?? '',
+      // Result identity captured at review time, so a later same-code version,
+      // side, or team-name change is detected on submit without invalidating the
+      // review for timing/venue-only corrections.
+      signature: config?.resultSignature ?? '',
       homeName: _teamNameById(homeTeamId) ?? config?.homeTeamName ?? 'Home',
       awayName: _teamNameById(awayTeamId) ?? config?.awayTeamName ?? 'Away',
       homeGoals: _scoreByTeamId(homeTeamId) ?? 0,
@@ -1795,25 +1804,25 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (!_canSubmitScoreboardResult()) return false;
 
     // Identity guard: the review screen captured its scores/team mapping for one
-    // fixture revision. Compare the FULL signature (code + version + side +
-    // names), not just the match code: a same-code config change (e.g. a side
-    // swap or version bump from an organizer edit, or a new link confirmed at
-    // full time) would otherwise post the captured scores against a changed
-    // mapping/version. Refuse so the referee re-opens a fresh review instead.
-    if (scoreboardResultService.matchConfig?.signature != expectedSignature) {
+    // result identity. Compare the result signature (code + version + side +
+    // names), not just the match code: a same-code side/name/version change
+    // would otherwise post captured scores against a changed mapping or match
+    // revision. Timing/venue-only corrections are benign here and remain
+    // load/apply-signature changes only.
+    if (scoreboardResultService.matchConfig?.resultSignature !=
+        expectedSignature) {
       return false;
     }
 
     // Capture the side mapping BEFORE awaiting the enqueue. The signature guard
-    // above proved matchConfig.signature == expectedSignature, so this mapping is
-    // exactly the one the review screen submitted against. An already-in-flight
-    // refreshMatchConfig() can complete during the await below, reassign the
-    // committed config, and (for a same-fixture side swap) flip homeIsLeft —
-    // re-deriving the mapping AFTER the await would then write these goals onto
-    // the WRONG physical teams. Capturing here keeps the write-back correct
-    // regardless of a concurrent refresh, while still letting a benign
-    // version/name refresh through (the team IDs are stable, so the submitted
-    // homeGoals always belong to homeTeamId). Same homeIsLeft fallback as
+    // above proved matchConfig.resultSignature == expectedSignature, so this
+    // mapping is exactly the one the review screen submitted against. An
+    // already-in-flight refreshMatchConfig() can complete during the await below,
+    // reassign the committed config, and (for a same-fixture side swap) flip
+    // homeIsLeft — re-deriving the mapping AFTER the await would then write
+    // these goals onto the WRONG physical teams. Capturing here keeps the
+    // write-back correct regardless of a concurrent refresh, while still letting
+    // benign timing/venue-only refreshes through. Same homeIsLeft fallback as
     // buildScoreboardResultReview.
     final homeIsLeft = scoreboardResultService.matchConfig?.homeIsLeft ?? true;
     final homeTeamId = _scoreboardHomeTeamId ?? (homeIsLeft ? 'A' : 'B');

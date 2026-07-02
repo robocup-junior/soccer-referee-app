@@ -80,6 +80,24 @@ void main() {
       expect(config.status, 'SCHEDULED');
     });
 
+    test('parses explicit timing fields while preserving legacy slot alias', () {
+      final config = ScoreboardMatchConfig.fromJson({
+        ..._matchJson(),
+        'duration_seconds': 1800,
+        'slot_duration_seconds': 1800,
+        'period_duration_seconds': 720,
+        'half_time_duration_seconds': 360,
+        'play_duration_seconds': 1440,
+      });
+
+      expect(config.durationSeconds, 1800,
+          reason: 'legacy duration_seconds remains the scheduling-slot alias');
+      expect(config.slotDurationSeconds, 1800);
+      expect(config.periodDurationSeconds, 720);
+      expect(config.halfTimeDurationSeconds, 360);
+      expect(config.playDurationSeconds, 1440);
+    });
+
     test('parses per-robot inspection status and notes, in order', () {
       final config = ScoreboardMatchConfig.fromJson({
         ..._matchJson(),
@@ -183,6 +201,29 @@ void main() {
       expect(flipped.signature, base.signature);
     });
 
+    test('explicit timing changes are part of the load signature', () {
+      final base = ScoreboardMatchConfig.fromJson({
+        ..._matchJson(matchCode: 'M-TIMING'),
+        'duration_seconds': 1800,
+        'slot_duration_seconds': 1800,
+        'period_duration_seconds': 600,
+        'half_time_duration_seconds': 300,
+        'play_duration_seconds': 1200,
+      });
+      final corrected = ScoreboardMatchConfig.fromJson({
+        ..._matchJson(matchCode: 'M-TIMING'),
+        'duration_seconds': 1800,
+        'slot_duration_seconds': 1800,
+        'period_duration_seconds': 720,
+        'half_time_duration_seconds': 360,
+        'play_duration_seconds': 1440,
+      });
+
+      expect(corrected.signature, isNot(base.signature),
+          reason: 'a timing-only correction must reapply even when the legacy '
+              'scheduling slot is unchanged');
+    });
+
     test('falls back to side_order map and defaults', () {
       final config = ScoreboardMatchConfig.fromJson({
         'home_team': {'name': 'Home'},
@@ -191,7 +232,11 @@ void main() {
       });
 
       expect(config.homeIsLeft, isTrue);
-      expect(config.durationSeconds, 600);
+      expect(config.durationSeconds, 1500);
+      expect(config.slotDurationSeconds, 1500);
+      expect(config.periodDurationSeconds, 600);
+      expect(config.halfTimeDurationSeconds, 300);
+      expect(config.playDurationSeconds, 1200);
       expect(config.version, 0);
       expect(config.timezone, 'UTC');
     });

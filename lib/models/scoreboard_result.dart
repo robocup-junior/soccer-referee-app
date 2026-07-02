@@ -67,6 +67,10 @@ List<InspectionRobot> _inspectionRobotsFromJson(dynamic value) {
 }
 
 class ScoreboardMatchConfig {
+  static const int _defaultSlotDurationSeconds = 25 * 60;
+  static const int _defaultPeriodDurationSeconds = 10 * 60;
+  static const int _defaultHalfTimeDurationSeconds = 5 * 60;
+
   final String matchCode;
   final String homeTeamName;
   final String awayTeamName;
@@ -74,6 +78,11 @@ class ScoreboardMatchConfig {
   final String venueShortName;
   final DateTime? scheduledStart;
   final int durationSeconds;
+  final int slotDurationSeconds;
+  final int periodDurationSeconds;
+  final int halfTimeDurationSeconds;
+  final int playDurationSeconds;
+  final bool hasExplicitTiming;
   final String timezone;
   final int version;
   final String status;
@@ -95,6 +104,11 @@ class ScoreboardMatchConfig {
     required this.venueShortName,
     required this.scheduledStart,
     required this.durationSeconds,
+    required this.slotDurationSeconds,
+    required this.periodDurationSeconds,
+    required this.halfTimeDurationSeconds,
+    required this.playDurationSeconds,
+    required this.hasExplicitTiming,
     required this.timezone,
     required this.version,
     required this.status,
@@ -112,6 +126,11 @@ class ScoreboardMatchConfig {
     String? venueShortName,
     DateTime? scheduledStart,
     int? durationSeconds,
+    int? slotDurationSeconds,
+    int? periodDurationSeconds,
+    int? halfTimeDurationSeconds,
+    int? playDurationSeconds,
+    bool? hasExplicitTiming,
     String? timezone,
     int? version,
     String? status,
@@ -128,6 +147,12 @@ class ScoreboardMatchConfig {
       venueShortName: venueShortName ?? this.venueShortName,
       scheduledStart: scheduledStart ?? this.scheduledStart,
       durationSeconds: durationSeconds ?? this.durationSeconds,
+      slotDurationSeconds: slotDurationSeconds ?? this.slotDurationSeconds,
+      periodDurationSeconds: periodDurationSeconds ?? this.periodDurationSeconds,
+      halfTimeDurationSeconds:
+          halfTimeDurationSeconds ?? this.halfTimeDurationSeconds,
+      playDurationSeconds: playDurationSeconds ?? this.playDurationSeconds,
+      hasExplicitTiming: hasExplicitTiming ?? this.hasExplicitTiming,
       timezone: timezone ?? this.timezone,
       version: version ?? this.version,
       status: status ?? this.status,
@@ -168,7 +193,32 @@ class ScoreboardMatchConfig {
     final scheduledStartRaw = json['scheduled_start']?.toString();
     final scheduledStart =
         scheduledStartRaw == null ? null : DateTime.tryParse(scheduledStartRaw);
-    final durationSeconds = (json['duration_seconds'] as num?)?.toInt() ?? 600;
+    int positiveSeconds(dynamic value, int fallback) {
+      if (value is num) {
+        final seconds = value.toInt();
+        if (seconds > 0) return seconds;
+      }
+      return fallback;
+    }
+
+    int nonNegativeSeconds(dynamic value, int fallback) {
+      if (value is num) {
+        final seconds = value.toInt();
+        if (seconds >= 0) return seconds;
+      }
+      return fallback;
+    }
+
+    final durationSeconds =
+        positiveSeconds(json['duration_seconds'], _defaultSlotDurationSeconds);
+    final periodDurationSeconds = positiveSeconds(
+        json['period_duration_seconds'], _defaultPeriodDurationSeconds);
+    final halfTimeDurationSeconds = nonNegativeSeconds(
+        json['half_time_duration_seconds'], _defaultHalfTimeDurationSeconds);
+    final hasExplicitTiming = json.containsKey('slot_duration_seconds') ||
+        json.containsKey('period_duration_seconds') ||
+        json.containsKey('half_time_duration_seconds') ||
+        json.containsKey('play_duration_seconds');
 
     List<String> moduleMacs(dynamic value) {
       if (value is! List) return const [];
@@ -185,7 +235,14 @@ class ScoreboardMatchConfig {
       homeIsLeft: homeIsLeft ?? true,
       venueShortName: (json['venue']?.toString() ?? '').trim(),
       scheduledStart: scheduledStart,
-      durationSeconds: durationSeconds <= 0 ? 600 : durationSeconds,
+      durationSeconds: durationSeconds,
+      slotDurationSeconds:
+          positiveSeconds(json['slot_duration_seconds'], durationSeconds),
+      periodDurationSeconds: periodDurationSeconds,
+      halfTimeDurationSeconds: halfTimeDurationSeconds,
+      playDurationSeconds:
+          positiveSeconds(json['play_duration_seconds'], periodDurationSeconds * 2),
+      hasExplicitTiming: hasExplicitTiming,
       timezone: (json['timezone']?.toString() ?? 'UTC').trim(),
       version: (json['version'] as num?)?.toInt() ?? 0,
       status: (json['status']?.toString() ?? '').toUpperCase(),
@@ -197,31 +254,48 @@ class ScoreboardMatchConfig {
   }
 
   /// Stable identity of a fixture+revision as displayed/applied. Used to dedupe
-  /// the confirm-on-load prompt and to guard confirm/cancel/submit against
-  /// acting on a different fixture than the one a stale dialog/review is showing.
+  /// the confirm-on-load prompt and to guard confirm/cancel against acting on a
+  /// different fixture than the one a stale dialog is showing.
   ///
   /// Built via jsonEncode of an ordered field list (not a delimiter-joined
   /// string) so values containing the separator — e.g. a team name with a ':'
   /// — cannot collide with a different fixture.
   ///
-  /// Venue is part of the identity so a corrected schedule payload that changes
-  /// only the venue (same match/version) still re-applies and updates the MQTT
-  /// field number (#50); this keeps the apply-dedupe and the cold-resume re-arm
-  /// in lock-step on a single signature.
+  /// Venue is part of the load/apply identity so a corrected schedule payload
+  /// that changes only the venue (same match/version) still re-applies and
+  /// updates the MQTT field number (#50); timing is part of this identity so an
+  /// organizer correction to period/half-time values re-applies before kickoff.
   ///
   /// The module MACs are deliberately NOT part of the signature: auto-pairing
   /// runs at match (re)load (see Game._applyScoreboardMatchConfig), and folding
   /// MACs into the fixture identity would make an out-of-band module-assignment
-  /// change re-trigger the "Load match?" overwrite and the result-review guards
-  /// mid-match. A MAC-only correction therefore does not force a re-pair.
+  /// change re-trigger the "Load match?" overwrite mid-match. A MAC-only
+  /// correction therefore does not force a re-pair.
   String get signature => jsonEncode(<dynamic>[
         matchCode,
         version,
         durationSeconds,
+        slotDurationSeconds,
+        periodDurationSeconds,
+        halfTimeDurationSeconds,
+        playDurationSeconds,
         homeIsLeft,
         homeTeamName,
         awayTeamName,
         venueShortName,
+      ]);
+
+  /// Stable identity for reviewing/submitting final scores. Excludes
+  /// live-clock/venue-only corrections that do not change the submission target
+  /// or home/away score mapping, but still includes version, side, and team
+  /// names so a result captured for one fixture revision cannot be submitted
+  /// against a later side/name edit for the same match code.
+  String get resultSignature => jsonEncode(<dynamic>[
+        matchCode,
+        version,
+        homeIsLeft,
+        homeTeamName,
+        awayTeamName,
       ]);
 
   Map<String, dynamic> toJson() => {
@@ -232,6 +306,11 @@ class ScoreboardMatchConfig {
         'venue': venueShortName,
         'scheduled_start': scheduledStart?.toIso8601String(),
         'duration_seconds': durationSeconds,
+        if (hasExplicitTiming) 'slot_duration_seconds': slotDurationSeconds,
+        if (hasExplicitTiming) 'period_duration_seconds': periodDurationSeconds,
+        if (hasExplicitTiming)
+          'half_time_duration_seconds': halfTimeDurationSeconds,
+        if (hasExplicitTiming) 'play_duration_seconds': playDurationSeconds,
         'timezone': timezone,
         'version': version,
         'status': status,
