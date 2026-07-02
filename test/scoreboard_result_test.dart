@@ -343,13 +343,20 @@ void main() {
           3);
     });
 
-    test('connected reads a bool; absent/null -> false', () {
+    test('connected reads a bool; absent/null/non-bool -> false (no throw)',
+        () {
       bool parsed(dynamic v) =>
           ActualModuleReport.fromJson({'robot': 1, 'mac': '', 'connected': v})
               .connected;
       expect(parsed(true), isTrue);
       expect(parsed(false), isFalse);
       expect(parsed(null), isFalse);
+      // A corrupt/schema-drifted non-bool must default to false, NOT throw
+      // (RAVF002): `as bool?` would have thrown on these.
+      expect(parsed('false'), isFalse);
+      expect(parsed('true'), isFalse);
+      expect(parsed(0), isFalse);
+      expect(parsed(1), isFalse);
     });
 
     test('never-paired slot keeps an empty mac', () {
@@ -428,12 +435,12 @@ void main() {
         awayGoals: 0,
         version: 1,
         idempotencyKey: 'idem-mods',
-        homeModules: const [
+        actualHomeModules: const [
           ActualModuleReport(
               robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: true),
           ActualModuleReport(robot: 2, mac: '', connected: false),
         ],
-        awayModules: const [
+        actualAwayModules: const [
           ActualModuleReport(
               robot: 1, mac: 'AA:BB:CC:DD:EE:02', connected: false),
         ],
@@ -443,8 +450,8 @@ void main() {
       );
 
       final decoded = ResultOutboxItem.fromJson(item.toJson());
-      expect(decoded.homeModules, item.homeModules);
-      expect(decoded.awayModules, item.awayModules);
+      expect(decoded.actualHomeModules, item.actualHomeModules);
+      expect(decoded.actualAwayModules, item.actualAwayModules);
     });
 
     test('defaults actual modules to empty lists for pre-#85 payloads', () {
@@ -462,8 +469,8 @@ void main() {
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       });
 
-      expect(decoded.homeModules, isEmpty);
-      expect(decoded.awayModules, isEmpty);
+      expect(decoded.actualHomeModules, isEmpty);
+      expect(decoded.actualAwayModules, isEmpty);
     });
 
     test('a malformed persisted module row is dropped, not fatal', () {
@@ -477,7 +484,7 @@ void main() {
         'version': 1,
         'idempotency_key': 'idem-bad',
         'state': 'pending',
-        'home_modules': [
+        'actual_home_modules': [
           {'robot': 1, 'mac': 'AA:BB:CC:DD:EE:01', 'connected': true},
           'not-a-map',
           {
@@ -490,8 +497,38 @@ void main() {
         'updated_at': DateTime.now().toUtc().toIso8601String(),
       });
 
-      expect(decoded.homeModules, const [
+      expect(decoded.actualHomeModules, const [
         ActualModuleReport(robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: true),
+      ]);
+    });
+
+    test('a non-bool connected keeps the row and the whole item (RAVF002)', () {
+      // Regression: a corrupt `connected` (string instead of bool) must NOT
+      // throw out of fromJson and drop the entire pending submission — the row
+      // survives with connected:false. `as bool?` used to make this fatal.
+      final decoded = ResultOutboxItem.fromJson({
+        'id': 'id-badbool',
+        'base_url': 'https://scoreboard.junior.robocup.org',
+        'token': 'selector.secret',
+        'match_code': 'M-BADBOOL',
+        'home_goals': 2,
+        'away_goals': 1,
+        'version': 1,
+        'idempotency_key': 'idem-badbool',
+        'state': 'pending',
+        'actual_home_modules': [
+          {'robot': 1, 'mac': 'AA:BB:CC:DD:EE:01', 'connected': 'false'},
+        ],
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      });
+
+      // Whole item restored (score intact), row kept with connected coerced.
+      expect(decoded.matchCode, 'M-BADBOOL');
+      expect(decoded.homeGoals, 2);
+      expect(decoded.actualHomeModules, const [
+        ActualModuleReport(
+            robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: false),
       ]);
     });
   });
@@ -715,12 +752,12 @@ void main() {
       await service.enqueueFinalResult(
         homeGoals: 1,
         awayGoals: 0,
-        homeModules: const [
+        actualHomeModules: const [
           ActualModuleReport(
               robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: true),
           ActualModuleReport(robot: 2, mac: '', connected: false),
         ],
-        awayModules: const [
+        actualAwayModules: const [
           ActualModuleReport(
               robot: 1, mac: 'AA:BB:CC:DD:EE:02', connected: false),
         ],
@@ -777,7 +814,7 @@ void main() {
       await service.enqueueFinalResult(
         homeGoals: 1,
         awayGoals: 0,
-        homeModules: const [
+        actualHomeModules: const [
           ActualModuleReport(
               robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: true),
         ],
@@ -786,7 +823,7 @@ void main() {
       // What would be written to prefs and restored on the next launch.
       final persisted = service.outbox.single.toJson();
       final restored = ResultOutboxItem.fromJson(persisted);
-      expect(restored.homeModules, const [
+      expect(restored.actualHomeModules, const [
         ActualModuleReport(robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: true),
       ]);
     });

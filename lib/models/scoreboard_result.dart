@@ -87,12 +87,22 @@ class ActualModuleReport {
         // num.tryParse handles an int (3), a float (3.0), and a string ("3")
         // without ever throwing or silently dropping a valid robot.
         robot: num.tryParse(json['robot']?.toString() ?? '')?.toInt() ?? 0,
-        mac: (json['mac']?.toString() ?? '').trim().toUpperCase(),
-        // App-authored bool (module.isConnected -> JSON bool -> back), so a plain
-        // cast suffices — matches the home_confirmed/away_confirmed style in
-        // ResultOutboxItem.fromJson. Defaulted for a legacy/absent value.
-        connected: json['connected'] as bool? ?? false,
+        mac: normalizeMac(json['mac']?.toString() ?? ''),
+        // App-authored bool (module.isConnected -> JSON bool -> back). A type
+        // TEST rather than `as bool?` is deliberate: `as bool?` THROWS on a
+        // corrupt/schema-drifted value ("false", 0), and since
+        // _actualModulesFromJson has no per-row guard that throw would propagate
+        // out of ResultOutboxItem.fromJson and drop the WHOLE pending submission
+        // — defeating this parser's own "one bad row can't break the item"
+        // contract. A non-bool defaults to false instead.
+        connected:
+            json['connected'] is bool ? json['connected'] as bool : false,
       );
+
+  /// Canonical MAC form. Used on BOTH the capture path (Game._actualModulesFor…)
+  /// and this restore path so a persist→restore round-trip is idempotent even
+  /// for a whitespace-padded value (RAVF004).
+  static String normalizeMac(String raw) => raw.trim().toUpperCase();
 
   Map<String, dynamic> toJson() =>
       {'robot': robot, 'mac': mac, 'connected': connected};
@@ -316,8 +326,10 @@ class ResultOutboxItem {
   // Actually-fielded comm modules per team, captured at submit time (#85). These
   // ride the persisted outbox so a retry fired long after submit (even across an
   // app relaunch) still reports the submit-time state, never a live re-read.
-  final List<ActualModuleReport> homeModules;
-  final List<ActualModuleReport> awayModules;
+  // Named `actual*` (and persisted under `actual_*_modules`) to stay distinct
+  // from the read-path `homeModuleMacs`/`home_module_macs` in this file (#70).
+  final List<ActualModuleReport> actualHomeModules;
+  final List<ActualModuleReport> actualAwayModules;
   final int retryCount;
   final ResultSubmissionState state;
   final int? responseStatus;
@@ -338,8 +350,8 @@ class ResultOutboxItem {
     required this.version,
     required this.idempotencyKey,
     this.comment,
-    this.homeModules = const [],
-    this.awayModules = const [],
+    this.actualHomeModules = const [],
+    this.actualAwayModules = const [],
     this.retryCount = 0,
     required this.state,
     this.responseStatus,
@@ -377,8 +389,8 @@ class ResultOutboxItem {
       version: version,
       idempotencyKey: idempotencyKey,
       comment: comment,
-      homeModules: homeModules,
-      awayModules: awayModules,
+      actualHomeModules: actualHomeModules,
+      actualAwayModules: actualAwayModules,
       retryCount: retryCount ?? this.retryCount,
       state: state ?? this.state,
       responseStatus:
@@ -424,8 +436,8 @@ class ResultOutboxItem {
       idempotencyKey: json['idempotency_key'] as String,
       comment: json['comment'] as String?,
       // Defaulted so outbox items persisted before #85 still restore cleanly.
-      homeModules: _actualModulesFromJson(json['home_modules']),
-      awayModules: _actualModulesFromJson(json['away_modules']),
+      actualHomeModules: _actualModulesFromJson(json['actual_home_modules']),
+      actualAwayModules: _actualModulesFromJson(json['actual_away_modules']),
       retryCount: (json['retry_count'] as num?)?.toInt() ?? 0,
       state: parseState(json['state'] as String?),
       responseStatus: (json['response_status'] as num?)?.toInt(),
@@ -450,8 +462,10 @@ class ResultOutboxItem {
         'version': version,
         'idempotency_key': idempotencyKey,
         'comment': comment,
-        'home_modules': homeModules.map((m) => m.toJson()).toList(),
-        'away_modules': awayModules.map((m) => m.toJson()).toList(),
+        'actual_home_modules':
+            actualHomeModules.map((m) => m.toJson()).toList(),
+        'actual_away_modules':
+            actualAwayModules.map((m) => m.toJson()).toList(),
         'retry_count': retryCount,
         'state': state.name,
         'response_status': responseStatus,

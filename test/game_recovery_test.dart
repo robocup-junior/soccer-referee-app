@@ -422,12 +422,12 @@ void main() {
 
       final item = await submitCurrentReview(tester, game, 'M-MOD');
 
-      expect(item.homeModules, const [
+      expect(item.actualHomeModules, const [
         ActualModuleReport(
             robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: false),
         ActualModuleReport(robot: 2, mac: '', connected: false),
       ]);
-      expect(item.awayModules, const [
+      expect(item.actualAwayModules, const [
         ActualModuleReport(
             robot: 1, mac: 'BB:BB:CC:DD:EE:02', connected: false),
       ]);
@@ -446,11 +446,11 @@ void main() {
 
       final item = await submitCurrentReview(tester, game, 'M-MSWAP');
 
-      expect(item.homeModules, const [
+      expect(item.actualHomeModules, const [
         ActualModuleReport(
             robot: 1, mac: 'BB:BB:CC:DD:EE:01', connected: false),
       ]);
-      expect(item.awayModules, const [
+      expect(item.actualAwayModules, const [
         ActualModuleReport(
             robot: 1, mac: 'AA:AA:CC:DD:EE:02', connected: false),
       ]);
@@ -471,7 +471,7 @@ void main() {
 
       final item = await submitCurrentReview(tester, game, 'M-MREP');
 
-      expect(item.homeModules.single.mac, 'AA:BB:CC:DD:EE:99');
+      expect(item.actualHomeModules.single.mac, 'AA:BB:CC:DD:EE:99');
 
       await tester.pump(const Duration(milliseconds: 1500));
       game.dispose();

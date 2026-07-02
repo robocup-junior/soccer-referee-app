@@ -556,8 +556,8 @@ class ScoreboardResultService with ChangeNotifier {
     String? comment,
     bool homeConfirmed = false,
     bool awayConfirmed = false,
-    List<ActualModuleReport> homeModules = const [],
-    List<ActualModuleReport> awayModules = const [],
+    List<ActualModuleReport> actualHomeModules = const [],
+    List<ActualModuleReport> actualAwayModules = const [],
   }) async {
     final token = _token;
     final matchConfig = _matchConfig;
@@ -594,8 +594,8 @@ class ScoreboardResultService with ChangeNotifier {
       version: matchConfig.version,
       idempotencyKey: _uuid.v4(),
       comment: comment,
-      homeModules: homeModules,
-      awayModules: awayModules,
+      actualHomeModules: actualHomeModules,
+      actualAwayModules: actualAwayModules,
       state: ResultSubmissionState.pending,
       responseStatus: null,
       responseBody: null,
@@ -738,10 +738,11 @@ class ScoreboardResultService with ChangeNotifier {
       // state. Omitted entirely when both lists are empty (pre-#85 queued items,
       // non-referee edge) so the legacy payload stays byte-for-byte unchanged;
       // absence means "no report", not "no modules".
-      if (item.homeModules.isNotEmpty || item.awayModules.isNotEmpty)
+      if (item.actualHomeModules.isNotEmpty ||
+          item.actualAwayModules.isNotEmpty)
         'actual_modules': {
-          'home': item.homeModules.map((m) => m.toJson()).toList(),
-          'away': item.awayModules.map((m) => m.toJson()).toList(),
+          'home': item.actualHomeModules.map((m) => m.toJson()).toList(),
+          'away': item.actualAwayModules.map((m) => m.toJson()).toList(),
         },
     };
 

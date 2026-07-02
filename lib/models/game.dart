@@ -1716,6 +1716,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   /// currently on that slot (uppercase; '' when never paired), and its live BLE
   /// link state. Read-only wrt BLE (macAddress/isConnected only). Keyed by team
   /// id, never list position, so a half-time team-order swap can't cross sides.
+  ///
+  /// KNOWN LIMITATION (iOS, RAVF001 / #82): `module.macAddress` is the BLE
+  /// CONNECTION identity, which on iOS is a CoreBluetooth UUID, NOT the hardware
+  /// MAC (Apple hides the MAC). So on iPhone this reports a UUID the scoreboard
+  /// can't diff against `home_module_macs`, and reconciliation is Android-only
+  /// for now. The real fix — split connection-id from hardware-MAC and populate
+  /// the MAC on iOS from the QR scan / advertised name — is designed in
+  /// docs/ai/DESIGN_issue82_ios_mac_split.md and lands under #82; once it does,
+  /// this line reports the real MAC on both platforms with no change here.
   List<ActualModuleReport> _actualModulesForTeamId(String teamId) {
     final reports = <ActualModuleReport>[];
     for (final team in teams) {
@@ -1725,7 +1734,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         if (!module.isEnabled) continue;
         reports.add(ActualModuleReport(
           robot: i + 1,
-          mac: module.macAddress.toUpperCase(),
+          // Same normalization as the restore path so the round-trip is
+          // idempotent (see ActualModuleReport.normalizeMac).
+          mac: ActualModuleReport.normalizeMac(module.macAddress),
           connected: module.isConnected,
         ));
       }
@@ -1774,8 +1785,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // the START/STOP latency invariants, and capturing pre-await freezes the
     // submit-time state so a later retry (even post-relaunch, replayed from the
     // persisted outbox) reports what was fielded at submit, not at retry.
-    final homeModules = _actualModulesForTeamId(homeTeamId);
-    final awayModules = _actualModulesForTeamId(awayTeamId);
+    final actualHomeModules = _actualModulesForTeamId(homeTeamId);
+    final actualAwayModules = _actualModulesForTeamId(awayTeamId);
 
     final trimmedComment = comment?.trim();
     final submitted = await scoreboardResultService.enqueueFinalResult(
@@ -1786,8 +1797,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           : trimmedComment,
       homeConfirmed: homeConfirmed,
       awayConfirmed: awayConfirmed,
-      homeModules: homeModules,
-      awayModules: awayModules,
+      actualHomeModules: actualHomeModules,
+      actualAwayModules: actualAwayModules,
     );
     if (submitted) {
       // Persist the referee's (possibly corrected) review scores onto the live
