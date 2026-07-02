@@ -17,6 +17,8 @@ const String _legacyMqttPasswordHint = 'S_p-@P2_rL7ZFv9XYZ';
 
 class MqttService {
   MqttServerClient? _client;
+  // True while a connect() call is in flight (see the re-entrancy guard).
+  bool _connectInFlight = false;
   final String _mainTopic = 'rcj_soccer'; // To store the configured topic
   String _topic = ''; // To store the configured topic
   bool _isEnabled = false; // To store the enabled state
@@ -150,10 +152,23 @@ class MqttService {
       _client?.connectionStatus?.state == MqttConnectionState.connected;
 
   Future<bool> connect() async {
-    if (connectionStateNotifier.value == MqttConnectionStateEx.connecting) {
+    // Re-entrancy guard (#88): an auto-connect and a manual tap must not stack
+    // clients. Guard on an internal in-flight flag, NOT on the public
+    // connecting state — the bounded reconnect loop in _onDisconnected sets
+    // connectionStateNotifier to `connecting` before each retry, so a
+    // state-based guard would turn every retry into a no-op.
+    if (_connectInFlight) {
       return false;
     }
+    _connectInFlight = true;
+    try {
+      return await _connect();
+    } finally {
+      _connectInFlight = false;
+    }
+  }
 
+  Future<bool> _connect() async {
     if (_server.isEmpty || _port <= 0) {
       debugPrint('MQTT_LOGS::Error: Server or port not set.');
       return false;

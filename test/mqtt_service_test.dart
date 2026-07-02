@@ -54,22 +54,30 @@ void main() {
     expect(service.secureConnection, isFalse);
   });
 
-  test('connect returns false while already connecting without changing state',
-      () async {
+  test(
+      'connect still attempts when the state already reads connecting '
+      '(the reconnect loop pre-sets it before every retry)', () async {
     SharedPreferences.setMockInitialValues({
       'mqtt_server': '127.0.0.1',
       'mqtt_port': 1,
     });
     final service = MqttService();
     await service.loadPreferences();
+    // _onDisconnected's attemptReconnect sets the public state to
+    // `connecting` before each `await connect()`. The re-entrancy guard must
+    // therefore key on an internal in-flight flag, not on this state —
+    // otherwise every retry short-circuits and MQTT never recovers from an
+    // unintentional disconnect.
     service.connectionStateNotifier.value = MqttConnectionStateEx.connecting;
 
     final result = await service.connect();
 
+    // Port 1 refuses immediately: a REAL attempt was made and failed (error
+    // state), instead of returning while the state still reads `connecting`.
     expect(result, isFalse);
     expect(
       service.connectionStateNotifier.value,
-      MqttConnectionStateEx.connecting,
+      MqttConnectionStateEx.error,
     );
   });
 }
