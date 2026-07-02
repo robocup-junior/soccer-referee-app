@@ -838,7 +838,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   /// Module.stopAll re-dispatches to halfTime() (a fresh break countdown)
   /// instead of STOP — the same reason the halfTime->secondHalf paths use
   /// stopAll(true, force: true). The natural second-half expiry keeps the
-  /// unforced call it always had.
+  /// unforced call it always had. Callers own _broadcastStageAndTime() +
+  /// notifyListeners() afterwards (the natural tick does both once at the end
+  /// of _tickTimer, shared with the other stage transitions).
   void _completeMatchToFullTime({bool forceStop = false}) {
     // Captured before _resetNoShowPenaltyGoals() below clears the flag; when
     // no-show mode owned the robots they were never started, so the stop +
@@ -1635,7 +1637,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // with 10:00 left".
     _remainingTime = 0;
     // A match ended administratively "happened" even if the clock never
-    // started (inGame is otherwise only set by startTimer). Required twice
+    // started (during live play inGame is otherwise only set by startTimer;
+    // the cold-resume restore paths set it too). Required twice
     // over: Home's return-from-Settings path calls gameInit() when !inGame,
     // which would wipe the full-time state just set below; and the cold-resume
     // path only restores a snapshot when snapshot.inGame is true, so the

@@ -2104,7 +2104,11 @@ void main() {
 
     testWidgets('half-time break running is cancelled cleanly', (tester) async {
       final game = await loadScoreboardFixture(tester);
+      // Mirror the real firstHalf->halfTime transition state: break countdown
+      // on the clock and the SKIP affordance, not first-half leftovers.
       game.currentStage = MatchStage.halfTime;
+      game.setRemainingTime(game.halfTimeDuration);
+      game.timerButtonText = 'SKIP';
       game.startTimer();
       await tester.pump();
 
@@ -2112,6 +2116,8 @@ void main() {
 
       expect(game.isTimeRunning, isFalse);
       expect(game.currentStage, MatchStage.fullTime);
+      expect(game.remainingTime, 0);
+      expect(game.timerButtonText, 'REPEAT');
       expect(game.needsScoreboardResultReview, isTrue);
 
       await tester.pump(const Duration(milliseconds: 1500));
