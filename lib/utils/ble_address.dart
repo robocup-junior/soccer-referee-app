@@ -79,3 +79,64 @@ Future<String?> resolveIosDeviceUuid(String mac) async {
 
   return resolved;
 }
+
+/// Batch variant of [resolveIosDeviceUuid] for the scoreboard auto-pair path
+/// (#82). A deep-linked match carries the robots' hardware MACs, but iOS cannot
+/// connect by MAC — it needs each peripheral's CoreBluetooth UUID. Rather than
+/// run one 3 s scan per module (up to 10 × 3 s in series), this runs a SINGLE
+/// scan that harvests every advertised `RCJs-m_<MAC>` into a MAC→UUID map, so
+/// auto-pairing an entire field costs one scan.
+///
+/// Returns a map keyed by the UPPER-CASE MAC (callers look up with
+/// `mac.toUpperCase()`) → resolved UUID, containing only the [macs] actually
+/// seen advertising. MACs not seen (BLE off / powered down / out of range /
+/// timeout) are simply absent — the caller leaves those slots unpaired for a
+/// manual QR/scan, exactly as the single-MAC QR path shows "no device found".
+///
+/// Same validated scan lifecycle as [resolveIosDeviceUuid]: subscribe to
+/// `onScanResults` BEFORE `startScan` (never the replay-prone `scanResults`),
+/// case-insensitive name match, and always tear the scan down in `finally`.
+/// Stops early once every requested MAC has been resolved; otherwise runs to
+/// the timeout. This resolve-scan runs only at pairing time (clock stopped,
+/// `!inGame`) — never on the START/STOP path (invariant #1).
+Future<Map<String, String>> resolveIosDeviceUuids(Iterable<String> macs) async {
+  // Map the target advertised name -> upper-case MAC so a scan hit resolves
+  // straight back to the MAC key the caller will look up by.
+  final macByTargetName = <String, String>{};
+  for (final mac in macs) {
+    if (mac.isEmpty) continue;
+    final upper = mac.toUpperCase();
+    macByTargetName['RCJs-m_$upper'.toUpperCase()] = upper;
+  }
+  final resolved = <String, String>{};
+  if (macByTargetName.isEmpty) return resolved;
+
+  StreamSubscription<List<ScanResult>>? scanSub;
+  try {
+    scanSub = FlutterBluePlus.onScanResults.listen((results) {
+      for (final ScanResult r in results) {
+        final mac = macByTargetName[r.device.platformName.toUpperCase()];
+        if (mac != null) {
+          resolved[mac] = r.device.remoteId.toString();
+        }
+      }
+      // Stop as soon as every requested MAC is resolved: faster, and shrinks
+      // the window this scan overlaps robot control.
+      if (resolved.length == macByTargetName.length) {
+        unawaited(FlutterBluePlus.stopScan());
+      }
+    });
+
+    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 3));
+    await FlutterBluePlus.isScanning.where((scanning) => !scanning).first;
+  } catch (e) {
+    // BLE off / permission denied / platform scan failure: swallow so the
+    // caller can leave unresolved slots for a manual pair instead of throwing.
+    debugPrint('resolveIosDeviceUuids scan error: $e');
+  } finally {
+    await scanSub?.cancel();
+    await FlutterBluePlus.stopScan();
+  }
+
+  return resolved;
+}

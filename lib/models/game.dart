@@ -14,6 +14,7 @@ import 'package:rcj_scoreboard/services/wakelock_service.dart';
 import 'package:rcj_scoreboard/services/preset_service.dart';
 import 'package:rcj_scoreboard/services/scoreboard_result_service.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
+import 'package:rcj_scoreboard/utils/ble_address.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum MatchStage {
@@ -1544,12 +1545,64 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // each slot fall back to its default name (A1..A5) via Module.name;
     // applyPresetConfig is idempotent (skips a slot already on that MAC) so a
     // re-pair won't churn live BLE links.
+    // iOS cannot connect by MAC (the server value); it needs each peripheral's
+    // CoreBluetooth UUID, learned only by scanning and seeing the module
+    // advertise. Mirror the QR-scan path (module_settings.handleIosResult ->
+    // resolveIosDeviceUuid): resolve the server MACs to UUIDs first, then pair
+    // by UUID. Batched into ONE scan for the whole field (#82). Fire-and-forget
+    // because the resolve scan is async; auto-pair connect is async anyway and
+    // this only runs while the clock is stopped (!inGame — never during a half,
+    // invariant #1).
+    if (useIosBleUuid) {
+      unawaited(_autoPairScoreboardModulesIos(config));
+      return;
+    }
+
     final homeId = config.homeIsLeft ? 'A' : 'B';
     for (final team in teams) {
       final macs =
           team.id == homeId ? config.homeModuleMacs : config.awayModuleMacs;
       for (var i = 0; i < team.modules.length && i < macs.length; i++) {
         team.modules[i].applyPresetConfig(macs[i], '');
+      }
+    }
+  }
+
+  /// iOS auto-pair (#82): resolve every server MAC to its CoreBluetooth UUID via
+  /// a single BLE scan (utils/ble_address.resolveIosDeviceUuids), then pair each
+  /// slot by its UUID. A MAC not seen advertising (module off / out of range) is
+  /// left unpaired for a manual QR/scan — the same graceful fallback the QR path
+  /// gives via its "no device found" dialog. Slot→MAC mapping is identical to
+  /// the Android path: keyed by team ID so a swapped order never crosses sides,
+  /// and only server-named slots are touched.
+  Future<void> _autoPairScoreboardModulesIos(
+      ScoreboardMatchConfig config) async {
+    final homeId = config.homeIsLeft ? 'A' : 'B';
+
+    // One scan resolves every advertised MAC across both sides.
+    final allMacs = <String>[];
+    for (final team in teams) {
+      final macs =
+          team.id == homeId ? config.homeModuleMacs : config.awayModuleMacs;
+      for (var i = 0; i < team.modules.length && i < macs.length; i++) {
+        if (macs[i].isNotEmpty) allMacs.add(macs[i]);
+      }
+    }
+    if (allMacs.isEmpty) return;
+
+    final uuidByMac = await resolveIosDeviceUuids(allMacs);
+
+    for (final team in teams) {
+      final macs =
+          team.id == homeId ? config.homeModuleMacs : config.awayModuleMacs;
+      for (var i = 0; i < team.modules.length && i < macs.length; i++) {
+        final mac = macs[i];
+        if (mac.isEmpty) continue;
+        final uuid = uuidByMac[mac.toUpperCase()];
+        // Not advertising / not found: leave for a manual pair (QR/scan). Never
+        // fall back to fromId(MAC) here — that is the exact iOS #82 break.
+        if (uuid == null) continue;
+        team.modules[i].applyPresetConfig(uuid, '');
       }
     }
   }
