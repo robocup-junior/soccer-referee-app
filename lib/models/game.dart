@@ -236,11 +236,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _periodTime = _prefs!.getInt(_periodTimeKey) ?? _defaultPeriodTimeSeconds;
     _halfTimeDuration =
         _prefs!.getInt(_halfTimeDurationKey) ?? _defaultHalfTimeDurationSeconds;
-    _numberOfPlayers = (_prefs!.getInt(_numberOfPlayersKey) ??
-            _defaultPlayersPerTeam)
-        .clamp(1, _maxPlayer)
-        .toInt();
-    _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
+    _numberOfPlayers =
+        (_prefs!.getInt(_numberOfPlayersKey) ?? _defaultPlayersPerTeam)
+            .clamp(1, _maxPlayer)
+            .toInt();
+    _penaltyTime =
+        _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
 
     // Single-tap pref: flush a pre-load toggle if one happened, otherwise adopt
     // the stored value. Reading unconditionally would clobber an early toggle.
@@ -1784,6 +1785,40 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     );
   }
 
+  /// Builds the actually-fielded module report for one team (#85): one entry per
+  /// ENABLED slot (disabled slots — beyond `numberOfPlayers` — are omitted), with
+  /// `robot` = slot index + 1 (same 1-based convention as auto-pair), the MAC
+  /// currently on that slot (uppercase; '' when never paired), and its live BLE
+  /// link state. Read-only wrt BLE (macAddress/isConnected only). Keyed by team
+  /// id, never list position, so a half-time team-order swap can't cross sides.
+  ///
+  /// KNOWN LIMITATION (iOS, RAVF001 / #82): `module.macAddress` is the BLE
+  /// CONNECTION identity, which on iOS is a CoreBluetooth UUID, NOT the hardware
+  /// MAC (Apple hides the MAC). So on iPhone this reports a UUID the scoreboard
+  /// can't diff against `home_module_macs`, and reconciliation is Android-only
+  /// for now. The real fix — split connection-id from hardware-MAC and populate
+  /// the MAC on iOS from the QR scan / advertised name — is designed in
+  /// docs/ai/DESIGN_issue82_ios_mac_split.md and lands under #82; once it does,
+  /// this line reports the real MAC on both platforms with no change here.
+  List<ActualModuleReport> _actualModulesForTeamId(String teamId) {
+    final reports = <ActualModuleReport>[];
+    for (final team in teams) {
+      if (team.id != teamId) continue;
+      for (var i = 0; i < team.modules.length; i++) {
+        final module = team.modules[i];
+        if (!module.isEnabled) continue;
+        reports.add(ActualModuleReport(
+          robot: i + 1,
+          // Same normalization as the restore path so the round-trip is
+          // idempotent (see ActualModuleReport.normalizeMac).
+          mac: ActualModuleReport.normalizeMac(module.macAddress),
+          connected: module.isConnected,
+        ));
+      }
+    }
+    return reports;
+  }
+
   Future<bool> submitScoreboardResult({
     required String expectedSignature,
     required int homeGoals,
@@ -1819,6 +1854,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     final homeTeamId = _scoreboardHomeTeamId ?? (homeIsLeft ? 'A' : 'B');
     final awayTeamId = _scoreboardAwayTeamId ?? (homeIsLeft ? 'B' : 'A');
 
+    // Snapshot the actually-fielded comm modules per team NOW, before the await
+    // and keyed by the same team ids as the scores above (#85). This is a pure
+    // read of macAddress/isConnected — no BLE connect/send — so it can't affect
+    // the START/STOP latency invariants, and capturing pre-await freezes the
+    // submit-time state so a later retry (even post-relaunch, replayed from the
+    // persisted outbox) reports what was fielded at submit, not at retry.
+    final actualHomeModules = _actualModulesForTeamId(homeTeamId);
+    final actualAwayModules = _actualModulesForTeamId(awayTeamId);
+
     final trimmedComment = comment?.trim();
     final submitted = await scoreboardResultService.enqueueFinalResult(
       homeGoals: homeGoals,
@@ -1828,6 +1872,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           : trimmedComment,
       homeConfirmed: homeConfirmed,
       awayConfirmed: awayConfirmed,
+      actualHomeModules: actualHomeModules,
+      actualAwayModules: actualAwayModules,
     );
     if (submitted) {
       // Persist the referee's (possibly corrected) review scores onto the live
@@ -2149,6 +2195,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
     return '1 goal/$_noShowPenaltyGoalIntervalSeconds sec';
   }
+
   String get noShowPenaltyScoringTeamName =>
       _noShowPenaltyScoringTeam?.name ?? '';
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;
