@@ -14,6 +14,7 @@ import 'package:rcj_scoreboard/screens/settings.dart';
 import 'package:rcj_scoreboard/screens/scoreboard_result_review.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
 import 'package:rcj_scoreboard/widgets/critical_gesture_detector.dart';
+import 'package:rcj_scoreboard/widgets/inspection_robot_list.dart';
 import 'package:rcj_scoreboard/widgets/scrolling_status_text.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/services/ble_adapter_monitor.dart';
@@ -441,11 +442,13 @@ Widget buildTeamContainer(Team team, Game game) {
                 isScrollControlled: true,
                 builder: (context) {
                   return FractionallySizedBox(
-                    heightFactor: 0.7,
+                    heightFactor: 0.85,
                     child: Container(
                       color: Colors.grey[800],
-                      padding: const EdgeInsets.symmetric(
-                          vertical: 20.0, horizontal: 20.0),
+                      // Bottom pad by the system nav inset so the last scrolled
+                      // inspection line clears the gesture bar.
+                      padding: EdgeInsets.fromLTRB(20.0, 20.0, 20.0,
+                          20.0 + MediaQuery.viewPaddingOf(context).bottom),
                       child: TeamSettingsWidget(team: team, game: game),
                     ),
                   );
@@ -591,6 +594,7 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
   Widget build(BuildContext context) {
     final team = widget.team;
     final game = widget.game;
+    final robots = game.inspectionRobotsForTeam(team);
     return Column(
       children: [
         Text(
@@ -645,6 +649,19 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
               icon: const Icon(Icons.remove, color: Colors.white),
               label: const Text('Sub', style: TextStyle(color: Colors.white)),
             ),
+            // Live score of the team being edited, between the -/+ buttons, so
+            // Sub/Add visibly change it (team is a ChangeNotifier).
+            ListenableBuilder(
+              listenable: team,
+              builder: (context, _) => Text(
+                team.score.toString(),
+                style: const TextStyle(
+                  fontSize: 28.0,
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.blue,
@@ -658,6 +675,36 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
             ),
           ],
         ),
+        // Per-robot inspection status for this team's side of the linked fixture
+        // (rcj-scoreboard #112), so a referee can check it DURING a loaded
+        // match. Kept in its OWN scroll area (Expanded) below the pinned name +
+        // score controls, so a long note scrolls here instead of pushing the
+        // Score buttons out of reach. Only shown when this side has rows.
+        if (robots.isNotEmpty)
+          Expanded(
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(height: 20.0),
+                  const Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      'Inspection',
+                      style: TextStyle(
+                        fontSize: 16.0,
+                        color: Colors.white70,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 4.0),
+                  InspectionRobotList(robots: robots),
+                ],
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -959,11 +1006,13 @@ Future<void> _openScoreboardResultReview(
       // newer pending link that replaced it after this dialog was built.
       final expectedSignature = config.signature;
       final duration = _formatMatchDuration(config.durationSeconds);
+      final kickoff = formatLocalKickoff(config.scheduledStart);
       final details = <String>[
         if (config.venueShortName.isNotEmpty)
           'Field ${config.venueShortName} · $duration'
         else
           duration,
+        if (kickoff != null) 'Kickoff $kickoff (local time)',
         if (game.inGame) '⚠ This replaces the match in progress.',
       ];
       try {
@@ -976,31 +1025,64 @@ Future<void> _openScoreboardResultReview(
               backgroundColor: Colors.grey[800],
               title: const Text('Load match?',
                   style: TextStyle(color: Colors.white)),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '${config.homeTeamName} vs ${config.awayTeamName}',
-                    style: const TextStyle(color: Colors.white),
-                  ),
-                  const SizedBox(height: 8),
-                  for (final line in details)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Text(
-                        line,
-                        style: TextStyle(
-                          color: line.startsWith('⚠')
-                              ? Colors.orangeAccent
-                              : Colors.white70,
-                          fontWeight: line.startsWith('⚠')
-                              ? FontWeight.w600
-                              : FontWeight.normal,
-                        ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Matchup + fixture details first...
+                    Text(
+                      '${config.homeTeamName} vs ${config.awayTeamName}',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 16,
                       ),
                     ),
-                ],
+                    for (final line in details)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 4),
+                        child: Text(
+                          line,
+                          style: TextStyle(
+                            color: line.startsWith('⚠')
+                                ? Colors.orangeAccent
+                                : Colors.white70,
+                            fontWeight: line.startsWith('⚠')
+                                ? FontWeight.w600
+                                : FontWeight.normal,
+                          ),
+                        ),
+                      ),
+                    // ...then the per-team, per-robot inspection section
+                    // (rcj-scoreboard #112): each fielded robot's own status +
+                    // note, grouped under an underlined team name. Row count
+                    // follows the list (1v1 -> 1 row, 2v2 -> 2). Informational
+                    // only.
+                    const SizedBox(height: 12),
+                    Text(
+                      config.homeTeamName,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 16,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                    InspectionRobotList(robots: config.homeInspectionRobots),
+                    const SizedBox(height: 10),
+                    Text(
+                      config.awayTeamName,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 16,
+                        decoration: TextDecoration.underline,
+                      ),
+                    ),
+                    InspectionRobotList(robots: config.awayInspectionRobots),
+                  ],
+                ),
               ),
               actions: [
                 Row(
@@ -1093,6 +1175,25 @@ String _formatMatchDuration(int seconds) {
   if (minutes == 0) return '$secs s';
   if (secs == 0) return '$minutes min';
   return '$minutes min $secs s';
+}
+
+// The fixture's scheduled kickoff in the phone's LOCAL time, so a referee can
+// confirm they loaded the match for the right slot. `scheduledStart` is parsed
+// from the payload's ISO-8601 (UTC/offset) value; toLocal() converts it to the
+// device zone. Formatted by hand (no intl dependency). Returns null when the
+// payload carries no scheduled_start.
+@visibleForTesting
+String? formatLocalKickoff(DateTime? scheduledStart) {
+  if (scheduledStart == null) return null;
+  final dt = scheduledStart.toLocal();
+  const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', //
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+  final hh = dt.hour.toString().padLeft(2, '0');
+  final mm = dt.minute.toString().padLeft(2, '0');
+  return '${days[dt.weekday - 1]} ${dt.day} ${months[dt.month - 1]} · $hh:$mm';
 }
 
 String _resumeMatchBody(MatchSnapshot snapshot) {

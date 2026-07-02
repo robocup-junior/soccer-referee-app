@@ -37,15 +37,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   static const int _defaultPlayersPerTeam = 2;
   static const int _noShowPenaltyGoalIntervalSeconds = 30;
   static const int _maxNoShowPenaltyGoalDifference = 10;
-  // Workaround (issue #71) for the scoreboard sending the 25-min scheduling
-  // SLOT as `duration_seconds` (rcj-scoreboard#108). A standard RCJ Soccer
-  // 25-min slot is 10+5+10 — two 10-min halves + a 5-min half-time break — so
-  // map that one value to a 10-min half + 5-min break instead of treating
-  // 25 min as the per-half length (which would run 2x25=50 min). Any other
-  // duration passes through unchanged until the server sends a real half time.
-  static const int _scoreboardSlot25MinSeconds = 25 * 60; // 1500
-  static const int _scoreboardSlot25HalfSeconds = 10 * 60; // 600
-  static const int _scoreboardSlot25HalfTimeSeconds = 5 * 60; // 300
+  // A scoreboard fixture's `duration_seconds` is the SCHEDULING SLOT (e.g. the
+  // 40-min slot; was 25 — rcj-scoreboard#108), NOT the play time. A standard RCJ
+  // Soccer match is always 10 + 5 + 10 (two 10-min halves + a 5-min half-time
+  // break) regardless of the slot length, so every scoreboard match is forced to
+  // that and the payload duration is ignored (#71). TODO: expose these as an
+  // operator setting if an event ever needs a different format.
+  static const int _scoreboardHalfSeconds = 10 * 60; // 600
+  static const int _scoreboardHalfTimeSeconds = 5 * 60; // 300
 
   String timerButtonText = 'START';
   final int _maxPlayer = 5;
@@ -1247,9 +1246,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _resumedFixtureMatchCode = null;
     _resumedFixtureVersion = null;
     _suppressScoreboardFinalResult = false;
-    // The deep link had overridden the live periodTime; restore the operator's
-    // configured default (or the app default of 600 s when none is stored).
+    // The deep link had overridden the live period + half-time; restore the
+    // operator's configured defaults (or the app defaults 600 s / 300 s).
     _periodTime = _prefs?.getInt(_periodTimeKey) ?? 600;
+    _halfTimeDuration = _prefs?.getInt(_halfTimeDurationKey) ?? 300;
     setTeamToDefaultOrder();
     gameInit();
     unawaited(scoreboardResultService.resetLinkedMatchAfterSubmission());
@@ -1346,17 +1346,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
   }
 
-  // Set the LIVE match timing from a scoreboard config, applying the #71
-  // 25-min-slot workaround. Sets the fields directly (NOT via the periodTime/
-  // halfTimeDuration setters) so the link's timing is used for this match only
-  // and never persisted as the operator's stored defaults.
+  // Set the LIVE match timing for a scoreboard match: ALWAYS 10-min halves +
+  // 5-min half-time break, regardless of the payload's `duration_seconds` (which
+  // is the scheduling slot, not play time — see the constants above). Sets the
+  // fields directly (NOT via the periodTime/halfTimeDuration setters) so it
+  // applies to this match only and is never persisted as the operator defaults.
+  // `config` is accepted for a stable call site / future per-event override.
   void _applyScoreboardTiming(ScoreboardMatchConfig config) {
-    if (config.durationSeconds == _scoreboardSlot25MinSeconds) {
-      _periodTime = _scoreboardSlot25HalfSeconds;
-      _halfTimeDuration = _scoreboardSlot25HalfTimeSeconds;
-    } else {
-      _periodTime = config.durationSeconds;
-    }
+    _periodTime = _scoreboardHalfSeconds;
+    _halfTimeDuration = _scoreboardHalfTimeSeconds;
   }
 
   void _applyScoreboardMatchConfig(ScoreboardMatchConfig config) {
@@ -1605,6 +1603,20 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void _deriveScoreboardSideMapping(ScoreboardMatchConfig config) {
     _scoreboardHomeTeamId = config.homeIsLeft ? 'A' : 'B';
     _scoreboardAwayTeamId = config.homeIsLeft ? 'B' : 'A';
+  }
+
+  /// The scoreboard's per-robot inspection rows for [team]'s side of the linked
+  /// fixture, so the loaded-match team-settings view can surface inspection
+  /// status during a match (not only in the "Load match?" dialog). Returns an
+  /// empty list when no fixture is linked or the side mapping is unresolved.
+  /// Routes through the home/away->team-id mapping ([_deriveScoreboardSideMapping])
+  /// so callers never re-derive that rule and can't cross the sides.
+  List<InspectionRobot> inspectionRobotsForTeam(Team team) {
+    final config = scoreboardResultService.matchConfig;
+    if (config == null) return const [];
+    if (team.id == _scoreboardHomeTeamId) return config.homeInspectionRobots;
+    if (team.id == _scoreboardAwayTeamId) return config.awayInspectionRobots;
+    return const [];
   }
 
   void _enterFullTimeResultReview() {

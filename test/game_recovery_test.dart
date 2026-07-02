@@ -10,6 +10,7 @@
 
 import 'dart:convert';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -17,6 +18,7 @@ import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'package:rcj_scoreboard/models/team.dart';
+import 'package:rcj_scoreboard/screens/home.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
 
 ModuleSnapshot _moduleSnap({
@@ -230,56 +232,147 @@ void main() {
     return waitForOutboxItem(tester, game, matchCode);
   }
 
-  group('scoreboard duration 25-min slot workaround (#71)', () {
-    testWidgets(
-        'a 25-min slot loads as a 10-min half + 5-min break, overriding the '
-        'operator defaults for this match', (tester) async {
-      // Seed distinct operator defaults so the mapping is unambiguous.
+  group('scoreboard match always plays 10+5+10 regardless of slot (#71)', () {
+    // The payload's duration_seconds is the SCHEDULING SLOT (25 min, now 40),
+    // not play time. Every scoreboard match is forced to 10-min halves + a
+    // 5-min break, overriding the operator defaults and ignoring the slot.
+    Future<Game> loadWithDuration(WidgetTester tester, int durationSeconds,
+        {String code = 'M-DUR'}) async {
+      // Seed distinct operator defaults so a passthrough would be visible.
       await prefs.setInt('game_period_time', 777);
       await prefs.setInt('game_halftime_duration', 123);
       final game = Game();
       await settleLoad(tester);
-      expect(game.inGame, isFalse);
-
       game.scoreboardResultService.debugApplyMatchConfig(
         ScoreboardMatchConfig.fromJson(
           _scoreboardConfig(
-              matchCode: 'M-25', version: 1, durationSeconds: 25 * 60),
+              matchCode: code, version: 1, durationSeconds: durationSeconds),
         ),
         token: 'test-token',
       );
       await tester.pump();
+      return game;
+    }
 
+    testWidgets('a 40-min slot loads as a 10-min half + 5-min break',
+        (tester) async {
+      final game = await loadWithDuration(tester, 40 * 60);
       expect(game.periodTime, 10 * 60,
-          reason: '25-min slot -> 10-min half (not 25 min per half)');
-      expect(game.halfTimeDuration, 5 * 60,
-          reason: '25-min slot -> 5-min half-time break');
-      expect(game.remainingTime, 10 * 60,
-          reason: 'gameInit sets the clock to the mapped 10-min half');
+          reason: '40-min slot -> 10-min half (NOT 40 min per half)');
+      expect(game.halfTimeDuration, 5 * 60);
+      expect(game.remainingTime, 10 * 60);
       game.dispose();
     });
 
-    testWidgets(
-        'a non-25-min duration passes through as the per-half length and '
-        'leaves the half-time break untouched', (tester) async {
-      await prefs.setInt('game_halftime_duration', 123);
+    testWidgets('the old 25-min slot still loads as 10+5+10', (tester) async {
+      final game = await loadWithDuration(tester, 25 * 60, code: 'M-25');
+      expect(game.periodTime, 10 * 60);
+      expect(game.halfTimeDuration, 5 * 60);
+      expect(game.remainingTime, 10 * 60);
+      game.dispose();
+    });
+
+    testWidgets('an arbitrary short duration is still forced to 10+5+10',
+        (tester) async {
+      final game = await loadWithDuration(tester, 15 * 60, code: 'M-15');
+      expect(game.periodTime, 10 * 60,
+          reason: 'payload duration is ignored; play time is always 10+5+10');
+      expect(game.halfTimeDuration, 5 * 60);
+      expect(game.remainingTime, 10 * 60);
+      game.dispose();
+    });
+  });
+
+  group('inspectionRobotsForTeam side mapping (#77)', () {
+    Map<String, dynamic> configWithInspection({required bool homeIsLeft}) => {
+          ..._scoreboardConfig(
+              matchCode: 'M-INSP', version: 1, homeIsLeft: homeIsLeft),
+          'home_inspection_robots': const [
+            {'robot': 1, 'status': 'ok', 'note': ''},
+            {'robot': 2, 'status': 'failed', 'note': 'battery low'},
+          ],
+          'away_inspection_robots': const [
+            {'robot': 1, 'status': 'missing', 'note': ''},
+          ],
+        };
+
+    testWidgets('maps home rows to the home-side team, away to the other',
+        (tester) async {
       final game = Game();
       await settleLoad(tester);
-
       game.scoreboardResultService.debugApplyMatchConfig(
-        ScoreboardMatchConfig.fromJson(
-          _scoreboardConfig(
-              matchCode: 'M-15', version: 1, durationSeconds: 15 * 60),
-        ),
+        ScoreboardMatchConfig.fromJson(configWithInspection(homeIsLeft: true)),
         token: 'test-token',
       );
       await tester.pump();
 
-      expect(game.periodTime, 15 * 60,
-          reason: 'non-25 duration used directly as the per-half length');
-      expect(game.remainingTime, 15 * 60);
-      expect(game.halfTimeDuration, 123,
-          reason: 'workaround only remaps half-time for the 25-min slot');
+      final teamA = game.teams.firstWhere((t) => t.id == 'A');
+      final teamB = game.teams.firstWhere((t) => t.id == 'B');
+      // homeIsLeft -> team A is home.
+      expect(game.inspectionRobotsForTeam(teamA), const [
+        InspectionRobot(robot: 1, status: InspectionStatus.ok, note: ''),
+        InspectionRobot(
+            robot: 2, status: InspectionStatus.failed, note: 'battery low'),
+      ]);
+      expect(game.inspectionRobotsForTeam(teamB), const [
+        InspectionRobot(robot: 1, status: InspectionStatus.missing, note: ''),
+      ]);
+      game.dispose();
+    });
+
+    testWidgets('a home/away swap (homeIsLeft:false) crosses the sides by id',
+        (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(configWithInspection(homeIsLeft: false)),
+        token: 'test-token',
+      );
+      await tester.pump();
+
+      final teamA = game.teams.firstWhere((t) => t.id == 'A');
+      final teamB = game.teams.firstWhere((t) => t.id == 'B');
+      // homeIsLeft:false -> team B is home, so team A gets the AWAY rows.
+      expect(game.inspectionRobotsForTeam(teamB).map((r) => r.robot), [1, 2]);
+      expect(game.inspectionRobotsForTeam(teamA), const [
+        InspectionRobot(robot: 1, status: InspectionStatus.missing, note: ''),
+      ]);
+      game.dispose();
+    });
+
+    testWidgets('no linked fixture -> empty for both teams', (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+      await tester.pump();
+      for (final team in game.teams) {
+        expect(game.inspectionRobotsForTeam(team), isEmpty);
+      }
+      game.dispose();
+    });
+
+    testWidgets('team-settings sheet renders the per-robot inspection section',
+        (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(configWithInspection(homeIsLeft: true)),
+        token: 'test-token',
+      );
+      await tester.pump();
+      final teamA = game.teams.firstWhere((t) => t.id == 'A');
+
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(body: TeamSettingsWidget(team: teamA, game: game)),
+      ));
+      await tester.pump();
+
+      // Home side (team A) shows both robots with their status + note.
+      expect(find.text('Inspection'), findsOneWidget);
+      expect(find.text('Robot 1'), findsOneWidget);
+      expect(find.text('Robot 2'), findsOneWidget);
+      expect(find.text('cleared'), findsOneWidget); // robot 1 ok
+      expect(find.text('failed'), findsOneWidget); // robot 2 failed
+      expect(find.textContaining('battery low'), findsOneWidget);
       game.dispose();
     });
   });
@@ -2022,10 +2115,11 @@ void main() {
       expect(game.teams[0].id, 'A',
           reason: 'a swapped order must not carry into the new match');
       expect(game.teams[1].id, 'B');
-      // The new fixture's match length was adopted (M-NEW is 120 s).
-      expect(game.periodTime, 120,
-          reason:
-              'the new fixture duration replaces the previous match length');
+      // Every scoreboard match plays 10+5+10 regardless of the payload slot
+      // (M-NEW's 120 s is ignored) — #71.
+      expect(game.periodTime, 10 * 60,
+          reason: 'scoreboard match is always a 10-min half; slot ignored');
+      expect(game.halfTimeDuration, 5 * 60);
 
       // The previous fixture's queued result is untouched (rule 3).
       expect(

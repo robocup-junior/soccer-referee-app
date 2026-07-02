@@ -2,6 +2,70 @@ import 'dart:convert';
 
 enum ResultSubmissionState { pending, submitted, conflict, failed }
 
+/// Soft inspection status the scoreboard reports per fielded robot for the
+/// current competition day (rcj-scoreboard #112). [unknown] is the client-side
+/// fallback for an absent/unrecognised value — treat both [unknown] and
+/// [missing] as "not applicable / not yet cleared", never as a hard "blocked":
+/// the server's "missing" conflates a non-inspecting league with an uninspected
+/// robot.
+enum InspectionStatus { ok, failed, missing, unknown }
+
+InspectionStatus _inspectionStatusFromJson(dynamic value) {
+  final name = value?.toString().toLowerCase().trim();
+  return InspectionStatus.values.firstWhere(
+    (s) => s.name == name,
+    orElse: () => InspectionStatus.unknown,
+  );
+}
+
+/// One fielded robot's soft inspection result for the current competition day
+/// (rcj-scoreboard #112): its [status] and free-text [note]. [robot] is the
+/// robot number.
+class InspectionRobot {
+  final int robot;
+  final InspectionStatus status;
+  final String note;
+
+  const InspectionRobot({
+    required this.robot,
+    required this.status,
+    required this.note,
+  });
+
+  factory InspectionRobot.fromJson(Map<String, dynamic> json) => InspectionRobot(
+        // num.tryParse handles an int (3), a float (3.0), and a string ("3")
+        // without ever throwing or silently dropping a valid robot.
+        robot: num.tryParse(json['robot']?.toString() ?? '')?.toInt() ?? 0,
+        status: _inspectionStatusFromJson(json['status']),
+        note: (json['note']?.toString() ?? '').trim(),
+      );
+
+  Map<String, dynamic> toJson() =>
+      {'robot': robot, 'status': status.name, 'note': note};
+
+  @override
+  bool operator ==(Object other) =>
+      other is InspectionRobot &&
+      other.robot == robot &&
+      other.status == status &&
+      other.note == note;
+
+  @override
+  int get hashCode => Object.hash(robot, status, note);
+}
+
+/// Parses the `*_inspection_robots` array, dropping non-map entries and any
+/// entry with an invalid/non-positive robot number so the UI is never fed a
+/// malformed row (this keeps a bad note from breaking the whole match load).
+List<InspectionRobot> _inspectionRobotsFromJson(dynamic value) {
+  if (value is! List) return const [];
+  return value
+      .whereType<Map>()
+      .map((m) => InspectionRobot.fromJson(Map<String, dynamic>.from(m)))
+      .where((r) => r.robot > 0)
+      .toList(growable: false);
+}
+
 class ScoreboardMatchConfig {
   final String matchCode;
   final String homeTeamName;
@@ -13,6 +77,8 @@ class ScoreboardMatchConfig {
   final String timezone;
   final int version;
   final String status;
+  final List<InspectionRobot> homeInspectionRobots;
+  final List<InspectionRobot> awayInspectionRobots;
 
   /// MAC addresses of the home/away robots' comm modules, ordered by robot
   /// number (server payload keys `home_module_macs`/`away_module_macs`, #70).
@@ -34,6 +100,8 @@ class ScoreboardMatchConfig {
     required this.status,
     this.homeModuleMacs = const [],
     this.awayModuleMacs = const [],
+    this.homeInspectionRobots = const [],
+    this.awayInspectionRobots = const [],
   });
 
   ScoreboardMatchConfig copyWith({
@@ -49,6 +117,8 @@ class ScoreboardMatchConfig {
     String? status,
     List<String>? homeModuleMacs,
     List<String>? awayModuleMacs,
+    List<InspectionRobot>? homeInspectionRobots,
+    List<InspectionRobot>? awayInspectionRobots,
   }) {
     return ScoreboardMatchConfig(
       matchCode: matchCode ?? this.matchCode,
@@ -63,6 +133,8 @@ class ScoreboardMatchConfig {
       status: status ?? this.status,
       homeModuleMacs: homeModuleMacs ?? this.homeModuleMacs,
       awayModuleMacs: awayModuleMacs ?? this.awayModuleMacs,
+      homeInspectionRobots: homeInspectionRobots ?? this.homeInspectionRobots,
+      awayInspectionRobots: awayInspectionRobots ?? this.awayInspectionRobots,
     );
   }
 
@@ -119,6 +191,8 @@ class ScoreboardMatchConfig {
       status: (json['status']?.toString() ?? '').toUpperCase(),
       homeModuleMacs: moduleMacs(json['home_module_macs']),
       awayModuleMacs: moduleMacs(json['away_module_macs']),
+      homeInspectionRobots: _inspectionRobotsFromJson(json['home_inspection_robots']),
+      awayInspectionRobots: _inspectionRobotsFromJson(json['away_inspection_robots']),
     );
   }
 
@@ -163,6 +237,10 @@ class ScoreboardMatchConfig {
         'status': status,
         'home_module_macs': homeModuleMacs,
         'away_module_macs': awayModuleMacs,
+        'home_inspection_robots':
+            homeInspectionRobots.map((r) => r.toJson()).toList(),
+        'away_inspection_robots':
+            awayInspectionRobots.map((r) => r.toJson()).toList(),
       };
 }
 
