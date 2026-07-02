@@ -2003,6 +2003,294 @@ void main() {
     });
   });
 
+  group('end match early (#84)', () {
+    Future<Game> loadScoreboardFixture(
+      WidgetTester tester, {
+      String matchCode = 'M-84',
+      int version = 1,
+    }) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: matchCode, version: version),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      return game;
+    }
+
+    testWidgets('gate: manual match is not eligible and no-ops',
+        (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+
+      expect(game.canEndMatchEarly, isFalse);
+      game.endMatchEarly();
+
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.inGame, isFalse);
+      game.dispose();
+    });
+
+    testWidgets('gate: empty match code is not eligible and no-ops',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester, matchCode: '');
+
+      expect(game.canEndMatchEarly, isFalse);
+      game.endMatchEarly();
+
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.inGame, isFalse);
+      game.dispose();
+    });
+
+    testWidgets('before kickoff persists a full-time review snapshot',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
+      expect(game.canEndMatchEarly, isTrue);
+      game.endMatchEarly();
+
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.inGame, isTrue);
+      expect(game.remainingTime, 0);
+      expect(game.timerButtonText, 'REPEAT');
+      expect(game.needsScoreboardResultReview, isTrue);
+      expect(reviewRequests, 1);
+
+      final saved = await waitForSavedSnapshot(
+        tester,
+        (snapshot) => snapshot.stage == 'fullTime' && snapshot.inGame,
+      );
+      expect(saved.isRefereeMatch, isTrue);
+      expect(saved.scoreboardMatchCode, 'M-84');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('mid first half stops the running clock and arms review',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      game.teams[0].score = 1;
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 2));
+      expect(game.isTimeRunning, isTrue);
+
+      game.endMatchEarly();
+
+      expect(game.isTimeRunning, isFalse);
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.remainingTime, 0);
+      expect(game.needsScoreboardResultReview, isTrue);
+      expect(reviewRequests, 1);
+      expect(game.teams[0].score, 1);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('half-time break running is cancelled cleanly', (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      // Mirror the real firstHalf->halfTime transition state: break countdown
+      // on the clock and the SKIP affordance, not first-half leftovers.
+      game.currentStage = MatchStage.halfTime;
+      game.setRemainingTime(game.halfTimeDuration);
+      game.timerButtonText = 'SKIP';
+      game.startTimer();
+      await tester.pump();
+
+      game.endMatchEarly();
+
+      expect(game.isTimeRunning, isFalse);
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.remainingTime, 0);
+      expect(game.timerButtonText, 'REPEAT');
+      expect(game.needsScoreboardResultReview, isTrue);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('idempotent after full time', (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
+      game.endMatchEarly();
+      final stage = game.currentStage;
+      final inGame = game.inGame;
+      final timerButtonText = game.timerButtonText;
+      final scoreA = game.teams[0].score;
+      final scoreB = game.teams[1].score;
+
+      expect(game.canEndMatchEarly, isFalse);
+      game.endMatchEarly();
+
+      expect(game.currentStage, stage);
+      expect(game.inGame, inGame);
+      expect(game.timerButtonText, timerButtonText);
+      expect(game.teams[0].score, scoreA);
+      expect(game.teams[1].score, scoreB);
+      expect(reviewRequests, 1);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('unresolved same-fixture result hides early end and no-ops',
+        (tester) async {
+      // A still-in-flight prior result for this fixture would make
+      // _enterFullTimeResultReview refuse to arm the review, so ending early
+      // would strand the referee at full time with no result editor. The
+      // gate must hide the affordance instead.
+      await _seedOutbox(prefs, [
+        _outboxItem(
+          matchCode: 'M-84',
+          state: ResultSubmissionState.pending,
+        ),
+      ]);
+      final game = await loadScoreboardFixture(tester);
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
+      expect(game.canEndMatchEarly, isFalse);
+      game.endMatchEarly();
+
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.inGame, isFalse);
+      expect(reviewRequests, 0);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('gate: fixture without a token is not eligible and no-ops',
+        (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-84', version: 1),
+        ),
+      );
+      await tester.pump();
+
+      expect(game.canEndMatchEarly, isFalse);
+      game.endMatchEarly();
+
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.inGame, isFalse);
+      game.dispose();
+    });
+
+    testWidgets('second half ends early like the natural transition',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      game.teams[1].score = 2;
+      game.currentStage = MatchStage.secondHalf;
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+
+      game.endMatchEarly();
+
+      expect(game.isTimeRunning, isFalse);
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.remainingTime, 0);
+      expect(game.timerButtonText, 'REPEAT');
+      expect(game.needsScoreboardResultReview, isTrue);
+      expect(game.teams[1].score, 2);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('half-time early end force-stops break-parked modules',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      game.currentStage = MatchStage.halfTime;
+      // Park an enabled module in the break state exactly as halfTimeAll
+      // does at the firstHalf->halfTime transition.
+      final module = game.teams[0].modules[0];
+      module.enable();
+      module.halfTime();
+      expect(module.lastState, ModuleState.halfTime);
+
+      game.endMatchEarly();
+
+      // The forced dispatch must not re-enter halfTime() (an unforced
+      // Module.stopAll switches on _lastState == halfTime and would send a
+      // fresh break countdown); force lands the module on STOP synchronously.
+      expect(module.lastState, ModuleState.stop);
+      expect(game.currentStage, MatchStage.fullTime);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('no-show mode is reset when ended early', (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      game.startNoShowPenaltyGoals(game.teams[0]);
+      expect(game.noShowPenaltyGoalsActive, isTrue);
+
+      game.endMatchEarly();
+
+      expect(game.noShowPenaltyGoalsActive, isFalse);
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.isTimeRunning, isFalse);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('submit after early end queues the normal result',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+
+      game.endMatchEarly();
+      final result = await submitCurrentReview(tester, game, 'M-84');
+
+      expect(result.matchCode, 'M-84');
+      expect(result.homeGoals, 0);
+      expect(result.awayGoals, 0);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('REPEAT after early end starts a fresh match', (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      game.teams[0].score = 2;
+
+      game.endMatchEarly();
+      game.toggleTimer();
+
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.teams[0].score, 0);
+      expect(game.teams[1].score, 0);
+      expect(game.inGame, isFalse);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+  });
+
   group('new-fixture Load resets the live match (RAVF002)', () {
     // Drive the real confirm path: stage a pending deep link, then
     // game.confirmScoreboardMatch() (what Home's Load button calls). Only that
