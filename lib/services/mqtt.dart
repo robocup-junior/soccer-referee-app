@@ -152,21 +152,25 @@ class MqttService {
 
     connectionStateNotifier.value = MqttConnectionStateEx.connecting;
 
+    final client = MqttServerClient.withPort(_server, _clientIdentifier, _port);
+    _client = client;
+    client.logging(
+        on: false); // Disable logging for production, enable for debugging
 
-    _client = MqttServerClient.withPort(_server, _clientIdentifier, _port);
-    _client!.logging(on: false); // Disable logging for production, enable for debugging
-
-
-    _client!.keepAlivePeriod = 300;
+    client.keepAlivePeriod = 300;
     // Capture the current connection in the callback closures so a stale
     // callback from a previous connect() can never read a newer _client.
-    final capturedClient = _client!;
-    _client!.onDisconnected = () => _onDisconnected(capturedClient);
-    _client!.onConnected = _onConnected;
-    _client!.onSubscribed = _onSubscribed;
-    _client!.pongCallback = _pong; // Optional: for keep alive
+    final capturedClient = client;
+    client.onDisconnected = () => _onDisconnected(capturedClient);
+    client.onConnected = () {
+      if (identical(_client, capturedClient)) {
+        _onConnected();
+      }
+    };
+    client.onSubscribed = _onSubscribed;
+    client.pongCallback = _pong; // Optional: for keep alive
 
-    _client!.secure = _secureConnection;
+    client.secure = _secureConnection;
 
     final connMess = MqttConnectMessage()
         .withClientIdentifier(_clientIdentifier)
@@ -175,29 +179,35 @@ class MqttService {
         .startClean()
         .withWillQos(MqttQos.atLeastOnce);
 
-    _client!.connectionMessage = connMess;
+    client.connectionMessage = connMess;
 
     try {
       debugPrint('MQTT_LOGS::Connecting to $_server:$_port...');
-      await _client!.connect(_username, _password); // Pass username/password again here for some brokers
+      await client.connect(_username,
+          _password); // Pass username/password again here for some brokers
     } on NoConnectionException catch (e) {
+      if (!identical(_client, client)) return false;
       debugPrint('MQTT_LOGS::Client exception - $e');
       _lastErrorMessage = 'Network error: Unable to connect';
       connectionStateNotifier.value = MqttConnectionStateEx.error;
     } on SocketException catch (e) {
+      if (!identical(_client, client)) return false;
       debugPrint('MQTT_LOGS::Socket exception - $e');
       _lastErrorMessage = 'Connection failed: ${e.message}';
       connectionStateNotifier.value = MqttConnectionStateEx.error;
     }
 
-    if (_client!.connectionStatus!.state == MqttConnectionState.connected) {
+    if (!identical(_client, client)) return false;
+
+    if (client.connectionStatus?.state == MqttConnectionState.connected) {
       debugPrint('MQTT_LOGS::Mosquitto client connected');
       return true;
     } else {
-      debugPrint('MQTT_LOGS::ERROR Mosquitto client connection failed - disconnecting, status is ${_client!.connectionStatus}');
-      final status = _client!.connectionStatus!;
+      debugPrint(
+          'MQTT_LOGS::ERROR Mosquitto client connection failed - disconnecting, status is ${client.connectionStatus}');
+      final status = client.connectionStatus;
       _lastErrorMessage = describeMqttReturnCode(
-          status.returnCode ?? MqttConnectReturnCode.noneSpecified);
+          status?.returnCode ?? MqttConnectReturnCode.noneSpecified);
       connectionStateNotifier.value = MqttConnectionStateEx.error;
       return false;
     }
@@ -279,10 +289,18 @@ class MqttService {
 
 
   void disconnect() {
-    if (_client != null) {
-      debugPrint('MQTT_LOGS::Disconnecting client');
-      _client!.disconnect();
+    final client = _client;
+    if (client == null) {
+      return;
     }
+    _client = null;
+    debugPrint('MQTT_LOGS::Disconnecting client');
+    try {
+      client.disconnect();
+    } catch (e) {
+      debugPrint('MQTT_LOGS::Disconnect error - $e');
+    }
+    connectionStateNotifier.value = MqttConnectionStateEx.disconnected;
   }
 
   void _onConnected() {

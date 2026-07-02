@@ -19,7 +19,78 @@ import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/screens/home.dart';
+import 'package:rcj_scoreboard/services/ble_bridge_service.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
+import 'package:rcj_scoreboard/services/mqtt.dart';
+
+class _RecordingMqttService extends MqttService {
+  _RecordingMqttService(
+    this.log, {
+    MqttConnectionStateEx initialState = MqttConnectionStateEx.connected,
+  }) {
+    connectionStateNotifier.value = initialState;
+  }
+
+  final List<String> log;
+  int connectCalls = 0;
+  int disconnectCalls = 0;
+
+  @override
+  bool get isEnabled => true;
+
+  @override
+  bool get isConnected =>
+      connectionStateNotifier.value == MqttConnectionStateEx.connected;
+
+  @override
+  Future<bool> connect() async {
+    connectCalls++;
+    log.add('mqtt:connect');
+    connectionStateNotifier.value = MqttConnectionStateEx.connected;
+    return true;
+  }
+
+  @override
+  void publishGameState(MatchStage state) {
+    log.add('mqtt:publishGameState:${state.name}');
+  }
+
+  @override
+  void publishTime(int remainingTime) {
+    log.add('mqtt:publishTime:$remainingTime');
+  }
+
+  @override
+  void disconnect() {
+    disconnectCalls++;
+    log.add('mqtt:disconnect');
+    connectionStateNotifier.value = MqttConnectionStateEx.disconnected;
+  }
+}
+
+class _RecordingBleBridgeService extends BleBridgeService {
+  _RecordingBleBridgeService(this.log);
+
+  final List<String> log;
+  int connectCalls = 0;
+  int disconnectAfterDrainCalls = 0;
+
+  @override
+  Future<void> connect() async {
+    connectCalls++;
+    log.add('bridge:connect');
+    connectionStateNotifier.value = BridgeConnectionState.connected;
+  }
+
+  @override
+  Future<void> disconnectAfterDrain({
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    disconnectAfterDrainCalls++;
+    log.add('bridge:disconnectAfterDrain');
+    connectionStateNotifier.value = BridgeConnectionState.disconnected;
+  }
+}
 
 ModuleSnapshot _moduleSnap({
   required int id,
@@ -2287,6 +2358,151 @@ void main() {
       expect(game.inGame, isFalse);
 
       await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+  });
+
+  group('transport teardown at full time (#87)', () {
+    Future<Game> loadScoreboardFixture(
+      WidgetTester tester, {
+      String matchCode = 'M-87',
+      int version = 1,
+    }) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: matchCode, version: version),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      return game;
+    }
+
+    Future<void> pumpPastTransportTeardownDelay(WidgetTester tester) async {
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump();
+    }
+
+    testWidgets(
+        'tears down connected bridge and MQTT after the final full-time publish',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      final mqtt = _RecordingMqttService(log);
+      final bridge = _RecordingBleBridgeService(log);
+      bridge.connectionStateNotifier.value = BridgeConnectionState.connected;
+      game.mqttService = mqtt;
+      game.bleBridgeService = bridge;
+
+      game.endMatchEarly();
+      expect(game.currentStage, MatchStage.fullTime);
+
+      await pumpPastTransportTeardownDelay(tester);
+
+      expect(bridge.disconnectAfterDrainCalls, 1);
+      expect(mqtt.disconnectCalls, 1);
+      final publishIndex = log.indexOf('mqtt:publishGameState:fullTime');
+      final disconnectIndex = log.indexOf('mqtt:disconnect');
+      expect(publishIndex, isNonNegative);
+      expect(disconnectIndex, isNonNegative);
+      expect(publishIndex, lessThan(disconnectIndex));
+
+      game.dispose();
+    });
+
+    testWidgets('never-connected transports are no-ops at full time',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      final bridge = _RecordingBleBridgeService(log);
+      bridge.connectionStateNotifier.value = BridgeConnectionState.disconnected;
+      final mqtt = MqttService();
+      await mqtt.loadPreferences();
+      expect(
+        mqtt.connectionStateNotifier.value,
+        MqttConnectionStateEx.disconnected,
+      );
+      game.bleBridgeService = bridge;
+      game.mqttService = mqtt;
+
+      game.endMatchEarly();
+      await pumpPastTransportTeardownDelay(tester);
+
+      expect(bridge.disconnectAfterDrainCalls, 0);
+      expect(
+        mqtt.connectionStateNotifier.value,
+        MqttConnectionStateEx.disconnected,
+      );
+
+      game.dispose();
+    });
+
+    testWidgets('REPEAT before the teardown delay cancels stale disconnects',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      final mqtt = _RecordingMqttService(log);
+      final bridge = _RecordingBleBridgeService(log);
+      bridge.connectionStateNotifier.value = BridgeConnectionState.connected;
+      game.mqttService = mqtt;
+      game.bleBridgeService = bridge;
+
+      game.endMatchEarly();
+      expect(game.currentStage, MatchStage.fullTime);
+      game.toggleTimer();
+      expect(game.currentStage, MatchStage.firstHalf);
+
+      await pumpPastTransportTeardownDelay(tester);
+
+      expect(bridge.disconnectAfterDrainCalls, 0);
+      expect(mqtt.disconnectCalls, 0);
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'REPEAT does not reconnect transports and allows the next teardown',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      final mqtt = _RecordingMqttService(log);
+      final bridge = _RecordingBleBridgeService(log);
+      bridge.connectionStateNotifier.value = BridgeConnectionState.connected;
+      game.mqttService = mqtt;
+      game.bleBridgeService = bridge;
+
+      game.endMatchEarly();
+      await pumpPastTransportTeardownDelay(tester);
+      expect(bridge.disconnectAfterDrainCalls, 1);
+      expect(mqtt.disconnectCalls, 1);
+
+      game.toggleTimer();
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(bridge.connectCalls, 0);
+      expect(mqtt.connectCalls, 0);
+      expect(
+        bridge.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
+      expect(
+        mqtt.connectionStateNotifier.value,
+        MqttConnectionStateEx.disconnected,
+      );
+
+      bridge.connectionStateNotifier.value = BridgeConnectionState.connected;
+      mqtt.connectionStateNotifier.value = MqttConnectionStateEx.connected;
+
+      game.endMatchEarly();
+      await pumpPastTransportTeardownDelay(tester);
+
+      expect(bridge.disconnectAfterDrainCalls, 2);
+      expect(mqtt.disconnectCalls, 2);
+      expect(bridge.connectCalls, 0);
+      expect(mqtt.connectCalls, 0);
+
       game.dispose();
     });
   });

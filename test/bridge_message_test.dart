@@ -142,6 +142,23 @@ void main() {
 
       expect(svc.queueDepthNotifier.value, 0);
     });
+
+    test('disconnectAfterDrain is bounded when a queue cannot drain', () async {
+      final svc = await makeEnabledService();
+
+      svc.publishTopic(BridgeTopics.team1Score, '1');
+      expect(svc.queueDepthNotifier.value, 1);
+
+      await svc.disconnectAfterDrain(
+        timeout: const Duration(milliseconds: 200),
+      );
+
+      expect(
+        svc.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
+      expect(svc.queueDepthNotifier.value, 1);
+    });
   });
 
   group('BleBridgeService connection lifecycle (#86)', () {

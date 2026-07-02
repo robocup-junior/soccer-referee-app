@@ -104,6 +104,31 @@ class BleBridgeService extends ChangeNotifier {
     connectionStateNotifier.value = BridgeConnectionState.disconnected;
   }
 
+  Future<void> disconnectAfterDrain({
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    try {
+      final deadline = DateTime.now().add(timeout);
+      while ((_queue.isNotEmpty || _sendInProgress) &&
+          DateTime.now().isBefore(deadline)) {
+        final remaining = deadline.difference(DateTime.now());
+        final delay = remaining < const Duration(milliseconds: 100)
+            ? remaining
+            : const Duration(milliseconds: 100);
+        if (delay <= Duration.zero) break;
+        await Future<void>.delayed(delay);
+      }
+    } catch (e) {
+      debugPrint('BleBridge: drain before disconnect failed: $e');
+    }
+
+    try {
+      await disconnect();
+    } catch (e) {
+      debugPrint('BleBridge: disconnectAfterDrain failed: $e');
+    }
+  }
+
   void publishTopic(String topic, String value) {
     if (!isEnabled) return;
 

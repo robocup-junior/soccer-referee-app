@@ -101,6 +101,8 @@ void main() {
 
       expect(game.currentStage, MatchStage.fullTime);
       expect(game.noShowPenaltyGoalsActive, isFalse);
+
+      await tester.pump(const Duration(milliseconds: 1500));
     });
   });
 }

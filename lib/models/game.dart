@@ -145,6 +145,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   // link at full time can't bind the just-ended match's scores to the new
   // fixture. Cleared on a fresh match (gameInit).
   String? _fullTimeResultSignature;
+  bool _fullTimeTransportTeardownDone = false;
 
   // Callback to request showing the dialog
   void Function()? onRequestSwitchTeamOrderDialog;
@@ -317,6 +318,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _resumedFixtureMatchCode = null;
     _resumedFixtureVersion = null;
     _fullTimeResultSignature = null;
+    _fullTimeTransportTeardownDone = false;
     _resetNoShowPenaltyGoals();
 
     stopTimer();
@@ -859,6 +861,36 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // full time we settle the ones still off to "Disconnected".
     disconnectInactiveModules();
     _persistOrClearAtFullTime();
+    unawaited(_teardownFieldTransportsAtFullTime());
+  }
+
+  // Release the field infrastructure at full time (#87): referees rotate
+  // phones per field, and the bridge accepts a single central — while the old
+  // phone holds it (or the MQTT session), the next phone can't take over.
+  // Launched unawaited from _completeMatchToFullTime so both the natural
+  // second-half expiry and endMatchEarly() (#84) inherit it, and nothing on
+  // the robot STOP path waits on it (invariant #1). The 1 s delay + stage
+  // re-check mirror gameOverAll(): the callers' synchronous final
+  // _broadcastStageAndTime() runs before the first await resumes, so the
+  // final "Game Over" publish always precedes the MQTT disconnect, and a
+  // REPEAT during the delay aborts the teardown. One-shot per match
+  // (re-armed by gameInit) so a second entry into the full-time block no-ops.
+  Future<void> _teardownFieldTransportsAtFullTime() async {
+    if (_fullTimeTransportTeardownDone) return;
+    _fullTimeTransportTeardownDone = true;
+    await Future<void>.delayed(const Duration(seconds: 1));
+    if (currentStage != MatchStage.fullTime) return;
+
+    // Tear down a connected OR still-connecting bridge link — the same
+    // stop-chasing-a-powered-down-unit policy disconnectInactiveModules()
+    // applies to robot modules. The bounded drain lets the last queued score
+    // frame reach the scoreboard before the link drops.
+    final bridgeState = bleBridgeService.connectionStateNotifier.value;
+    if (bridgeState == BridgeConnectionState.connected ||
+        bridgeState == BridgeConnectionState.connecting) {
+      await bleBridgeService.disconnectAfterDrain();
+    }
+    mqttService.disconnect();
   }
 
   // Upper bound on background catch-up ticks: only the window the timer runs
