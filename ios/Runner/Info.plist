@@ -70,6 +70,12 @@
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
 	<string>Main</string>
+	<!-- The app is portrait-only by design (see CLAUDE.md invariant #4). Opting
+	     out of iPad multitasking (Split View / Slide Over) lifts Apple's
+	     requirement to declare all four orientations, so App Store validation
+	     accepts the portrait-only orientation lists below. -->
+	<key>UIRequiresFullScreen</key>
+	<true/>
 	<key>UISupportedInterfaceOrientations</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
