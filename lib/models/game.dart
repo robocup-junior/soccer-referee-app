@@ -1,8 +1,10 @@
 import 'package:flutter/widgets.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/models/bridge_message.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/services/ble_adapter_monitor.dart';
 import 'package:rcj_scoreboard/services/ble_bridge_service.dart';
@@ -14,6 +16,8 @@ import 'package:rcj_scoreboard/services/wakelock_service.dart';
 import 'package:rcj_scoreboard/services/preset_service.dart';
 import 'package:rcj_scoreboard/services/scoreboard_result_service.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
+import 'package:rcj_scoreboard/services/ios_mac_resolver.dart';
+import 'package:rcj_scoreboard/utils/ble_address.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum MatchStage {
@@ -103,6 +107,23 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   VibrationService vibrationService = VibrationService();
   WakelockService wakelockService = WakelockService();
   ScoreboardResultService scoreboardResultService = ScoreboardResultService();
+  // ---- #82: iOS MAC→UUID resolution ----
+  // iOS cannot connect by hardware MAC; modules are found by ONE batch scan at
+  // match load (MAC→UUID), cached here across matches (a UUID is per-phone but
+  // stable enough to reuse; a stale entry is dropped when its connect fails
+  // with "Peripheral not found" and the module re-enrolls). The controller
+  // scans only while no half runs and stops for good at kickoff (invariant #1);
+  // each resolved module gets exactly one connect(autoConnect:true) and
+  // reconnection stays OS-owned (invariant #5).
+  static const String _iosMacUuidCacheKey = 'ios_mac_uuid_cache';
+  final Map<String, String> _iosMacUuidCache = {};
+  @visibleForTesting
+  late final IosMacResolveController iosMacResolver = IosMacResolveController(
+    canScanNow: () =>
+        !_isGameRunning && currentStage != MatchStage.fullTime,
+    onResolved: _onIosMacResolved,
+    onGaveUp: _onIosMacResolveGaveUp,
+  );
   String? _lastAppliedScoreboardSignature;
   // MAC-set fingerprint of the last module auto-pair (see
   // _syncScoreboardModulePairing). Separate from _lastAppliedScoreboardSignature
@@ -243,6 +264,22 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _penaltyTime =
         _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
 
+    // #82: load the persisted iOS MAC→UUID cache before any (re-)pairing below
+    // so a reload/cold start connects by cached UUID without a scan.
+    final rawIosMacCache = _prefs!.getString(_iosMacUuidCacheKey);
+    if (rawIosMacCache != null) {
+      try {
+        (jsonDecode(rawIosMacCache) as Map<String, dynamic>)
+            .forEach((mac, uuid) {
+          if (uuid is String && uuid.isNotEmpty) {
+            _iosMacUuidCache[mac.toUpperCase()] = uuid;
+          }
+        });
+      } catch (e) {
+        debugPrint('ios_mac_uuid_cache unreadable, ignoring: $e');
+      }
+    }
+
     // Single-tap pref: flush a pre-load toggle if one happened, otherwise adopt
     // the stored value. Reading unconditionally would clobber an early toggle.
     if (_pendingSingleTapWrite) {
@@ -314,6 +351,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _isGameRunning = false;
     timerButtonText = 'START';
     inGame = false;
+    // #82: between-matches boundary — forget pending iOS resolves and re-arm
+    // scanning for the next match's load (REPEAT / confirmed Load / bootstrap).
+    // A load that follows re-enrolls via _syncScoreboardModulePairing.
+    iosMacResolver.reset();
     _suppressScoreboardFinalResult = false;
     _resumedFixtureMatchCode = null;
     _resumedFixtureVersion = null;
@@ -505,6 +546,25 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         for (final module in team.modules) {
           final moduleSnap = byId[module.moduleId];
           if (moduleSnap != null) module.restoreFromSnapshot(moduleSnap);
+        }
+      }
+
+      // #82 (iOS): a slot saved while still awaiting its UUID carries a
+      // hardware MAC but no connection id — resume its resolution (cached
+      // UUID first, else re-enroll). Pass the restored label so the
+      // always-apply-label rule can't wipe it. Slots restored WITH a UUID
+      // reconnect above; a stale UUID re-enrolls itself via bleConnect's
+      // Peripheral-not-found fallback.
+      if (useIosBleUuid) {
+        for (final team in teams) {
+          for (final module in team.modules) {
+            if (module.isEnabled &&
+                module.hardwareMac.isNotEmpty &&
+                module.macAddress.isEmpty) {
+              _pairIosModuleByMac(module, module.hardwareMac,
+                  label: module.hasCustomLabel ? module.name : '');
+            }
+          }
         }
       }
 
@@ -745,6 +805,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (currentStage == MatchStage.firstHalf ||
         currentStage == MatchStage.secondHalf) {
       _isGameRunning = true;
+      // #82: kickoff — stop iOS resolve scanning for the rest of the match
+      // (a scan competes with the BLE radio, invariant #1). Synchronous flag +
+      // unawaited stopScan, idempotent for warm-resume replay bursts; covers
+      // every kickoff path since they all run through startTimer with a half
+      // as the current stage.
+      iosMacResolver.stopForMatch();
     }
     isTimeRunning = true;
     _runClockStartedAt = DateTime.now();
@@ -822,6 +888,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           // late penalty). In-match these reconnect unbounded on purpose; at
           // full time we settle the ones still off to "Disconnected".
           disconnectInactiveModules();
+          // #82: the match is over — also settle any never-resolved iOS
+          // "Searching..."/"Not found" slots and re-arm the resolver for the
+          // next match's load.
+          iosMacResolver.reset();
           _persistOrClearAtFullTime();
           break;
         default:
@@ -1196,6 +1266,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
+    iosMacResolver.dispose();
     mqttService.dispose();
     bleBridgeService.dispose();
     wakelockService.dispose();
@@ -1528,9 +1599,96 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       final macs =
           team.id == homeId ? config.homeModuleMacs : config.awayModuleMacs;
       for (var i = 0; i < team.modules.length && i < macs.length; i++) {
-        team.modules[i].applyPresetConfig(macs[i], '');
+        if (useIosBleUuid && macs[i].isNotEmpty) {
+          // #82: iOS can't fromId() a MAC — route through the cached-UUID /
+          // batch-scan resolver. Synchronous except the unawaited scan kick,
+          // so it stays safe inside this notify-chain call site.
+          _pairIosModuleByMac(team.modules[i], macs[i], label: '');
+        } else {
+          team.modules[i].applyPresetConfig(macs[i], '');
+        }
       }
     }
+  }
+
+  Module? _moduleById(int moduleId) => teams
+      .expand((t) => t.modules)
+      .where((m) => m.moduleId == moduleId)
+      .firstOrNull;
+
+  void _persistIosMacUuidCache() {
+    _prefs?.setString(_iosMacUuidCacheKey, jsonEncode(_iosMacUuidCache));
+  }
+
+  /// #82 (iOS): get [module] paired to hardware [mac] — cached UUID first,
+  /// else enroll it with the batch-scan resolver ("Searching..."). [label]
+  /// follows applyPresetConfig's always-apply rule; pass the module's current
+  /// label to preserve it (cold-resume does).
+  void _pairIosModuleByMac(Module module, String mac, {required String label}) {
+    final macUpper = mac.toUpperCase();
+    if (module.isConnected && module.hardwareMac == macUpper) {
+      // Already live on this exact module: apply the label rule, keep the
+      // link, and backfill the cache from the live connection id.
+      module.applyPresetConfig('', label, hardwareMac: macUpper);
+      iosMacResolver.cancel(module.moduleId);
+      if (_iosMacUuidCache[macUpper] != module.macAddress) {
+        _iosMacUuidCache[macUpper] = module.macAddress;
+        _persistIosMacUuidCache();
+      }
+      return;
+    }
+    final cachedUuid = _iosMacUuidCache[macUpper];
+    if (cachedUuid != null && cachedUuid.isNotEmpty) {
+      iosMacResolver.cancel(module.moduleId);
+      module.applyPresetConfig(cachedUuid, label, hardwareMac: macUpper);
+    } else {
+      module.applyPresetConfig('', label, hardwareMac: macUpper);
+      module.markSearching();
+      iosMacResolver.enroll(module.moduleId, macUpper);
+    }
+  }
+
+  void _onIosMacResolved(int moduleId, String mac, String uuid) {
+    final module = _moduleById(moduleId);
+    if (module == null) return;
+    // Re-target guard: the slot may have been repointed (manual QR/scan) while
+    // the batch scan ran — a stale hit must not touch it.
+    if (module.hardwareMac != mac) return;
+    _iosMacUuidCache[mac] = uuid;
+    _persistIosMacUuidCache();
+    // Already connected/connecting on this identity → nothing to do; churning
+    // setBleDevice would drop a live/in-flight link.
+    if (module.isConnected) return;
+    if (module.macAddress.toUpperCase() == uuid.toUpperCase()) return;
+    module.setBleDevice(BluetoothDevice.fromId(uuid));
+    if (module.isEnabled) {
+      module.bleConnect();
+    }
+  }
+
+  void _onIosMacResolveGaveUp(int moduleId) {
+    _moduleById(moduleId)?.markSearchGaveUp();
+  }
+
+  /// #82 (iOS): a connect() failed because its identity can never connect —
+  /// stale cached UUID ("Peripheral not found") or a MAC fed to fromId. Drop
+  /// the dead cache entry and hand the module to the resolver. Called by
+  /// Module.bleConnect's catch, once per failed connect CALL (never from
+  /// disconnect events — invariant #5).
+  void enrollIosMacResolve(Module module) {
+    if (!useIosBleUuid || module.hardwareMac.isEmpty) return;
+    if (_iosMacUuidCache.remove(module.hardwareMac) != null) {
+      _persistIosMacUuidCache();
+    }
+    module.markSearching();
+    iosMacResolver.enroll(module.moduleId, module.hardwareMac);
+  }
+
+  /// #82: Cancel affordance for a "Searching..." module (no device yet) — the
+  /// resolver forgets it so an in-flight scan hit can't revive it. Called by
+  /// Module.bleDisconnect on every platform (no-op when not enrolled).
+  void cancelIosMacResolve(Module module) {
+    iosMacResolver.cancel(module.moduleId);
   }
 
   /// Pair the linked fixture's modules if the MAC set (or side) changed since the
@@ -1717,14 +1875,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   /// link state. Read-only wrt BLE (macAddress/isConnected only). Keyed by team
   /// id, never list position, so a half-time team-order swap can't cross sides.
   ///
-  /// KNOWN LIMITATION (iOS, RAVF001 / #82): `module.macAddress` is the BLE
-  /// CONNECTION identity, which on iOS is a CoreBluetooth UUID, NOT the hardware
-  /// MAC (Apple hides the MAC). So on iPhone this reports a UUID the scoreboard
-  /// can't diff against `home_module_macs`, and reconciliation is Android-only
-  /// for now. The real fix — split connection-id from hardware-MAC and populate
-  /// the MAC on iOS from the QR scan / advertised name — is designed in
-  /// docs/ai/DESIGN_issue82_ios_mac_split.md and lands under #82; once it does,
-  /// this line reports the real MAC on both platforms with no change here.
+  /// #82: reports `Module.hardwareMac` — the stable hardware identity — never
+  /// the connection id (`macAddress`), which on iOS is a per-phone CoreBluetooth
+  /// UUID the scoreboard can't diff against `home_module_macs`. Fallback: a
+  /// MAC-shaped connection id (Android edge paths that predate the split) still
+  /// reports; a UUID-only slot (iOS, MAC never learned) honestly reports ''.
   List<ActualModuleReport> _actualModulesForTeamId(String teamId) {
     final reports = <ActualModuleReport>[];
     for (final team in teams) {
@@ -1732,11 +1887,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       for (var i = 0; i < team.modules.length; i++) {
         final module = team.modules[i];
         if (!module.isEnabled) continue;
+        final mac = module.hardwareMac.isNotEmpty
+            ? module.hardwareMac
+            : (isMacFormat(module.macAddress) ? module.macAddress : '');
         reports.add(ActualModuleReport(
           robot: i + 1,
           // Same normalization as the restore path so the round-trip is
           // idempotent (see ActualModuleReport.normalizeMac).
-          mac: ActualModuleReport.normalizeMac(module.macAddress),
+          mac: ActualModuleReport.normalizeMac(mac),
           connected: module.isConnected,
         ));
       }
@@ -2182,10 +2340,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   GamePreset createPreset(String name) {
     final configs = teams
         .expand((t) => t.modules)
-        .where((m) => m.macAddress.isNotEmpty)
+        // #82: a slot still waiting for its iOS UUID has only a hardware MAC —
+        // it belongs in the preset too.
+        .where((m) => m.macAddress.isNotEmpty || m.hardwareMac.isNotEmpty)
         .map((m) => ModuleConfig(
               moduleId: m.moduleId,
               macAddress: m.macAddress,
+              hardwareMac: m.hardwareMac,
               label: m.hasCustomLabel ? m.name : '',
             ))
         .toList();
@@ -2198,7 +2359,21 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           .expand((t) => t.modules)
           .where((m) => m.moduleId == config.moduleId)
           .firstOrNull;
-      module?.applyPresetConfig(config.macAddress, config.label);
+      if (module == null) continue;
+      if (useIosBleUuid && config.hardwareMac.isNotEmpty) {
+        // #82: the preset's stored connection id is this phone's best-known
+        // UUID for the MAC — seed the cache with it, then pair through the
+        // resolver (a stale UUID falls back to the scan via bleConnect's
+        // Peripheral-not-found handler).
+        final macUpper = config.hardwareMac.toUpperCase();
+        if (config.macAddress.isNotEmpty) {
+          _iosMacUuidCache.putIfAbsent(macUpper, () => config.macAddress);
+        }
+        _pairIosModuleByMac(module, macUpper, label: config.label);
+      } else {
+        module.applyPresetConfig(config.macAddress, config.label,
+            hardwareMac: config.hardwareMac);
+      }
     }
     notifyListeners();
   }

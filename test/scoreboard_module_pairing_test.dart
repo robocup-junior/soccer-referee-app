@@ -8,12 +8,16 @@
 // services whose platform-channel calls reject asynchronously in the headless
 // test VM, which the widget binding tolerates.
 
+import 'dart:convert';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'package:rcj_scoreboard/models/team.dart';
+import 'package:rcj_scoreboard/services/match_state_store.dart';
+import 'package:rcj_scoreboard/utils/ble_address.dart';
 
 Map<String, dynamic> _config({
   String matchCode = 'M-1',
@@ -169,5 +173,137 @@ void main() {
     }
 
     game.dispose();
+  });
+
+  group('#82 hardware-MAC / iOS-UUID split', () {
+    tearDown(() {
+      debugUseIosBleUuidOverride = null;
+    });
+
+    testWidgets('Android pairing backfills hardwareMac from the MAC',
+        (tester) async {
+      final game = await loadedGame(tester);
+
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+
+      final module = teamById(game, 'A').modules[0];
+      expect(module.macAddress, 'A1:B2:C3:D4:E5:F6');
+      expect(module.hardwareMac, 'A1:B2:C3:D4:E5:F6');
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'iOS pairing with a cached UUID connects by UUID and keeps the MAC',
+        (tester) async {
+      debugUseIosBleUuidOverride = true;
+      SharedPreferences.setMockInitialValues({
+        'mqtt_enabled': false,
+        'ios_mac_uuid_cache':
+            jsonEncode({'A1:B2:C3:D4:E5:F6': '12345678-1234-1234-1234-1234567890AB'}),
+      });
+      final game = await loadedGame(tester);
+
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+
+      final module = teamById(game, 'A').modules[0];
+      expect(module.macAddress, '12345678-1234-1234-1234-1234567890AB');
+      expect(module.hardwareMac, 'A1:B2:C3:D4:E5:F6');
+      // Cache hit → nothing pending with the resolver.
+      expect(game.iosMacResolver.pendingCount, 0);
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'iOS enrollment after kickoff gives up immediately (Not found) — '
+        'no scan during a running half', (tester) async {
+      debugUseIosBleUuidOverride = true;
+      final game = await loadedGame(tester);
+      final module = teamById(game, 'A').modules[0];
+      module.hardwareMac = 'A1:B2:C3:D4:E5:F6';
+
+      // Kickoff: the resolver is stopped for the rest of the match. A
+      // fallback enrollment (e.g. a stale cached UUID failing mid-match)
+      // must settle to Not found without any scan.
+      game.startTimer();
+      game.enrollIosMacResolve(module);
+      await tester.pump();
+
+      expect(module.macAddress, '');
+      expect(module.bleStatus, 'Not found');
+      expect(game.iosMacResolver.pendingCount, 0);
+
+      game.stopTimer();
+      game.dispose();
+    });
+
+    testWidgets(
+        'iOS pairing with no cache enrolls the module as Searching...',
+        (tester) async {
+      debugUseIosBleUuidOverride = true;
+      final game = await loadedGame(tester);
+
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+
+      final module = teamById(game, 'A').modules[0];
+      expect(module.macAddress, '');
+      expect(module.hardwareMac, 'A1:B2:C3:D4:E5:F6');
+      expect(module.bleStatus, 'Searching...');
+      expect(game.iosMacResolver.pendingCount, 1);
+
+      // Kickoff stops the resolve scanning for the rest of the match and
+      // settles the pending slot to Not found (invariant #1).
+      game.startTimer();
+      expect(module.bleStatus, 'Not found');
+      expect(game.iosMacResolver.pendingCount, 0);
+
+      game.stopTimer();
+      game.dispose();
+      // Drain any scan/retry timers the resolve loop may have scheduled
+      // before the kickoff stopped it.
+      await tester.pump(const Duration(seconds: 10));
+    });
+
+    testWidgets(
+        'restore: pre-split snapshot backfills hardwareMac from a MAC-shaped '
+        'connection id; split snapshot restores both fields', (tester) async {
+      final game = await loadedGame(tester);
+      final module = teamById(game, 'A').modules[0];
+
+      // Pre-split snapshot (no hardwareMac key ≙ default ''), disabled so the
+      // restore takes the non-reconnect branch (no bleConnect headless).
+      module.restoreFromSnapshot(const ModuleSnapshot(
+        moduleId: 0,
+        isEnabled: false,
+        macAddress: 'A1:B2:C3:D4:E5:F6',
+        customLabel: null,
+        state: 'stop',
+        lastState: 'stop',
+        penaltyTime: 0,
+      ));
+      expect(module.hardwareMac, 'A1:B2:C3:D4:E5:F6');
+
+      // Split snapshot: an iOS Searching-state slot (hardware MAC known, no
+      // connection id yet).
+      final module2 = teamById(game, 'A').modules[1];
+      module2.restoreFromSnapshot(const ModuleSnapshot(
+        moduleId: 1,
+        isEnabled: false,
+        macAddress: '',
+        hardwareMac: '11:22:33:44:55:66',
+        customLabel: null,
+        state: 'stop',
+        lastState: 'stop',
+        penaltyTime: 0,
+      ));
+      expect(module2.macAddress, '');
+      expect(module2.hardwareMac, '11:22:33:44:55:66');
+
+      game.dispose();
+    });
   });
 }
