@@ -158,6 +158,74 @@ class _SettingsScreenState extends State<SettingsScreen> {
     });
   }
 
+  Future<void> _confirmEndMatchEarly() async {
+    final game = widget.game;
+    // Pin the fixture AND the match state the referee is confirming. A deep
+    // link can be Loaded while this dialog sits open (Home's "Load match?"
+    // dialog renders in the same root overlay, above us): a different fixture
+    // swaps matchConfig (caught by the signature, the same stale-dialog class
+    // the load/review paths guard with expectedSignature), while a confirmed
+    // re-Load of the SAME fixture keeps the signature but RESETS the live
+    // match via gameInit() (#69) — caught by the stage/inGame/score pin. A
+    // stage flip or score change while the dialog is open (half expiring,
+    // no-show goal landing) is likewise no longer the state this dialog
+    // displayed. The conservative no-op just makes the referee re-tap.
+    final expectedSignature =
+        game.scoreboardResultService.matchConfig?.signature;
+    final expectedMatchState = (
+      game.currentStage,
+      game.inGame,
+      game.teams[0].score,
+      game.teams[1].score,
+    );
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('End this match now?'),
+        content: Text(
+          'You will be taken to the result confirmation screen. '
+          'Current score: ${game.teams[0].name} ${game.teams[0].score} '
+          '– ${game.teams[1].score} ${game.teams[1].name}.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('End'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || confirmed != true) return;
+    // The fixture or match can change while the dialog sits open; re-check
+    // the gate AND that both still match what this dialog showed, so a stale
+    // confirm can't end a different fixture or a reset/advanced match.
+    if (!game.canEndMatchEarly) return;
+    if (expectedSignature == null ||
+        game.scoreboardResultService.matchConfig?.signature !=
+            expectedSignature) {
+      return;
+    }
+    final currentMatchState = (
+      game.currentStage,
+      game.inGame,
+      game.teams[0].score,
+      game.teams[1].score,
+    );
+    if (currentMatchState != expectedMatchState) return;
+    // Pop Settings back to Home FIRST (returning the game so Home's
+    // _navigateToSettings continuation runs gameRefresh(), not gameInit() —
+    // endMatchEarly sets inGame synchronously below, before that continuation's
+    // microtask runs). Home's onRequestReviewScoreboardResult callback is
+    // deferred to a post-frame callback, so the review route is pushed over
+    // Home, never over the disappearing Settings route.
+    Navigator.of(context).pop(game);
+    game.endMatchEarly();
+  }
+
   @override
   Widget build(BuildContext context) {
     return PopScope(
@@ -255,6 +323,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   title: 'Outbox',
                                   status:
                                       'Pending ${service.pendingCount}, conflict ${service.conflictCount}, submitted ${service.submittedCount}',
+                                ),
+                                // "End match now" is a deep-link-only action
+                                // (it lives here, not in Current Game, because
+                                // it only applies to a linked scoreboard
+                                // fixture). This section's AnimatedBuilder
+                                // listens to the service, so it does not rebuild
+                                // on match-stage changes (e.g. the clock hitting
+                                // full time while Settings is open); wrap the
+                                // gated button in its own builder on widget.game
+                                // — Game forwards service notifications too, so
+                                // this tracks both the fixture and the stage.
+                                AnimatedBuilder(
+                                  animation: widget.game,
+                                  builder: (context, child) {
+                                    if (!widget.game.canEndMatchEarly) {
+                                      return const SizedBox.shrink();
+                                    }
+                                    return SettingButton(
+                                      title: 'End match now',
+                                      buttonText: 'End',
+                                      onPressed: _confirmEndMatchEarly,
+                                    );
+                                  },
                                 ),
                                 SettingButton(
                                   title: 'Refresh linked match',
@@ -796,12 +887,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('Author: Martin Faltus, Fabian Weller, Marek Šuppa',
+                              child: Text(
+                                  'Author: Martin Faltus, Fabian Weller, Marek Šuppa',
                                   style: TextStyle(fontSize: 14)),
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('Version: 0.10.4',
+                              child: Text('Version: 0.10.6',
                                   style: TextStyle(fontSize: 14)),
                             ),
                             Padding(
