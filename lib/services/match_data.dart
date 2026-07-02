@@ -44,7 +44,7 @@ class Match {
 }
 
 class MatchDataService {
-  String _url = 'https://catigoal.com/rest/v1/RCJI25/matches?format=json';
+  String _url = 'https://catigoal.com/rest/v1/RCJI26/matches?format=json';
   String _matchId = '';
   final String _state = '';
   List<Match> _matches = [];
@@ -60,7 +60,7 @@ class MatchDataService {
   /// Loads MQTT settings from SharedPreferences
   Future<void> loadPreferences() async {
     prefs = await SharedPreferences.getInstance();
-    _url = prefs.getString('matches_url') ?? 'https://catigoal.com/rest/v1/RCJI25/matches?format=json';
+    _url = prefs.getString('matches_url') ?? 'https://catigoal.com/rest/v1/RCJI26/matches?format=json';
   }
 
   Future<List<Match>> fetchMatches(String url) async {
