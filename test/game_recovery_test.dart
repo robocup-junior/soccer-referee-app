@@ -2706,6 +2706,30 @@ void main() {
       game.dispose();
     });
 
+    testWidgets(
+        'auto-connect proceeds and rebroadcasts while the state reads '
+        'connecting', (tester) async {
+      // The bounded reconnect loop pins the public state at `connecting`
+      // almost continuously during a broker blip; a load in that window must
+      // still get its serialized connect + rebroadcast, or the new fixture's
+      // retained topics keep the previous match's data.
+      final game = await gameWithRecordingMqtt(
+        tester,
+        initialState: MqttConnectionStateEx.connecting,
+      );
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      applyConfig(game);
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 1);
+      final connectIndex = mqtt.log.indexOf('mqtt:connect');
+      final stateIndex =
+          mqtt.log.lastIndexOf('mqtt:publishGameState:firstHalf');
+      expect(stateIndex, greaterThan(connectIndex));
+      game.dispose();
+    });
+
     testWidgets('a throwing connect does not crash the load path',
         (tester) async {
       final game = await gameWithRecordingMqtt(tester, throwOnConnect: true);

@@ -912,10 +912,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void _maybeAutoConnectMqttOnMatchLoad() {
     if (!mqttService.isEnabled) return;
     if (mqttService.isConnected) return;
-    if (mqttService.connectionStateNotifier.value ==
-        MqttConnectionStateEx.connecting) {
-      return;
-    }
+    // No bail on a `connecting` state: the bounded reconnect loop pins the
+    // state there almost continuously during a broker blip, and a load that
+    // bailed would never rebroadcast — leaving the previous match's retained
+    // topics on the new field. connect() serializes internally, so calling
+    // it while another attempt is in flight just queues this caller.
+    //
     // Fire-and-forget: a broker outage must not delay match load, and the
     // Settings status label reports the outcome. On success, rebroadcast the
     // CURRENT state: the load path's gameInit() broadcasts ran while MQTT was
@@ -929,10 +931,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       }
     }).catchError((Object e) {
       // The service maps expected failures to its error state; this guard
-      // only keeps a truly unexpected escape from becoming an uncaught async
-      // error on the fire-and-forget load path.
+      // only keeps an unexpected Exception escape from becoming an uncaught
+      // async error on the fire-and-forget load path. Errors (programming
+      // bugs) still surface — swallowing them here would hide a broken
+      // load-time MQTT behind a debugPrint.
       debugPrint('MQTT auto-connect failed: $e');
-    }));
+    }, test: (e) => e is Exception));
   }
 
   // Upper bound on background catch-up ticks: only the window the timer runs
