@@ -128,7 +128,11 @@ void main() {
           {'robot': 3.0, 'status': 'ok', 'note': ''}, // float -> 3
           {'robot': '2', 'status': 'failed', 'note': 'x'}, // string -> 2
           {'robot': 0, 'status': 'ok', 'note': ''}, // non-positive -> dropped
-          {'robot': 'nope', 'status': 'ok', 'note': ''}, // unparseable -> dropped
+          {
+            'robot': 'nope',
+            'status': 'ok',
+            'note': ''
+          }, // unparseable -> dropped
           'not-a-map', // dropped
         ],
         'away_inspection_robots': 'not-a-list',
@@ -261,14 +265,17 @@ void main() {
       expect(config.homeInspectionRobots, const [
         InspectionRobot(robot: 1, status: InspectionStatus.ok, note: ''),
         InspectionRobot(
-            robot: 2, status: InspectionStatus.failed, note: 'battery below spec'),
+            robot: 2,
+            status: InspectionStatus.failed,
+            note: 'battery below spec'),
       ]);
       expect(config.awayInspectionRobots, const [
         InspectionRobot(robot: 1, status: InspectionStatus.missing, note: ''),
       ]);
     });
 
-    test('inspection robots parsing is total (drops malformed/invalid robot)', () {
+    test('inspection robots parsing is total (drops malformed/invalid robot)',
+        () {
       final config = ScoreboardMatchConfig.fromJson({
         ..._matchJson(),
         'home_inspection_robots': const [
@@ -279,8 +286,9 @@ void main() {
         ],
         'away_inspection_robots': 'not-a-list',
       });
-      expect(config.homeInspectionRobots,
-          const [InspectionRobot(robot: 1, status: InspectionStatus.ok, note: '')]);
+      expect(config.homeInspectionRobots, const [
+        InspectionRobot(robot: 1, status: InspectionStatus.ok, note: '')
+      ]);
       expect(config.awayInspectionRobots, isEmpty);
     });
 
@@ -306,6 +314,50 @@ void main() {
         InspectionRobot(robot: 1, status: InspectionStatus.failed, note: 'x'),
       ]);
       expect(flipped.signature, base.signature);
+    });
+  });
+
+  group('ActualModuleReport parsing (#85)', () {
+    test('toJson/fromJson round-trip', () {
+      const report = ActualModuleReport(
+          robot: 2, mac: 'AA:BB:CC:DD:EE:01', connected: true);
+      final decoded = ActualModuleReport.fromJson(report.toJson());
+      expect(decoded, report);
+    });
+
+    test('robot parses from int, float and string; mac trimmed + upper-cased',
+        () {
+      expect(
+        ActualModuleReport.fromJson(
+            {'robot': 3, 'mac': ' aa:bb:cc:dd:ee:ff ', 'connected': true}),
+        const ActualModuleReport(
+            robot: 3, mac: 'AA:BB:CC:DD:EE:FF', connected: true),
+      );
+      expect(
+          ActualModuleReport.fromJson(
+              {'robot': 3.0, 'mac': '', 'connected': false}).robot,
+          3);
+      expect(
+          ActualModuleReport.fromJson(
+              {'robot': '3', 'mac': '', 'connected': false}).robot,
+          3);
+    });
+
+    test('connected reads a bool; absent/null -> false', () {
+      bool parsed(dynamic v) =>
+          ActualModuleReport.fromJson({'robot': 1, 'mac': '', 'connected': v})
+              .connected;
+      expect(parsed(true), isTrue);
+      expect(parsed(false), isFalse);
+      expect(parsed(null), isFalse);
+    });
+
+    test('never-paired slot keeps an empty mac', () {
+      expect(
+        ActualModuleReport.fromJson(
+            {'robot': 1, 'mac': '', 'connected': false}),
+        const ActualModuleReport(robot: 1, mac: '', connected: false),
+      );
     });
   });
 
@@ -363,6 +415,84 @@ void main() {
       expect(decoded.retryCount, 0);
       expect(decoded.homeConfirmed, isFalse);
       expect(decoded.awayConfirmed, isFalse);
+    });
+
+    test('roundtrips per-team actual modules (#85)', () {
+      final now = DateTime.now().toUtc();
+      final item = ResultOutboxItem(
+        id: 'id-mods',
+        baseUrl: 'https://scoreboard.junior.robocup.org',
+        token: 'selector.secret',
+        matchCode: 'M-MODS',
+        homeGoals: 1,
+        awayGoals: 0,
+        version: 1,
+        idempotencyKey: 'idem-mods',
+        homeModules: const [
+          ActualModuleReport(
+              robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: true),
+          ActualModuleReport(robot: 2, mac: '', connected: false),
+        ],
+        awayModules: const [
+          ActualModuleReport(
+              robot: 1, mac: 'AA:BB:CC:DD:EE:02', connected: false),
+        ],
+        state: ResultSubmissionState.pending,
+        createdAt: now,
+        updatedAt: now,
+      );
+
+      final decoded = ResultOutboxItem.fromJson(item.toJson());
+      expect(decoded.homeModules, item.homeModules);
+      expect(decoded.awayModules, item.awayModules);
+    });
+
+    test('defaults actual modules to empty lists for pre-#85 payloads', () {
+      final decoded = ResultOutboxItem.fromJson({
+        'id': 'id-legacy',
+        'base_url': 'https://scoreboard.junior.robocup.org',
+        'token': 'selector.secret',
+        'match_code': 'M-LEGACY',
+        'home_goals': 1,
+        'away_goals': 0,
+        'version': 1,
+        'idempotency_key': 'idem-legacy',
+        'state': 'pending',
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      });
+
+      expect(decoded.homeModules, isEmpty);
+      expect(decoded.awayModules, isEmpty);
+    });
+
+    test('a malformed persisted module row is dropped, not fatal', () {
+      final decoded = ResultOutboxItem.fromJson({
+        'id': 'id-bad',
+        'base_url': 'https://scoreboard.junior.robocup.org',
+        'token': 'selector.secret',
+        'match_code': 'M-BAD',
+        'home_goals': 0,
+        'away_goals': 0,
+        'version': 1,
+        'idempotency_key': 'idem-bad',
+        'state': 'pending',
+        'home_modules': [
+          {'robot': 1, 'mac': 'AA:BB:CC:DD:EE:01', 'connected': true},
+          'not-a-map',
+          {
+            'robot': 0,
+            'mac': 'x',
+            'connected': true
+          }, // invalid robot -> dropped
+        ],
+        'created_at': DateTime.now().toUtc().toIso8601String(),
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      });
+
+      expect(decoded.homeModules, const [
+        ActualModuleReport(robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: true),
+      ]);
     });
   });
 
@@ -567,6 +697,98 @@ void main() {
       expect(service.hasToken, isTrue);
       expect(service.hasResultFor('M-SUBMIT'), isTrue);
       expect(service.statusMessage, '✓ Submitted M-SUBMIT');
+    });
+
+    test('POST body carries actual_modules per team (#85)', () async {
+      String? postBody;
+      final client = _FakeHttpClient((request) {
+        if (request is http.Request) postBody = request.body;
+        return http.Response(jsonEncode({'version': 6}), 200);
+      });
+      final service = ScoreboardResultService(httpClient: client);
+      service.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(_matchJson(matchCode: 'M-MODS')),
+        token: 'token',
+        baseUri: Uri.parse('http://127.0.0.1:8080'),
+      );
+
+      await service.enqueueFinalResult(
+        homeGoals: 1,
+        awayGoals: 0,
+        homeModules: const [
+          ActualModuleReport(
+              robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: true),
+          ActualModuleReport(robot: 2, mac: '', connected: false),
+        ],
+        awayModules: const [
+          ActualModuleReport(
+              robot: 1, mac: 'AA:BB:CC:DD:EE:02', connected: false),
+        ],
+      );
+
+      await _waitFor(() => postBody != null, reason: 'POST was not sent');
+      final payload = jsonDecode(postBody!) as Map<String, dynamic>;
+      expect(payload['actual_modules'], {
+        'home': [
+          {'robot': 1, 'mac': 'AA:BB:CC:DD:EE:01', 'connected': true},
+          {'robot': 2, 'mac': '', 'connected': false},
+        ],
+        'away': [
+          {'robot': 1, 'mac': 'AA:BB:CC:DD:EE:02', 'connected': false},
+        ],
+      });
+    });
+
+    test('POST body omits actual_modules when both lists are empty (legacy)',
+        () async {
+      String? postBody;
+      final client = _FakeHttpClient((request) {
+        if (request is http.Request) postBody = request.body;
+        return http.Response(jsonEncode({'version': 6}), 200);
+      });
+      final service = ScoreboardResultService(httpClient: client);
+      service.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(_matchJson(matchCode: 'M-EMPTY')),
+        token: 'token',
+        baseUri: Uri.parse('http://127.0.0.1:8080'),
+      );
+
+      await service.enqueueFinalResult(homeGoals: 2, awayGoals: 2);
+
+      await _waitFor(() => postBody != null, reason: 'POST was not sent');
+      final payload = jsonDecode(postBody!) as Map<String, dynamic>;
+      expect(payload.containsKey('actual_modules'), isFalse,
+          reason: 'absence keeps the payload byte-identical to pre-#85');
+    });
+
+    test('a retry after relaunch replays the persisted module list (#85)',
+        () async {
+      // Simulate the kill+relaunch-mid-retry path at the persistence boundary:
+      // the outbox item captured at submit must survive the prefs round-trip so
+      // a later retry POSTs the submit-time modules, never a live re-read.
+      final client = _FakeHttpClient((_) => http.Response('{}', 500));
+      final service = ScoreboardResultService(httpClient: client);
+      service.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(_matchJson(matchCode: 'M-RETRY')),
+        token: 'token',
+        baseUri: Uri.parse('http://127.0.0.1:8080'),
+      );
+
+      await service.enqueueFinalResult(
+        homeGoals: 1,
+        awayGoals: 0,
+        homeModules: const [
+          ActualModuleReport(
+              robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: true),
+        ],
+      );
+
+      // What would be written to prefs and restored on the next launch.
+      final persisted = service.outbox.single.toJson();
+      final restored = ResultOutboxItem.fromJson(persisted);
+      expect(restored.homeModules, const [
+        ActualModuleReport(robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: true),
+      ]);
     });
 
     test('submitted confirmation survives a later config refresh', () async {

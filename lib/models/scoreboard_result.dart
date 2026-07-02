@@ -32,7 +32,8 @@ class InspectionRobot {
     required this.note,
   });
 
-  factory InspectionRobot.fromJson(Map<String, dynamic> json) => InspectionRobot(
+  factory InspectionRobot.fromJson(Map<String, dynamic> json) =>
+      InspectionRobot(
         // num.tryParse handles an int (3), a float (3.0), and a string ("3")
         // without ever throwing or silently dropping a valid robot.
         robot: num.tryParse(json['robot']?.toString() ?? '')?.toInt() ?? 0,
@@ -62,6 +63,60 @@ List<InspectionRobot> _inspectionRobotsFromJson(dynamic value) {
   return value
       .whereType<Map>()
       .map((m) => InspectionRobot.fromJson(Map<String, dynamic>.from(m)))
+      .where((r) => r.robot > 0)
+      .toList(growable: false);
+}
+
+/// One robot's comm module as actually fielded at result-submit time (#85): the
+/// slot number, the MAC currently paired to it (uppercase, may be empty for a
+/// never-paired slot), and whether its BLE link was live at submit. Reported per
+/// team so the server can reconcile a mid-match module swap against its records.
+class ActualModuleReport {
+  final int robot;
+  final String mac;
+  final bool connected;
+
+  const ActualModuleReport({
+    required this.robot,
+    required this.mac,
+    required this.connected,
+  });
+
+  factory ActualModuleReport.fromJson(Map<String, dynamic> json) =>
+      ActualModuleReport(
+        // num.tryParse handles an int (3), a float (3.0), and a string ("3")
+        // without ever throwing or silently dropping a valid robot.
+        robot: num.tryParse(json['robot']?.toString() ?? '')?.toInt() ?? 0,
+        mac: (json['mac']?.toString() ?? '').trim().toUpperCase(),
+        // App-authored bool (module.isConnected -> JSON bool -> back), so a plain
+        // cast suffices — matches the home_confirmed/away_confirmed style in
+        // ResultOutboxItem.fromJson. Defaulted for a legacy/absent value.
+        connected: json['connected'] as bool? ?? false,
+      );
+
+  Map<String, dynamic> toJson() =>
+      {'robot': robot, 'mac': mac, 'connected': connected};
+
+  @override
+  bool operator ==(Object other) =>
+      other is ActualModuleReport &&
+      other.robot == robot &&
+      other.mac == mac &&
+      other.connected == connected;
+
+  @override
+  int get hashCode => Object.hash(robot, mac, connected);
+}
+
+/// Parses a persisted `*_modules` array, dropping non-map entries and any entry
+/// with an invalid/non-positive robot number so one malformed persisted row
+/// can't break restoring the whole outbox item (mirrors
+/// [_inspectionRobotsFromJson]).
+List<ActualModuleReport> _actualModulesFromJson(dynamic value) {
+  if (value is! List) return const [];
+  return value
+      .whereType<Map>()
+      .map((m) => ActualModuleReport.fromJson(Map<String, dynamic>.from(m)))
       .where((r) => r.robot > 0)
       .toList(growable: false);
 }
@@ -191,8 +246,10 @@ class ScoreboardMatchConfig {
       status: (json['status']?.toString() ?? '').toUpperCase(),
       homeModuleMacs: moduleMacs(json['home_module_macs']),
       awayModuleMacs: moduleMacs(json['away_module_macs']),
-      homeInspectionRobots: _inspectionRobotsFromJson(json['home_inspection_robots']),
-      awayInspectionRobots: _inspectionRobotsFromJson(json['away_inspection_robots']),
+      homeInspectionRobots:
+          _inspectionRobotsFromJson(json['home_inspection_robots']),
+      awayInspectionRobots:
+          _inspectionRobotsFromJson(json['away_inspection_robots']),
     );
   }
 
@@ -256,6 +313,11 @@ class ResultOutboxItem {
   final int version;
   final String idempotencyKey;
   final String? comment;
+  // Actually-fielded comm modules per team, captured at submit time (#85). These
+  // ride the persisted outbox so a retry fired long after submit (even across an
+  // app relaunch) still reports the submit-time state, never a live re-read.
+  final List<ActualModuleReport> homeModules;
+  final List<ActualModuleReport> awayModules;
   final int retryCount;
   final ResultSubmissionState state;
   final int? responseStatus;
@@ -276,6 +338,8 @@ class ResultOutboxItem {
     required this.version,
     required this.idempotencyKey,
     this.comment,
+    this.homeModules = const [],
+    this.awayModules = const [],
     this.retryCount = 0,
     required this.state,
     this.responseStatus,
@@ -313,6 +377,8 @@ class ResultOutboxItem {
       version: version,
       idempotencyKey: idempotencyKey,
       comment: comment,
+      homeModules: homeModules,
+      awayModules: awayModules,
       retryCount: retryCount ?? this.retryCount,
       state: state ?? this.state,
       responseStatus:
@@ -357,6 +423,9 @@ class ResultOutboxItem {
       version: (json['version'] as num?)?.toInt() ?? 0,
       idempotencyKey: json['idempotency_key'] as String,
       comment: json['comment'] as String?,
+      // Defaulted so outbox items persisted before #85 still restore cleanly.
+      homeModules: _actualModulesFromJson(json['home_modules']),
+      awayModules: _actualModulesFromJson(json['away_modules']),
       retryCount: (json['retry_count'] as num?)?.toInt() ?? 0,
       state: parseState(json['state'] as String?),
       responseStatus: (json['response_status'] as num?)?.toInt(),
@@ -381,6 +450,8 @@ class ResultOutboxItem {
         'version': version,
         'idempotency_key': idempotencyKey,
         'comment': comment,
+        'home_modules': homeModules.map((m) => m.toJson()).toList(),
+        'away_modules': awayModules.map((m) => m.toJson()).toList(),
         'retry_count': retryCount,
         'state': state.name,
         'response_status': responseStatus,

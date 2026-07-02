@@ -377,6 +377,107 @@ void main() {
     });
   });
 
+  group('actual module report captured at submit (#85)', () {
+    // Applies a referee fixture live, sets up each team's slots (enable/disable +
+    // mac) WITHOUT a real bleConnect (unsupported headless), then submits and
+    // inspects the queued outbox item. connected is false throughout — the live
+    // BLE link can't be stood up in the test VM, so connected:true is covered by
+    // the on-device scenario; here we prove slot selection, numbering, mac
+    // normalisation and side mapping by team id.
+    Future<Game> refereeGame(WidgetTester tester,
+        {required bool homeIsLeft, String code = 'M-MOD'}) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(_scoreboardConfig(
+            matchCode: code, version: 1, homeIsLeft: homeIsLeft)),
+        token: 'test-token',
+      );
+      await tester.pump();
+      return game;
+    }
+
+    Team teamById(Game game, String id) =>
+        game.teams.firstWhere((t) => t.id == id);
+
+    // Enable exactly [macs].length slots with the given (possibly empty) macs;
+    // disable the rest so they must be omitted from the report.
+    void fieldSlots(Team team, List<String> macs) {
+      for (var i = 0; i < team.modules.length; i++) {
+        if (i < macs.length) {
+          team.modules[i].enable();
+          team.modules[i].macAddress = macs[i];
+        } else {
+          team.modules[i].disable();
+        }
+      }
+    }
+
+    testWidgets('home list = home-side team modules; disabled slots omitted',
+        (tester) async {
+      final game = await refereeGame(tester, homeIsLeft: true);
+      // homeIsLeft:true -> team A is home.
+      fieldSlots(teamById(game, 'A'), ['aa:bb:cc:dd:ee:01', '']);
+      fieldSlots(teamById(game, 'B'), ['bb:bb:cc:dd:ee:02']);
+
+      final item = await submitCurrentReview(tester, game, 'M-MOD');
+
+      expect(item.homeModules, const [
+        ActualModuleReport(
+            robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: false),
+        ActualModuleReport(robot: 2, mac: '', connected: false),
+      ]);
+      expect(item.awayModules, const [
+        ActualModuleReport(
+            robot: 1, mac: 'BB:BB:CC:DD:EE:02', connected: false),
+      ]);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('a home/away swap (homeIsLeft:false) keeps sides by team id',
+        (tester) async {
+      final game =
+          await refereeGame(tester, homeIsLeft: false, code: 'M-MSWAP');
+      // homeIsLeft:false -> team B is home, so team B's modules are the home list.
+      fieldSlots(teamById(game, 'B'), ['bb:bb:cc:dd:ee:01']);
+      fieldSlots(teamById(game, 'A'), ['aa:aa:cc:dd:ee:02']);
+
+      final item = await submitCurrentReview(tester, game, 'M-MSWAP');
+
+      expect(item.homeModules, const [
+        ActualModuleReport(
+            robot: 1, mac: 'BB:BB:CC:DD:EE:01', connected: false),
+      ]);
+      expect(item.awayModules, const [
+        ActualModuleReport(
+            robot: 1, mac: 'AA:AA:CC:DD:EE:02', connected: false),
+      ]);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('a mid-match module replacement reports the NEW mac',
+        (tester) async {
+      final game = await refereeGame(tester, homeIsLeft: true, code: 'M-MREP');
+      final teamA = teamById(game, 'A');
+      fieldSlots(teamA, ['aa:bb:cc:dd:ee:01']);
+      fieldSlots(teamById(game, 'B'), ['bb:bb:cc:dd:ee:02']);
+
+      // Referee swaps in a spare mid-match: slot 1's mac changes.
+      teamA.modules[0].macAddress = 'aa:bb:cc:dd:ee:99';
+
+      final item = await submitCurrentReview(tester, game, 'M-MREP');
+
+      expect(item.homeModules.single.mac, 'AA:BB:CC:DD:EE:99');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+  });
+
   group('cold-launch detection', () {
     testWidgets('an in-progress snapshot is offered for resume',
         (tester) async {
