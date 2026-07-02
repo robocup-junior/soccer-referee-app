@@ -73,7 +73,15 @@ class Module with ChangeNotifier {
   // [macAddress] is a per-phone CoreBluetooth UUID and this is recovered from
   // the QR scan, the advertised name `RCJs-m_<MAC>`, or the match-load
   // resolver. Reported in the scoreboard result POST instead of [macAddress].
-  String hardwareMac = '';
+  // The cache keys and retarget guards depend on the uppercase invariant, so
+  // the setter owns normalization — call sites must not re-implement it.
+  String _hardwareMac = '';
+  String get hardwareMac => _hardwareMac;
+  set hardwareMac(String value) => _hardwareMac = value.trim().toUpperCase();
+  // True while the iOS match-load resolver is (or should be) looking for this
+  // module's UUID. A real flag — not a bleStatus string compare — so the
+  // Cancel affordance and disconnectAll can reach the Searching state.
+  bool _isSearching = false;
   String bleStatus = 'Disconnected';
   // True while we want to be connected (connect tapped, autoConnect active).
   // Lets a device-level disconnect read as "Connecting..." (still trying) rather
@@ -395,6 +403,7 @@ class Module with ChangeNotifier {
     // no device yet. Cancel must reach that state too, and an in-flight scan
     // hit for it must not revive it (the resolver drops non-pending hits).
     _game.cancelIosMacResolve(this);
+    _isSearching = false;
     // Note: no `!isConnected` guard. While autoConnect is still retrying the
     // device is NOT connected, yet we must still call disconnect() to cancel
     // that pending retry loop and clear the connect intent — otherwise a dead
@@ -657,9 +666,10 @@ class Module with ChangeNotifier {
     // Swapping the device is a fresh-connection boundary: clear the old
     // device's reconnect lifecycle so no stale intent carries over (issue #38).
     // Callers that want a connection call bleConnect() right after, which
-    // re-establishes intent.
+    // re-establishes intent. A pending resolver search is superseded too.
     _connectIntent = false;
     _isConnected = false;
+    _isSearching = false;
 
      bleDevice = device;
 
@@ -672,12 +682,13 @@ class Module with ChangeNotifier {
      // remoteId IS the MAC) or the advertised/GAP name caches. A CHANGED
      // connection id with nothing derivable means this is a different physical
      // module whose MAC we don't know yet — clear the stale value rather than
-     // report the previous module's MAC to the scoreboard (RAVF002); the
-     // connected event re-derives it from the name once the link is up.
+     // report the previous module's MAC to the scoreboard (#82 review:
+     // stale-MAC retarget); the connected event re-derives it from the name
+     // once the link is up.
      if (hardwareMac != null && hardwareMac.isNotEmpty) {
-       this.hardwareMac = hardwareMac.toUpperCase();
+       this.hardwareMac = hardwareMac;
      } else if (isMacFormat(macAddress)) {
-       this.hardwareMac = macAddress.toUpperCase();
+       this.hardwareMac = macAddress;
      } else {
        final parsed = macFromAdvertisedName(bleDevice!.platformName) ??
            macFromAdvertisedName(bleDevice!.advName);
@@ -725,11 +736,16 @@ class Module with ChangeNotifier {
         // THIS device — (re)derive the hardware MAC so a module connected by
         // UUID without a QR scan (saved device, scan-list pick) learns it,
         // and a stale value from a previously-held module can't survive a
-        // retarget (RAVF002).
+        // retarget. A successful link also warms the iOS MAC→UUID cache so a
+        // hand-paired module needs no scan at the next match load.
+        _isSearching = false;
         final parsedMac = macFromAdvertisedName(device.platformName) ??
             macFromAdvertisedName(device.advName);
         if (parsedMac != null && parsedMac != hardwareMac) {
           hardwareMac = parsedMac;
+        }
+        if (hardwareMac.isNotEmpty) {
+          _game.recordIosMacUuid(hardwareMac, macAddress);
         }
         notifyListeners();
         bleInitModule();
@@ -750,6 +766,10 @@ class Module with ChangeNotifier {
   // Trying to connect (autoConnect retrying), not yet connected. Lets the UI
   // offer a Cancel action to break out of an endless "Connecting..." loop.
   bool get isConnecting => _connectIntent && !_isConnected;
+  // #82 (iOS): enrolled with the match-load resolver, no device yet. The
+  // settings button and disconnectAll treat it like isConnecting so the
+  // referee can cancel a slot stuck on "Searching..." (wrong server MAC).
+  bool get isSearching => _isSearching;
   bool get isPlaying => _isPlaying;
   String get name => (_label != null && _label!.isNotEmpty) ? _label! : _name;
   String get defaultName => _name;
@@ -784,6 +804,7 @@ class Module with ChangeNotifier {
   /// stomp a live or in-progress connection's status.
   void markSearching() {
     if (_isConnected || _connectIntent) return;
+    _isSearching = true;
     bleStatus = 'Searching...';
     notifyListeners();
   }
@@ -791,6 +812,7 @@ class Module with ChangeNotifier {
   /// #82 (iOS): the resolver stopped (kickoff) without finding this module.
   /// The referee's manual scan/QR pairing stays available.
   void markSearchGaveUp() {
+    _isSearching = false;
     if (_isConnected || _connectIntent) return;
     bleStatus = 'Not found';
     notifyListeners();
@@ -806,7 +828,7 @@ class Module with ChangeNotifier {
     // the idempotency guards below must compare against the PREVIOUS identity.
     // (Writing first made "retarget a connected slot to a new MAC" a silent
     // no-op: the guard read the freshly-written value, returned early, and the
-    // old link stayed up while the slot claimed the new module — RAVF003.)
+    // old link stayed up while the slot claimed the new module; #82 review.)
     // Android callers pass the MAC as the connection id, so it doubles as the
     // hardware MAC; snapshots/presets/iOS auto-pair pass it explicitly.
     final targetHardwareMac = (hardwareMac != null && hardwareMac.isNotEmpty)
@@ -814,18 +836,23 @@ class Module with ChangeNotifier {
         : (isMacFormat(macAddress) ? macAddress.toUpperCase() : '');
     // A slot may carry only a hardware MAC while the iOS resolver looks for
     // its UUID — no connection identity yet means nothing to connect. But a
-    // LIVE link belonging to a DIFFERENT module must be dropped on retarget:
-    // keeping it would leave START/STOP going to the old robot while the slot
-    // claims the new one.
+    // retarget must retire the WHOLE previous identity, not just overwrite
+    // the MAC: keeping the old device/connection id would leave START/STOP
+    // going to the old robot (live link), let a periodic snapshot persist a
+    // mismatched (old UUID, new MAC) pair that cold-resumes the WRONG robot,
+    // and let createPreset seed the UUID cache with a poisoned entry that
+    // connects successfully and so never self-heals (#82 review round 2).
     if (macAddress.isEmpty) {
       if (targetHardwareMac.isEmpty) return;
-      final isRetargetOfLiveLink = _isConnected &&
-          this.hardwareMac.isNotEmpty &&
-          this.hardwareMac != targetHardwareMac;
-      this.hardwareMac = targetHardwareMac;
-      if (isRetargetOfLiveLink) {
-        bleDisconnect();
+      if (this.hardwareMac != targetHardwareMac &&
+          (bleDevice != null || this.macAddress.isNotEmpty)) {
+        // Drops the old link (also an in-flight autoConnect), cancels its
+        // listeners, and clears intent/connected; it does not touch
+        // macAddress, so clear that explicitly.
+        setBleDevice(null);
+        this.macAddress = '';
       }
+      this.hardwareMac = targetHardwareMac;
       return;
     }
     final newMac = macAddress.toUpperCase();

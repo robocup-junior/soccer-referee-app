@@ -323,8 +323,63 @@ void main() {
 
       expect(module.hardwareMac, 'BB:BB:BB:BB:BB:02');
       expect(module.isConnected, isFalse);
+      // The WHOLE old identity is retired (round-2 review): a leftover
+      // connection id would let a snapshot/preset persist a mismatched
+      // (old UUID, new MAC) pair that cold-resumes the wrong robot and
+      // poisons the UUID cache.
+      expect(module.macAddress, '');
+      expect(module.bleDevice, isNull);
 
       game.dispose();
+    });
+
+    testWidgets(
+        'a re-resolved STALE UUID reconnects the idle module instead of '
+        'stranding it on Searching (round-2 review)', (tester) async {
+      debugUseIosBleUuidOverride = true;
+      final game = await loadedGame(tester);
+      final module = teamById(game, 'A').modules[0];
+      module.disable(); // no real bleConnect headless
+      module.hardwareMac = 'AA:AA:AA:AA:AA:01';
+      module.macAddress = '12345678-1234-1234-1234-1234567890AB';
+      module.markSearching();
+      expect(module.isSearching, isTrue);
+
+      // CoreBluetooth commonly re-issues the SAME identifier after the scan
+      // re-observes the module — the resolve must still (re)build the device
+      // and connect, not early-return on id equality.
+      game.debugOnIosMacResolved(
+          0, 'AA:AA:AA:AA:AA:01', '12345678-1234-1234-1234-1234567890AB');
+
+      expect(module.bleDevice, isNotNull);
+      expect(module.isSearching, isFalse);
+      expect(module.hardwareMac, 'AA:AA:AA:AA:AA:01');
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'a Searching module is cancellable: bleDisconnect clears the state '
+        'and the resolver enrollment', (tester) async {
+      debugUseIosBleUuidOverride = true;
+      final game = await loadedGame(tester);
+
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+
+      final module = teamById(game, 'A').modules[0];
+      expect(module.isSearching, isTrue);
+      expect(game.iosMacResolver.pendingCount, 1);
+
+      module.bleDisconnect();
+      await tester.pump();
+
+      expect(module.isSearching, isFalse);
+      expect(module.bleStatus, 'Disconnected');
+      expect(game.iosMacResolver.pendingCount, 0);
+
+      game.dispose();
+      await tester.pump(const Duration(seconds: 10));
     });
 
     testWidgets(
