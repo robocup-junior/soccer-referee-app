@@ -102,4 +102,29 @@ void main() {
       MqttConnectionStateEx.error,
     );
   });
+
+  test('disconnect() vetoes connect waiters parked behind an in-flight attempt',
+      () async {
+    SharedPreferences.setMockInitialValues({
+      'mqtt_server': '127.0.0.1',
+      'mqtt_port': 1,
+    });
+    final service = MqttService();
+    await service.loadPreferences();
+
+    // first suspends on real socket I/O; second parks behind it; the
+    // disconnect lands before either resumes. The parked waiter must NOT
+    // spawn a fresh attempt after the explicit disconnect — a real second
+    // attempt against the refused port would end in `error`, while a vetoed
+    // one leaves the state exactly where disconnect() settled it.
+    final first = service.connect();
+    final second = service.connect();
+    service.disconnect();
+
+    expect(await Future.wait([first, second]), [false, false]);
+    expect(
+      service.connectionStateNotifier.value,
+      MqttConnectionStateEx.disconnected,
+    );
+  });
 }

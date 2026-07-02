@@ -19,6 +19,8 @@ class MqttService {
   MqttServerClient? _client;
   // The connect attempt currently in flight, if any (see connect()).
   Future<bool>? _pendingConnect;
+  // Bumped by disconnect(); invalidates connect() waiters parked before it.
+  int _connectEpoch = 0;
   final String _mainTopic = 'rcj_soccer'; // To store the configured topic
   String _topic = ''; // To store the configured topic
   bool _isEnabled = false; // To store the enabled state
@@ -162,8 +164,17 @@ class MqttService {
     // the public connecting state — the bounded reconnect loop in
     // _onDisconnected sets connectionStateNotifier to `connecting` before
     // each retry, so a state-based guard would turn every retry into a no-op.
+    // The epoch lets disconnect() veto waiters parked here BEFORE it ran:
+    // without it a queued retry (e.g. a reconnect-loop tick) would wake after
+    // a user/teardown disconnect and reconnect against that explicit intent.
+    // A caller arriving AFTER the disconnect captures the new epoch and
+    // proceeds — exactly the match-load handover case.
+    final epoch = _connectEpoch;
     while (_pendingConnect != null) {
       await _pendingConnect;
+      if (_connectEpoch != epoch) {
+        return false;
+      }
     }
     if (isConnected) {
       return true;
@@ -339,6 +350,9 @@ class MqttService {
   }
 
   void disconnect() {
+    // Veto any connect() waiters parked before this call (see connect()) —
+    // even when there is no client yet, an attempt may be mid-prefix.
+    _connectEpoch++;
     final client = _client;
     if (client == null) {
       return;
