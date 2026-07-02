@@ -411,6 +411,11 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                     // resolved to the device's CoreBluetooth UUID by scan
                     // first (same flow as the QR path), and the MAC is kept
                     // as the module's stable hardware identity.
+                    // DELIBERATE (design §3a): manual, referee-initiated
+                    // scans stay available even mid-half — pairing a spare on
+                    // iOS is only possible via a scan, and the referee
+                    // controls the moment. Only AUTOMATIC scanning is gated
+                    // off running halves (IosMacResolveController).
                     if (useIosBleUuid && isMacFormat(address)) {
                       final resolvedUuid =
                           await resolveIosDeviceUuid(address);
@@ -424,9 +429,8 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                         return;
                       }
                       _controller.text = resolvedUuid;
-                      module.setBleDevice(
-                          BluetoothDevice.fromId(resolvedUuid));
-                      module.hardwareMac = address.toUpperCase();
+                      module.setBleDevice(BluetoothDevice.fromId(resolvedUuid),
+                          hardwareMac: address);
                       module.bleConnect();
                       return;
                     }

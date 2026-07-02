@@ -35,12 +35,14 @@ class IosMacResolveController {
     required void Function(int moduleId, String mac, String uuid) onResolved,
     required void Function(int moduleId) onGaveUp,
     Duration retryDelay = const Duration(seconds: 4),
+    Duration preemptedRetryDelay = const Duration(milliseconds: 300),
   })  : _scan = scan ?? ble_address.resolveIosDeviceUuids,
         _stopScan = stopScan ?? _defaultStopScan,
         _canScanNow = canScanNow,
         _onResolved = onResolved,
         _onGaveUp = onGaveUp,
-        _retryDelay = retryDelay;
+        _retryDelay = retryDelay,
+        _preemptedRetryDelay = preemptedRetryDelay;
 
   static void _defaultStopScan() =>
       unawaited(FlutterBluePlus.stopScan().catchError((Object e) {
@@ -54,6 +56,7 @@ class IosMacResolveController {
   final void Function(int moduleId, String mac, String uuid) _onResolved;
   final void Function(int moduleId) _onGaveUp;
   final Duration _retryDelay;
+  final Duration _preemptedRetryDelay;
 
   /// moduleId → wanted hardware MAC (uppercase). Latest enroll wins per id.
   final Map<int, String> _pending = {};
@@ -122,7 +125,9 @@ class IosMacResolveController {
           !_stoppedForMatch &&
           _pending.isNotEmpty &&
           _canScanNow()) {
+        final stopwatch = Stopwatch()..start();
         final hits = await _scan(_pending.values.toSet());
+        stopwatch.stop();
         // Gates may have closed while the scan ran (kickoff, dispose, reset):
         // a stale hit must never connect a module the match moved past.
         if (_disposed || _stoppedForMatch) break;
@@ -134,7 +139,14 @@ class IosMacResolveController {
           _onResolved(entry.key, entry.value, uuid);
         }
         if (_pending.isEmpty) break;
-        await Future.delayed(_retryDelay);
+        // fbp allows ONE scan process-wide: another startScan (settings list
+        // scan, a QR resolve) silently stops ours, which surfaces here as a
+        // near-instant empty round. Retry quickly in that case so a
+        // preemption can't eat a whole pre-kickoff resolve window (RAVF006);
+        // a full-length empty round keeps the normal cadence.
+        final preempted =
+            hits.isEmpty && stopwatch.elapsed < const Duration(seconds: 1);
+        await Future.delayed(preempted ? _preemptedRetryDelay : _retryDelay);
       }
     } finally {
       _running = false;
