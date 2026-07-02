@@ -160,14 +160,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   Future<void> _confirmEndMatchEarly() async {
     final game = widget.game;
-    // Pin the fixture the referee is confirming. A new deep link can be
-    // loaded while this dialog sits open (Home's "Load match?" dialog renders
-    // in the same root overlay, above us), swapping matchConfig under a stale
-    // confirm — the same stale-dialog class the load/review paths guard with
-    // expectedSignature. Version bumps of the same fixture change the
-    // signature too; the conservative no-op just makes the referee re-tap.
+    // Pin the fixture AND the match state the referee is confirming. A deep
+    // link can be Loaded while this dialog sits open (Home's "Load match?"
+    // dialog renders in the same root overlay, above us): a different fixture
+    // swaps matchConfig (caught by the signature, the same stale-dialog class
+    // the load/review paths guard with expectedSignature), while a confirmed
+    // re-Load of the SAME fixture keeps the signature but RESETS the live
+    // match via gameInit() (#69) — caught by the stage/inGame/score pin. A
+    // stage flip or score change while the dialog is open (half expiring,
+    // no-show goal landing) is likewise no longer the state this dialog
+    // displayed. The conservative no-op just makes the referee re-tap.
     final expectedSignature =
         game.scoreboardResultService.matchConfig?.signature;
+    final expectedMatchState = (
+      game.currentStage,
+      game.inGame,
+      game.teams[0].score,
+      game.teams[1].score,
+    );
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -190,15 +200,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
       ),
     );
     if (!mounted || confirmed != true) return;
-    // The fixture can be cleared/changed while the dialog sits open; re-check
-    // the gate AND that it is still the exact fixture this dialog showed, so
-    // a stale confirm can't end a different (or edited) match.
+    // The fixture or match can change while the dialog sits open; re-check
+    // the gate AND that both still match what this dialog showed, so a stale
+    // confirm can't end a different fixture or a reset/advanced match.
     if (!game.canEndMatchEarly) return;
     if (expectedSignature == null ||
         game.scoreboardResultService.matchConfig?.signature !=
             expectedSignature) {
       return;
     }
+    final currentMatchState = (
+      game.currentStage,
+      game.inGame,
+      game.teams[0].score,
+      game.teams[1].score,
+    );
+    if (currentMatchState != expectedMatchState) return;
     // Pop Settings back to Home FIRST (returning the game so Home's
     // _navigateToSettings continuation runs gameRefresh(), not gameInit() —
     // endMatchEarly sets inGame synchronously below, before that continuation's
