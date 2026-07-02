@@ -43,6 +43,10 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
+    // MQTT ships enabled by default (#88); these suites drive Game with the
+    // REAL MqttService, so seed the explicit disable or every config apply
+    // fires a real network connect and leaks timers into the test binding.
+    await prefs.setBool('mqtt_enabled', false);
   });
 
   // A loaded Game with every slot disabled. applyPresetConfig then sets each

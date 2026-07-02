@@ -50,7 +50,10 @@ class MqttService {
   /// Loads MQTT settings from SharedPreferences
   Future<void> loadPreferences() async {
     prefs = await SharedPreferences.getInstance();
-    _isEnabled = prefs.getBool('mqtt_enabled') ?? false;
+    // Working defaults (#88): enabled ships ON so a fresh install's deep-link
+    // match load can auto-connect with zero referee taps. An explicit disable
+    // in Settings writes false and is honored (the setter persists it).
+    _isEnabled = prefs.getBool('mqtt_enabled') ?? true;
     _secureConnection = prefs.getBool('mqtt_secure_connection') ?? true;
     _autoConnect = prefs.getBool('mqtt_auto_connect') ?? false;
     _topic = prefs.getString('mqtt_topic') ?? '';

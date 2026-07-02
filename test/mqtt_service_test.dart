@@ -24,7 +24,18 @@ void main() {
     await service.loadPreferences();
 
     expect(service.secureConnection, isTrue);
+    expect(service.isEnabled, isTrue,
+        reason: 'a fresh install must be able to auto-connect on match load');
     expectSecretEquals(service.password, realDefaultPassword);
+  });
+
+  test('an explicit disable is preserved over the enabled-by-default',
+      () async {
+    SharedPreferences.setMockInitialValues({'mqtt_enabled': false});
+    final service = MqttService();
+    await service.loadPreferences();
+
+    expect(service.isEnabled, isFalse);
   });
 
   test('stored legacy hint password is migrated in memory and on disk',
