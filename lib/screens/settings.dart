@@ -324,6 +324,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   status:
                                       'Pending ${service.pendingCount}, conflict ${service.conflictCount}, submitted ${service.submittedCount}',
                                 ),
+                                // "End match now" is a deep-link-only action
+                                // (it lives here, not in Current Game, because
+                                // it only applies to a linked scoreboard
+                                // fixture). This section's AnimatedBuilder
+                                // listens to the service, so it does not rebuild
+                                // on match-stage changes (e.g. the clock hitting
+                                // full time while Settings is open); wrap the
+                                // gated button in its own builder on widget.game
+                                // — Game forwards service notifications too, so
+                                // this tracks both the fixture and the stage.
+                                AnimatedBuilder(
+                                  animation: widget.game,
+                                  builder: (context, child) {
+                                    if (!widget.game.canEndMatchEarly) {
+                                      return const SizedBox.shrink();
+                                    }
+                                    return SettingButton(
+                                      title: 'End match now',
+                                      buttonText: 'End',
+                                      onPressed: _confirmEndMatchEarly,
+                                    );
+                                  },
+                                ),
                                 SettingButton(
                                   title: 'Refresh linked match',
                                   buttonText: 'Refresh',
@@ -463,12 +486,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                         widget.game.stopNoShowPenaltyGoals();
                                       });
                                     },
-                                  ),
-                                if (widget.game.canEndMatchEarly)
-                                  SettingButton(
-                                    title: 'End match now',
-                                    buttonText: 'End',
-                                    onPressed: _confirmEndMatchEarly,
                                   ),
                                 SettingButton(
                                   title: 'Disconnect all robots',
@@ -870,7 +887,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             ),
                             Padding(
                               padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('Author: Martin Faltus, Fabian Weller, Marek Šuppa',
+                              child: Text(
+                                  'Author: Martin Faltus, Fabian Weller, Marek Šuppa',
                                   style: TextStyle(fontSize: 14)),
                             ),
                             Padding(

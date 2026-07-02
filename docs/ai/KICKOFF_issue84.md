@@ -3,7 +3,9 @@
 > You are starting fresh. Read this, then **study the sources listed below before writing any code or plan.** Do not assume prior context — everything you need is referenced here.
 
 ## The task (issue #84)
-A referee sometimes needs to end a match without playing it (team no-show → forfeit/contumation win). Add a button in **Settings → "Current Game"** that — **only when a deep-link (scoreboard) match is loaded** — ends the match immediately and jumps straight to the existing result confirmation screen, guarded by a **confirmation pop-up**. The referee then edits the score there (contumation score) and submits as usual.
+A referee sometimes needs to end a match without playing it (team no-show → forfeit/contumation win). Add a button in **Settings → "Scoreboard Result API"** that — **only when a deep-link (scoreboard) match is loaded** — ends the match immediately and jumps straight to the existing result confirmation screen, guarded by a **confirmation pop-up**. The referee then edits the score there (contumation score) and submits as usual.
+
+> **Placement note (device-test tweak, 2026-07-02):** the button was originally specced under "Current Game" (next to the no-show controls). During on-device testing the owner moved it into the **"Scoreboard Result API"** section — it is a deep-link-only action (gated on a linked fixture), so it belongs with the other scoreboard-fixture controls (Link status / Match code / Outbox / Refresh / Retry / Clear) rather than the manual-match controls in Current Game. Other "Current Game" references below reflect the original spec.
 
 Read the issue in full first: `gh issue view 84` — it contains the agreed design. Key points:
 - Gate: linked fixture present + submittable (`scoreboardResultService.matchConfig != null`, non-empty `matchCode`, token held — see `_canSubmitScoreboardResult`). Hidden (or disabled w/ subtitle) for manual matches.
