@@ -476,6 +476,38 @@ void main() {
       await tester.pump(const Duration(milliseconds: 1500));
       game.dispose();
     });
+
+    testWidgets(
+        'the report prefers hardwareMac and never leaks an iOS UUID (#82)',
+        (tester) async {
+      final game = await refereeGame(tester, homeIsLeft: true, code: 'M-M82');
+      final teamA = teamById(game, 'A');
+      final teamB = teamById(game, 'B');
+      fieldSlots(teamA, ['', '']);
+      fieldSlots(teamB, ['']);
+
+      // iOS-style slot: connection id is a CoreBluetooth UUID, the hardware
+      // MAC was recovered from the QR / advertised name.
+      teamA.modules[0].macAddress = '12345678-1234-1234-1234-1234567890ab';
+      teamA.modules[0].hardwareMac = 'AA:BB:CC:DD:EE:10';
+      // iOS-style slot whose MAC was never learned: reports '' — an
+      // unreportable per-phone UUID must never reach the server.
+      teamA.modules[1].macAddress = '87654321-4321-4321-4321-BA0987654321';
+      // Pre-split Android-style slot: MAC-shaped connection id only.
+      teamB.modules[0].macAddress = 'bb:bb:cc:dd:ee:02';
+
+      final item = await submitCurrentReview(tester, game, 'M-M82');
+
+      expect(item.actualHomeModules, const [
+        ActualModuleReport(
+            robot: 1, mac: 'AA:BB:CC:DD:EE:10', connected: false),
+        ActualModuleReport(robot: 2, mac: '', connected: false),
+      ]);
+      expect(item.actualAwayModules.single.mac, 'BB:BB:CC:DD:EE:02');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
   });
 
   group('cold-launch detection', () {
