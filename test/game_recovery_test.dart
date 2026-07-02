@@ -28,6 +28,7 @@ class _RecordingMqttService extends MqttService {
   _RecordingMqttService(
     this.log, {
     this.enabled = true,
+    this.throwOnConnect = false,
     MqttConnectionStateEx initialState = MqttConnectionStateEx.connected,
   }) {
     connectionStateNotifier.value = initialState;
@@ -35,6 +36,7 @@ class _RecordingMqttService extends MqttService {
 
   final List<String> log;
   final bool enabled;
+  final bool throwOnConnect;
   String _topic = '';
   int connectCalls = 0;
   int disconnectCalls = 0;
@@ -66,6 +68,9 @@ class _RecordingMqttService extends MqttService {
   Future<bool> connect() async {
     connectCalls++;
     log.add('mqtt:connect');
+    if (throwOnConnect) {
+      throw Exception('broker exploded');
+    }
     connectionStateNotifier.value = MqttConnectionStateEx.connected;
     return true;
   }
@@ -109,12 +114,18 @@ class _RecordingBleBridgeService extends BleBridgeService {
   @override
   Future<void> disconnectAfterDrain({
     Duration timeout = const Duration(seconds: 3),
+    bool Function()? shouldAbort,
   }) async {
     disconnectAfterDrainCalls++;
     log.add('bridge:disconnectAfterDrain');
     final gate = drainGate;
     if (gate != null) {
       await gate.future;
+    }
+    // Mirror the real service: a caller-side abort keeps the link.
+    if (shouldAbort?.call() ?? false) {
+      log.add('bridge:drainAborted');
+      return;
     }
     connectionStateNotifier.value = BridgeConnectionState.disconnected;
   }
@@ -2560,8 +2571,41 @@ void main() {
       await tester.pump();
       await tester.pump();
 
-      // The stale teardown must not touch the new match's MQTT session.
+      // The stale teardown must keep the bridge (drain aborts) and must not
+      // touch the new match's MQTT session.
+      expect(
+        bridge.connectionStateNotifier.value,
+        BridgeConnectionState.connected,
+      );
+      expect(log, contains('bridge:drainAborted'));
       expect(mqtt.disconnectCalls, 0);
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'a still-connecting bridge is disconnected without burning the drain',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      final mqtt = _RecordingMqttService(log);
+      final bridge = _RecordingBleBridgeService(log);
+      bridge.connectionStateNotifier.value = BridgeConnectionState.connecting;
+      game.mqttService = mqtt;
+      game.bleBridgeService = bridge;
+
+      game.endMatchEarly();
+      await pumpPastTransportTeardownDelay(tester);
+
+      // A connecting bridge cannot drain its queue (sends require a live
+      // link), so the teardown must take the plain-disconnect path instead of
+      // pinning itself at the drain timeout.
+      expect(bridge.disconnectAfterDrainCalls, 0);
+      expect(
+        bridge.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
+      expect(mqtt.disconnectCalls, 1);
 
       game.dispose();
     });
@@ -2571,6 +2615,7 @@ void main() {
     Future<Game> gameWithRecordingMqtt(
       WidgetTester tester, {
       bool enabled = true,
+      bool throwOnConnect = false,
       MqttConnectionStateEx initialState = MqttConnectionStateEx.disconnected,
     }) async {
       final game = Game();
@@ -2578,6 +2623,7 @@ void main() {
       game.mqttService = _RecordingMqttService(
         <String>[],
         enabled: enabled,
+        throwOnConnect: throwOnConnect,
         initialState: initialState,
       );
       return game;
@@ -2657,6 +2703,21 @@ void main() {
       await tester.pump();
 
       expect(mqtt.connectCalls, 0);
+      game.dispose();
+    });
+
+    testWidgets('a throwing connect does not crash the load path',
+        (tester) async {
+      final game = await gameWithRecordingMqtt(tester, throwOnConnect: true);
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      // An exception escaping the fire-and-forget hook would surface as an
+      // uncaught async error and fail this test via the widget binding.
+      applyConfig(game);
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 1);
+      expect(game.currentStage, MatchStage.firstHalf);
       game.dispose();
     });
 

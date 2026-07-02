@@ -884,22 +884,26 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
     // Tear down a connected OR still-connecting bridge link — the same
     // stop-chasing-a-powered-down-unit policy disconnectInactiveModules()
-    // applies to robot modules. The bounded drain lets the last queued score
-    // frame reach the scoreboard before the link drops.
+    // applies to robot modules. Only a CONNECTED bridge gets the bounded
+    // drain (it lets the last queued score frame reach the scoreboard before
+    // the link drops); a connecting one cannot drain its queue by definition,
+    // so draining it would only pin the teardown at the full timeout.
+    // The drain can take seconds: if a REPEAT or a confirmed Load starts a
+    // new match meanwhile (gameInit re-arms the teardown flag and moves the
+    // stage off fullTime — and a Load may have just auto-connected MQTT via
+    // #88), a stale disconnect would silently strip the new match's
+    // transports, so the epoch is re-checked inside the drain (via
+    // shouldAbort, protecting the bridge) and once more below (protecting
+    // MQTT).
+    bool staleTeardown() =>
+        !_fullTimeTransportTeardownDone || currentStage != MatchStage.fullTime;
     final bridgeState = bleBridgeService.connectionStateNotifier.value;
-    if (bridgeState == BridgeConnectionState.connected ||
-        bridgeState == BridgeConnectionState.connecting) {
-      await bleBridgeService.disconnectAfterDrain();
+    if (bridgeState == BridgeConnectionState.connected) {
+      await bleBridgeService.disconnectAfterDrain(shouldAbort: staleTeardown);
+    } else if (bridgeState == BridgeConnectionState.connecting) {
+      await bleBridgeService.disconnect();
     }
-    // The drain above can take seconds. If a REPEAT or a confirmed Load
-    // started a new match meanwhile (gameInit re-arms the teardown flag and
-    // moves the stage off fullTime — and a Load may have just auto-connected
-    // MQTT via #88), a stale disconnect here would silently freeze the new
-    // match's scoreboard, so re-check the epoch before touching MQTT.
-    if (!_fullTimeTransportTeardownDone ||
-        currentStage != MatchStage.fullTime) {
-      return;
-    }
+    if (staleTeardown()) return;
     mqttService.disconnect();
   }
 
@@ -923,6 +927,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       if (connected) {
         _broadcastFullState();
       }
+    }).catchError((Object e) {
+      // The service maps expected failures to its error state; this guard
+      // only keeps a truly unexpected escape from becoming an uncaught async
+      // error on the fire-and-forget load path.
+      debugPrint('MQTT auto-connect failed: $e');
     }));
   }
 

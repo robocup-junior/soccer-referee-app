@@ -159,6 +159,23 @@ void main() {
       );
       expect(svc.queueDepthNotifier.value, 1);
     });
+
+    test('disconnectAfterDrain honors shouldAbort and keeps the link',
+        () async {
+      final svc = await makeEnabledService();
+      svc.connectionStateNotifier.value = BridgeConnectionState.connecting;
+      svc.publishTopic(BridgeTopics.team1Score, '1');
+
+      // A stale full-time teardown (REPEAT/Load started a new match mid-
+      // drain) must not disconnect: the abort is honored both inside the
+      // drain wait and before the final disconnect.
+      await svc.disconnectAfterDrain(shouldAbort: () => true);
+
+      expect(
+        svc.connectionStateNotifier.value,
+        BridgeConnectionState.connecting,
+      );
+    });
   });
 
   group('BleBridgeService connection lifecycle (#86)', () {

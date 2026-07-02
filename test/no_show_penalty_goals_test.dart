@@ -102,6 +102,9 @@ void main() {
       expect(game.currentStage, MatchStage.fullTime);
       expect(game.noShowPenaltyGoalsActive, isFalse);
 
+      // Flush the #87 full-time transport teardown's 1 s delayed task —
+      // any test that reaches fullTime must pump past it or the widget
+      // binding fails with "A Timer is still pending".
       await tester.pump(const Duration(milliseconds: 1500));
     });
   });
