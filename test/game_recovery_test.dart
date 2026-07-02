@@ -46,6 +46,10 @@ Map<String, dynamic> _scoreboardConfig({
   required int version,
   bool homeIsLeft = true,
   int durationSeconds = 600,
+  int? slotDurationSeconds,
+  int? periodDurationSeconds,
+  int? halfTimeDurationSeconds,
+  int? playDurationSeconds,
   String homeTeamName = 'Home',
   String awayTeamName = 'Away',
 }) =>
@@ -57,6 +61,14 @@ Map<String, dynamic> _scoreboardConfig({
       'venue': 'Field 1',
       'scheduled_start': null,
       'duration_seconds': durationSeconds,
+      if (slotDurationSeconds != null)
+        'slot_duration_seconds': slotDurationSeconds,
+      if (periodDurationSeconds != null)
+        'period_duration_seconds': periodDurationSeconds,
+      if (halfTimeDurationSeconds != null)
+        'half_time_duration_seconds': halfTimeDurationSeconds,
+      if (playDurationSeconds != null)
+        'play_duration_seconds': playDurationSeconds,
       'timezone': 'Europe/Prague',
       'version': version,
       'status': 'SCHEDULED',
@@ -283,6 +295,174 @@ void main() {
       expect(game.halfTimeDuration, 123,
           reason: 'workaround only remaps half-time for the 25-min slot');
       game.dispose();
+    });
+  });
+
+  group('scoreboard explicit timing fields (#108)', () {
+    testWidgets('explicit period and half-time beat the legacy slot',
+        (tester) async {
+      await prefs.setInt('game_period_time', 777);
+      await prefs.setInt('game_halftime_duration', 123);
+      final game = Game();
+      await settleLoad(tester);
+
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(
+            matchCode: 'M-EXPLICIT',
+            version: 1,
+            durationSeconds: 1800,
+            slotDurationSeconds: 1800,
+            periodDurationSeconds: 720,
+            halfTimeDurationSeconds: 360,
+            playDurationSeconds: 1440,
+          ),
+        ),
+        token: 'test-token',
+      );
+      await tester.pump();
+
+      expect(game.periodTime, 720,
+          reason: 'period_duration_seconds is the per-half clock');
+      expect(game.halfTimeDuration, 360,
+          reason: 'half_time_duration_seconds is the break clock');
+      expect(game.remainingTime, 720,
+          reason: 'gameInit starts the clock from the explicit period');
+      game.dispose();
+    });
+
+    testWidgets('timing-only corrections reapply with the same legacy slot',
+        (tester) async {
+      final initial = ScoreboardMatchConfig.fromJson(
+        _scoreboardConfig(
+          matchCode: 'M-TIMING',
+          version: 1,
+          durationSeconds: 1800,
+          slotDurationSeconds: 1800,
+          periodDurationSeconds: 600,
+          halfTimeDurationSeconds: 300,
+          playDurationSeconds: 1200,
+        ),
+      );
+      final corrected = ScoreboardMatchConfig.fromJson(
+        _scoreboardConfig(
+          matchCode: 'M-TIMING',
+          version: 1,
+          durationSeconds: 1800,
+          slotDurationSeconds: 1800,
+          periodDurationSeconds: 720,
+          halfTimeDurationSeconds: 360,
+          playDurationSeconds: 1440,
+        ),
+      );
+      expect(corrected.signature, isNot(initial.signature),
+          reason: 'explicit timing belongs to the fixture identity');
+
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(initial,
+          token: 'test-token');
+      await tester.pump();
+      expect(game.periodTime, 600);
+
+      game.scoreboardResultService.debugApplyMatchConfig(corrected,
+          token: 'test-token');
+      await tester.pump();
+
+      expect(game.periodTime, 720,
+          reason: 'a timing correction must not be deduped by duration_seconds');
+      expect(game.halfTimeDuration, 360);
+      expect(game.remainingTime, 720);
+      game.dispose();
+    });
+
+    testWidgets(
+        'timing-only correction after full-time keeps the captured review '
+        'submittable', (tester) async {
+      final initialConfig = _scoreboardConfig(
+        matchCode: 'M-TIMING-REVIEW',
+        version: 1,
+        durationSeconds: 1800,
+        slotDurationSeconds: 1800,
+        periodDurationSeconds: 600,
+        halfTimeDurationSeconds: 300,
+        playDurationSeconds: 1200,
+      );
+      final corrected = ScoreboardMatchConfig.fromJson(
+        _scoreboardConfig(
+          matchCode: 'M-TIMING-REVIEW',
+          version: 1,
+          durationSeconds: 1800,
+          slotDurationSeconds: 1800,
+          periodDurationSeconds: 720,
+          halfTimeDurationSeconds: 360,
+          playDurationSeconds: 1440,
+        ),
+      );
+      final initial = ScoreboardMatchConfig.fromJson(initialConfig);
+      expect(corrected.signature, isNot(initial.signature),
+          reason: 'load/apply dedupe must still see explicit timing changes');
+
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        scoreA: 2,
+        scoreB: 1,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-TIMING-REVIEW',
+        scoreboardVersion: 1,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      addTearDown(game.dispose);
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        initial,
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      expect(game.scoreboardResultService.matchConfig?.signature,
+          initial.signature);
+      game.resumePendingMatch();
+
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.needsScoreboardResultReview, isTrue);
+      final review = game.buildScoreboardResultReview();
+
+      game.scoreboardResultService.debugApplyMatchConfig(
+        corrected,
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      expect(game.scoreboardResultService.matchConfig?.signature,
+          corrected.signature);
+      expect(game.needsScoreboardResultReview, isTrue,
+          reason: 'a timing correction changes load/apply identity, but not the '
+              'fixture identity for reviewing the already-finished result');
+
+      final submitted = await game.submitScoreboardResult(
+        expectedSignature: review.signature,
+        homeGoals: review.homeGoals,
+        awayGoals: review.awayGoals,
+        comment: null,
+        homeConfirmed: false,
+        awayConfirmed: false,
+      );
+      expect(submitted, isTrue,
+          reason: 'the review captured before a timing-only correction must '
+              'still submit for the same fixture');
+      final result =
+          await waitForOutboxItem(tester, game, 'M-TIMING-REVIEW');
+      expect(result.homeGoals, 2);
+      expect(result.awayGoals, 1);
+      expect(result.version, 1);
+
+      await tester.pump(const Duration(milliseconds: 1500));
     });
   });
 
@@ -1526,6 +1706,67 @@ void main() {
 
       await tester.pump(const Duration(milliseconds: 1500));
       game.dispose();
+    });
+
+    testWidgets(
+        'delivered explicit-timing match restores the saved half-time default',
+        (tester) async {
+      await prefs.setInt('game_period_time', 777);
+      await prefs.setInt('game_halftime_duration', 123);
+      final config = ScoreboardMatchConfig.fromJson(
+        _scoreboardConfig(
+          matchCode: 'M-DLV-TIME',
+          version: 1,
+          durationSeconds: 1800,
+          slotDurationSeconds: 1800,
+          periodDurationSeconds: 720,
+          halfTimeDurationSeconds: 360,
+          playDurationSeconds: 1440,
+        ),
+      );
+      await persist(_snap(
+        stage: 'secondHalf',
+        remainingTime: 1,
+        scoreA: 5,
+        scoreB: 2,
+        isRefereeMatch: true,
+        scoreboardMatchCode: 'M-DLV-TIME',
+        scoreboardVersion: 1,
+        scoreboardHomeTeamId: 'A',
+        scoreboardAwayTeamId: 'B',
+      ));
+      final game = Game();
+      addTearDown(game.dispose);
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        config,
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      expect(game.periodTime, 720);
+      expect(game.halfTimeDuration, 360);
+
+      game.resumePendingMatch();
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.needsScoreboardResultReview, isTrue);
+      await submitCurrentReview(tester, game, 'M-DLV-TIME');
+
+      game.scoreboardResultService.onCurrentResultDelivered!();
+      await tester.pump(); // drain the reset microtask
+
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.inGame, isFalse);
+      expect(game.periodTime, 777,
+          reason: 'the reset returns to the operator\'s saved match length');
+      expect(game.halfTimeDuration, 123,
+          reason: 'explicit match half-time is per-fixture and must not leak '
+              'into the next unlinked match');
+      expect(game.remainingTime, 777);
+
+      await tester.pump(const Duration(milliseconds: 1500));
     });
 
     testWidgets(
