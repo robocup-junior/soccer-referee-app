@@ -17,8 +17,8 @@ const String _legacyMqttPasswordHint = 'S_p-@P2_rL7ZFv9XYZ';
 
 class MqttService {
   MqttServerClient? _client;
-  // True while a connect() call is in flight (see the re-entrancy guard).
-  bool _connectInFlight = false;
+  // The connect attempt currently in flight, if any (see connect()).
+  Future<bool>? _pendingConnect;
   final String _mainTopic = 'rcj_soccer'; // To store the configured topic
   String _topic = ''; // To store the configured topic
   bool _isEnabled = false; // To store the enabled state
@@ -152,19 +152,28 @@ class MqttService {
       _client?.connectionStatus?.state == MqttConnectionState.connected;
 
   Future<bool> connect() async {
-    // Re-entrancy guard (#88): an auto-connect and a manual tap must not stack
-    // clients. Guard on an internal in-flight flag, NOT on the public
-    // connecting state — the bounded reconnect loop in _onDisconnected sets
-    // connectionStateNotifier to `connecting` before each retry, so a
-    // state-based guard would turn every retry into a no-op.
-    if (_connectInFlight) {
-      return false;
+    // Re-entrancy handling (#88): an auto-connect and a manual tap must not
+    // stack clients, but a caller must not be silently dropped either — a
+    // match-load connect can race a connect attempt that a full-time teardown
+    // (#87) just cancelled, and a plain "return false while in flight" would
+    // leave the new match with MQTT down and no retry. So SERIALIZE: wait for
+    // any in-flight attempt to settle, then run a fresh one unless it already
+    // produced a live connection. Keyed on an internal pending future, NOT on
+    // the public connecting state — the bounded reconnect loop in
+    // _onDisconnected sets connectionStateNotifier to `connecting` before
+    // each retry, so a state-based guard would turn every retry into a no-op.
+    while (_pendingConnect != null) {
+      await _pendingConnect;
     }
-    _connectInFlight = true;
+    if (isConnected) {
+      return true;
+    }
+    final attempt = _connect();
+    _pendingConnect = attempt;
     try {
-      return await _connect();
+      return await attempt;
     } finally {
-      _connectInFlight = false;
+      _pendingConnect = null;
     }
   }
 
@@ -218,6 +227,18 @@ class MqttService {
       if (!identical(_client, client)) return false;
       debugPrint('MQTT_LOGS::Socket exception - $e');
       _lastErrorMessage = 'Connection failed: ${e.message}';
+      connectionStateNotifier.value = MqttConnectionStateEx.error;
+    } on Exception catch (e) {
+      // mqtt_client wraps most secure-connect failures in
+      // NoConnectionException, but its socket onError paths can complete the
+      // awaited future with the raw exception (e.g. a HandshakeException).
+      // connect() is now also called unawaited from the match-load hook, so
+      // an escaped exception would surface as an uncaught async error and pin
+      // the status at "Connecting..." forever. Map anything Exception-shaped
+      // to the error state; real programming errors (Error) still propagate.
+      if (!identical(_client, client)) return false;
+      debugPrint('MQTT_LOGS::Unexpected connect exception - $e');
+      _lastErrorMessage = describeError(e).message;
       connectionStateNotifier.value = MqttConnectionStateEx.error;
     }
 

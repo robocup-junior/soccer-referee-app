@@ -80,4 +80,26 @@ void main() {
       MqttConnectionStateEx.error,
     );
   });
+
+  test('concurrent connect calls are serialized, never silently dropped',
+      () async {
+    SharedPreferences.setMockInitialValues({
+      'mqtt_server': '127.0.0.1',
+      'mqtt_port': 1,
+    });
+    final service = MqttService();
+    await service.loadPreferences();
+
+    // The second caller must wait for the first attempt and then run a fresh
+    // one (both fail against the refused port) — a dropped second call was
+    // how a match-load auto-connect racing a teardown-cancelled attempt left
+    // the new match with MQTT down and no retry.
+    final results = await Future.wait([service.connect(), service.connect()]);
+
+    expect(results, [false, false]);
+    expect(
+      service.connectionStateNotifier.value,
+      MqttConnectionStateEx.error,
+    );
+  });
 }
