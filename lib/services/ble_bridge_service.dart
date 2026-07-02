@@ -90,6 +90,7 @@ class BleBridgeService extends ChangeNotifier {
   Future<void> disconnect() async {
     // Explicit user disconnect — stop intending to be connected.
     _connectIntent = false;
+    _lastErrorMessage = null;
     await _connSub?.cancel();
     _connSub = null;
 

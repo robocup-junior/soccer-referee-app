@@ -11,6 +11,17 @@ import '../utils/ble_address.dart';
 import '../utils/colors.dart';
 import 'mac_qr_scanner.dart';
 
+String bridgeConnectionButtonLabel(BridgeConnectionState state) {
+  switch (state) {
+    case BridgeConnectionState.connected:
+      return 'Disconnect';
+    case BridgeConnectionState.connecting:
+      return 'Cancel';
+    default:
+      return 'Connect';
+  }
+}
+
 class SettingsScreen extends StatefulWidget {
   final Game game;
 
@@ -561,13 +572,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                   ),
                                   SettingButton(
                                     title: 'Bridge connection',
-                                    buttonText: bridgeState ==
-                                            BridgeConnectionState.connected
-                                        ? 'Disconnect'
-                                        : 'Connect',
+                                    buttonText: bridgeConnectionButtonLabel(
+                                        bridgeState),
                                     onPressed: () async {
                                       if (bridgeState ==
-                                          BridgeConnectionState.connected) {
+                                              BridgeConnectionState.connected ||
+                                          bridgeState ==
+                                              BridgeConnectionState
+                                                  .connecting) {
                                         await widget.game.bleBridgeService
                                             .disconnect();
                                       } else {

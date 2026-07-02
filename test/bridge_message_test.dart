@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcj_scoreboard/models/bridge_message.dart';
+import 'package:rcj_scoreboard/screens/settings.dart';
 import 'package:rcj_scoreboard/services/ble_bridge_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -54,6 +55,31 @@ void main() {
     });
   });
 
+  group('Bridge connection button label (#86)', () {
+    test('maps all bridge states to the Settings button text', () {
+      expect(
+        bridgeConnectionButtonLabel(BridgeConnectionState.connected),
+        'Disconnect',
+      );
+      expect(
+        bridgeConnectionButtonLabel(BridgeConnectionState.connecting),
+        'Cancel',
+      );
+      expect(
+        bridgeConnectionButtonLabel(BridgeConnectionState.disabled),
+        'Connect',
+      );
+      expect(
+        bridgeConnectionButtonLabel(BridgeConnectionState.disconnected),
+        'Connect',
+      );
+      expect(
+        bridgeConnectionButtonLabel(BridgeConnectionState.error),
+        'Connect',
+      );
+    });
+  });
+
   group('BleBridgeService queue (disconnected — no BLE writes)', () {
     // When the service is enabled but not connected, publishTopic enqueues and
     // dedups, while _processQueue returns at its !isConnected guard before ever
@@ -69,7 +95,8 @@ void main() {
       return svc;
     }
 
-    test('same topic dedups to a single queued message (latest wins)', () async {
+    test('same topic dedups to a single queued message (latest wins)',
+        () async {
       final svc = await makeEnabledService();
 
       svc.publishTopic(BridgeTopics.team1Score, '1');
@@ -114,6 +141,42 @@ void main() {
       svc.publishTopic(BridgeTopics.team1Score, '1');
 
       expect(svc.queueDepthNotifier.value, 0);
+    });
+  });
+
+  group('BleBridgeService connection lifecycle (#86)', () {
+    test('disconnect cancels a connecting bridge without a device', () async {
+      SharedPreferences.setMockInitialValues({});
+      final svc = BleBridgeService();
+      await svc.loadPreferences();
+
+      svc.connectionStateNotifier.value = BridgeConnectionState.connecting;
+
+      await svc.disconnect();
+
+      expect(
+        svc.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
+      expect(svc.lastErrorMessage, isNull);
+    });
+
+    test('connect with empty bridge address leaves state unchanged', () async {
+      SharedPreferences.setMockInitialValues({});
+      final svc = BleBridgeService();
+      await svc.loadPreferences();
+      expect(svc.bridgeMacAddress, isEmpty);
+      expect(
+        svc.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
+
+      await svc.connect();
+
+      expect(
+        svc.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
     });
   });
 }
