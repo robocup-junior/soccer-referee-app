@@ -237,11 +237,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _periodTime = _prefs!.getInt(_periodTimeKey) ?? _defaultPeriodTimeSeconds;
     _halfTimeDuration =
         _prefs!.getInt(_halfTimeDurationKey) ?? _defaultHalfTimeDurationSeconds;
-    _numberOfPlayers = (_prefs!.getInt(_numberOfPlayersKey) ??
-            _defaultPlayersPerTeam)
-        .clamp(1, _maxPlayer)
-        .toInt();
-    _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
+    _numberOfPlayers =
+        (_prefs!.getInt(_numberOfPlayersKey) ?? _defaultPlayersPerTeam)
+            .clamp(1, _maxPlayer)
+            .toInt();
+    _penaltyTime =
+        _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
 
     // Single-tap pref: flush a pre-load toggle if one happened, otherwise adopt
     // the stored value. Reading unconditionally would clobber an early toggle.
@@ -893,6 +894,20 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     mqttService.disconnect();
   }
 
+  // Load-only reconnect: a same-match full-time refresh must not undo #87's
+  // teardown, but a fresh or confirmed match load should claim the field.
+  void _maybeAutoConnectMqttOnMatchLoad() {
+    if (!mqttService.isEnabled) return;
+    if (mqttService.isConnected) return;
+    if (mqttService.connectionStateNotifier.value ==
+        MqttConnectionStateEx.connecting) {
+      return;
+    }
+    // Fire-and-forget: a broker outage must not delay match load, and the
+    // Settings status label reports the outcome.
+    unawaited(mqttService.connect());
+  }
+
   // Upper bound on background catch-up ticks: only the window the timer runs
   // *automatically*. The second-half timer is referee-started (the halfTime ->
   // secondHalf transition does NOT call startTimer()), so catch-up must stop at
@@ -1523,6 +1538,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // #71: a 25-min scheduling slot is mapped to a 10-min half + 5-min break.
       _applyScoreboardTiming(config);
       gameInit();
+      _maybeAutoConnectMqttOnMatchLoad();
     } else if (isConfirmedNewFixtureLoad) {
       // RAVF002: the referee confirmed the "Load match?" overwrite while a match
       // is in progress or finished. The dialog warns it "replaces the match in
@@ -1552,6 +1568,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // synchronous part (_dirty=false + initiating the tombstone write) runs now;
       // only the disk completion is awaited later, off the robot hot path.
       _confirmedLoadClear = _clearMatchStateAndWait();
+      _maybeAutoConnectMqttOnMatchLoad();
     } else if (reArmedFromSuppression && currentStage == MatchStage.fullTime) {
       // The bound fixture's config only surfaced AFTER this resumed match had
       // already run to full-time while suppressed. Now that the bound fixture's
@@ -2181,6 +2198,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
     return '1 goal/$_noShowPenaltyGoalIntervalSeconds sec';
   }
+
   String get noShowPenaltyScoringTeamName =>
       _noShowPenaltyScoringTeam?.name ?? '';
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;

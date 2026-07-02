@@ -10,10 +10,10 @@ import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/services/error_messages.dart';
 
-
-
 enum MqttConnectionStateEx { disconnected, connecting, connected, error }
 
+const String _defaultMqttPassword = 'S_p-@P2_rL7ZFv9';
+const String _legacyMqttPasswordHint = 'S_p-@P2_rL7ZFv9XYZ';
 
 class MqttService {
   MqttServerClient? _client;
@@ -27,13 +27,15 @@ class MqttService {
   late bool _secureConnection; // To store the secure connection state
   late bool _autoConnect; // To store the auto-connect state
 
-  final String _clientIdentifier = 'client_${const Uuid().v4()}'; // Generate unique client ID
-  final ValueNotifier<MqttConnectionStateEx> connectionStateNotifier = ValueNotifier(MqttConnectionStateEx.disconnected);
+  final String _clientIdentifier =
+      'client_${const Uuid().v4()}'; // Generate unique client ID
+  final ValueNotifier<MqttConnectionStateEx> connectionStateNotifier =
+      ValueNotifier(MqttConnectionStateEx.disconnected);
   String _lastErrorMessage = '';
   late SharedPreferences prefs;
 
-  final StreamController<String> _messageStreamController = StreamController<
-      String>.broadcast();
+  final StreamController<String> _messageStreamController =
+      StreamController<String>.broadcast();
 
   Stream<String> get messageStream => _messageStreamController.stream;
 
@@ -45,15 +47,19 @@ class MqttService {
   Future<void> loadPreferences() async {
     prefs = await SharedPreferences.getInstance();
     _isEnabled = prefs.getBool('mqtt_enabled') ?? false;
-    _secureConnection = prefs.getBool('mqtt_secure_connection') ?? false;
+    _secureConnection = prefs.getBool('mqtt_secure_connection') ?? true;
     _autoConnect = prefs.getBool('mqtt_auto_connect') ?? false;
     _topic = prefs.getString('mqtt_topic') ?? '';
     _port = prefs.getInt('mqtt_port') ?? 8883;
-    _server = prefs.getString('mqtt_server') ?? 'f2ec5c0344964af6a9b036e32a4f726c.s1.eu.hivemq.cloud';
+    _server = prefs.getString('mqtt_server') ??
+        'f2ec5c0344964af6a9b036e32a4f726c.s1.eu.hivemq.cloud';
     _username = prefs.getString('mqtt_username') ?? 'RCj_soccer_2026';
-    _password = prefs.getString('mqtt_password') ?? 'S_p-@P2_rL7ZFv9XYZ';
+    final storedPassword = prefs.getString('mqtt_password');
+    if (storedPassword == _legacyMqttPasswordHint) {
+      await prefs.setString('mqtt_password', _defaultMqttPassword);
+    }
+    _password = prefs.getString('mqtt_password') ?? _defaultMqttPassword;
   }
-
 
   // Getters for server, port, username, and password
   String? get server => _server;
@@ -143,8 +149,11 @@ class MqttService {
   bool get isConnected =>
       _client?.connectionStatus?.state == MqttConnectionState.connected;
 
-
   Future<bool> connect() async {
+    if (connectionStateNotifier.value == MqttConnectionStateEx.connecting) {
+      return false;
+    }
+
     if (_server.isEmpty || _port <= 0) {
       debugPrint('MQTT_LOGS::Error: Server or port not set.');
       return false;
@@ -219,18 +228,17 @@ class MqttService {
         _client!.connectionStatus!.state == MqttConnectionState.connected) {
       final topicToPublish = specificTopic ?? _mainTopic;
       if (topicToPublish.isEmpty) {
-          debugPrint('MQTT_LOGS::Error: Topic not set for publishing.');
-          return;
+        debugPrint('MQTT_LOGS::Error: Topic not set for publishing.');
+        return;
       }
       final builder = MqttClientPayloadBuilder();
       builder.addString(message);
       _client!.publishMessage(
-          topicToPublish,
-          MqttQos.atLeastOnce,
-          builder.payload!,
+          topicToPublish, MqttQos.atLeastOnce, builder.payload!,
           retain: true // Set to true if you want the message to be retained
-      );
-      debugPrint('MQTT_LOGS::Published message: $message to topic: $topicToPublish');
+          );
+      debugPrint(
+          'MQTT_LOGS::Published message: $message to topic: $topicToPublish');
     }
   }
 
@@ -246,10 +254,11 @@ class MqttService {
     publishMessage(message, specificTopic: fullTopic);
   }
 
-
   /// Publishes the remaining time in MM:SS format to the 'time' topic.
   void publishTime(int remainingTime) {
-    publishCMMessage('${(remainingTime ~/ 60).toString().padLeft(2, '0')}:${(remainingTime % 60).toString().padLeft(2, '0')}', topic: 'time');
+    publishCMMessage(
+        '${(remainingTime ~/ 60).toString().padLeft(2, '0')}:${(remainingTime % 60).toString().padLeft(2, '0')}',
+        topic: 'time');
   }
 
   /// Publishes the score of both teams to their respective topics.
@@ -260,8 +269,14 @@ class MqttService {
 
   /// Publishes the score of a specific team to its topic.
   void publishTeamNames(List<Team> teams) {
-    publishCMMessage(teams[0].name.substring(0, teams[0].name.length > 20 ? 20 : teams[0].name.length), topic: "team1_name");
-    publishCMMessage(teams[1].name.substring(0, teams[1].name.length > 20 ? 20 : teams[1].name.length), topic: "team2_name");
+    publishCMMessage(
+        teams[0].name.substring(
+            0, teams[0].name.length > 20 ? 20 : teams[0].name.length),
+        topic: "team1_name");
+    publishCMMessage(
+        teams[1].name.substring(
+            0, teams[1].name.length > 20 ? 20 : teams[1].name.length),
+        topic: "team2_name");
   }
 
   void publishTeam(List<Team> teams) {
@@ -286,7 +301,6 @@ class MqttService {
 
     publishCMMessage(gameStageString, topic: 'game_stage');
   }
-
 
   void disconnect() {
     final client = _client;
@@ -325,20 +339,24 @@ class MqttService {
       return;
     }
     if (disconnectedClient.connectionStatus?.disconnectionOrigin ==
-            MqttDisconnectionOrigin.solicited) {
+        MqttDisconnectionOrigin.solicited) {
       _client = null;
-      debugPrint('MQTT_LOGS::Disconnected callback is solicited, not attempting reconnection');
+      debugPrint(
+          'MQTT_LOGS::Disconnected callback is solicited, not attempting reconnection');
       connectionStateNotifier.value = MqttConnectionStateEx.disconnected;
       return;
     }
     // Unintentional disconnect: try to reconnect with bounded retries.
     Future<void> attemptReconnect() async {
       int attempts = 0;
-      while (_isEnabled == true && _client != null && !isConnected &&
-             attempts < _maxReconnectAttempts) {
+      while (_isEnabled == true &&
+          _client != null &&
+          !isConnected &&
+          attempts < _maxReconnectAttempts) {
         attempts++;
         connectionStateNotifier.value = MqttConnectionStateEx.connecting;
-        debugPrint('MQTT_LOGS::Attempting to reconnect ($attempts/$_maxReconnectAttempts)...');
+        debugPrint(
+            'MQTT_LOGS::Attempting to reconnect ($attempts/$_maxReconnectAttempts)...');
         bool success = await connect();
         if (success) break;
         // Don't wait after the final failed attempt: the trailing delay would
@@ -352,11 +370,14 @@ class MqttService {
       // Only report exhaustion if this reconnect session is still active: a
       // user disable (_isEnabled == false) or solicited disconnect
       // (_client == null) during the loop must not be flipped back into error.
-      if (_isEnabled == true && _client != null && !isConnected &&
+      if (_isEnabled == true &&
+          _client != null &&
+          !isConnected &&
           attempts >= _maxReconnectAttempts) {
         // Preserve the specific cause connect() recorded on the last attempt
         // instead of hiding it behind a generic message.
-        final cause = _lastErrorMessage.isNotEmpty ? ' ($_lastErrorMessage)' : '';
+        final cause =
+            _lastErrorMessage.isNotEmpty ? ' ($_lastErrorMessage)' : '';
         _lastErrorMessage =
             'Reconnection failed after $_maxReconnectAttempts attempts$cause';
         connectionStateNotifier.value = MqttConnectionStateEx.error;

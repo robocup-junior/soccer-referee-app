@@ -26,21 +26,40 @@ import 'package:rcj_scoreboard/services/mqtt.dart';
 class _RecordingMqttService extends MqttService {
   _RecordingMqttService(
     this.log, {
+    this.enabled = true,
     MqttConnectionStateEx initialState = MqttConnectionStateEx.connected,
   }) {
     connectionStateNotifier.value = initialState;
   }
 
   final List<String> log;
+  final bool enabled;
+  String _topic = '';
   int connectCalls = 0;
   int disconnectCalls = 0;
 
   @override
-  bool get isEnabled => true;
+  bool get isEnabled => enabled;
 
   @override
   bool get isConnected =>
       connectionStateNotifier.value == MqttConnectionStateEx.connected;
+
+  @override
+  String get topic => _topic;
+
+  @override
+  String get fieldNumber => _topic.replaceFirst('field_', '');
+
+  @override
+  set topic(String value) {
+    if (value.isNotEmpty) _topic = value;
+  }
+
+  @override
+  set topicField(String value) {
+    topic = 'field_$value';
+  }
 
   @override
   Future<bool> connect() async {
@@ -2503,6 +2522,135 @@ void main() {
       expect(bridge.connectCalls, 0);
       expect(mqtt.connectCalls, 0);
 
+      game.dispose();
+    });
+  });
+
+  group('mqtt auto-connect on match load (#88)', () {
+    Future<Game> gameWithRecordingMqtt(
+      WidgetTester tester, {
+      bool enabled = true,
+      MqttConnectionStateEx initialState = MqttConnectionStateEx.disconnected,
+    }) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.mqttService = _RecordingMqttService(
+        <String>[],
+        enabled: enabled,
+        initialState: initialState,
+      );
+      return game;
+    }
+
+    void applyConfig(
+      Game game, {
+      String matchCode = 'M-88',
+      int version = 1,
+    }) {
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: matchCode, version: version),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+    }
+
+    Future<void> pumpPastTransportTeardownDelay(WidgetTester tester) async {
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump();
+    }
+
+    testWidgets('enabled disconnected MQTT connects on fresh fixture apply',
+        (tester) async {
+      final game = await gameWithRecordingMqtt(tester);
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      applyConfig(game);
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 1);
+      game.dispose();
+    });
+
+    testWidgets('deduped same fixture does not connect again', (tester) async {
+      final game = await gameWithRecordingMqtt(tester);
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      applyConfig(game);
+      await tester.pump();
+      applyConfig(game);
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 1);
+      game.dispose();
+    });
+
+    testWidgets('disabled MQTT is not auto-connected', (tester) async {
+      final game = await gameWithRecordingMqtt(tester, enabled: false);
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      applyConfig(game);
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 0);
+      game.dispose();
+    });
+
+    testWidgets(
+        'same-fixture full-time version bump after teardown does not reconnect',
+        (tester) async {
+      final game = await gameWithRecordingMqtt(tester);
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      applyConfig(game);
+      await tester.pump();
+      expect(mqtt.connectCalls, 1);
+
+      game.endMatchEarly();
+      await pumpPastTransportTeardownDelay(tester);
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(
+        mqtt.connectionStateNotifier.value,
+        MqttConnectionStateEx.disconnected,
+      );
+
+      applyConfig(game, version: 2);
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 1);
+      game.dispose();
+    });
+
+    testWidgets('confirmed new-fixture Load at full time reconnects',
+        (tester) async {
+      final game = await gameWithRecordingMqtt(tester);
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      applyConfig(game, matchCode: 'M-88-A');
+      await tester.pump();
+      expect(mqtt.connectCalls, 1);
+
+      game.endMatchEarly();
+      await pumpPastTransportTeardownDelay(tester);
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(
+        mqtt.connectionStateNotifier.value,
+        MqttConnectionStateEx.disconnected,
+      );
+
+      game.scoreboardResultService.debugApplyPendingMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-88-B', version: 1),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      await game.confirmScoreboardMatch();
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 2);
       game.dispose();
     });
   });
