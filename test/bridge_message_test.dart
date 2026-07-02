@@ -178,6 +178,24 @@ void main() {
       expect(svc.lastErrorMessage, isNull);
     });
 
+    test('disconnect settles the visible state before the BLE teardown',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final svc = BleBridgeService();
+      await svc.loadPreferences();
+      svc.connectionStateNotifier.value = BridgeConnectionState.connecting;
+
+      // Cancel must read "Disconnected" immediately (the plugin disconnect
+      // can take seconds on Android) — the state settles in the synchronous
+      // prefix of disconnect(), before its first await.
+      final pending = svc.disconnect();
+      expect(
+        svc.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
+      await pending;
+    });
+
     test('connect with empty bridge address leaves state unchanged', () async {
       SharedPreferences.setMockInitialValues({});
       final svc = BleBridgeService();

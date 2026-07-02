@@ -88,9 +88,17 @@ class BleBridgeService extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
-    // Explicit user disconnect — stop intending to be connected.
+    // Explicit user disconnect — stop intending to be connected. Settle the
+    // visible state BEFORE awaiting the (slow) plugin disconnect, mirroring
+    // Module.bleDisconnect: a Cancel on a stuck "Connecting..." must read
+    // "Disconnected" immediately, not after the BLE teardown completes.
     _connectIntent = false;
     _lastErrorMessage = null;
+    _txChar = null;
+    connectionStateNotifier.value = BridgeConnectionState.disconnected;
+
+    // Cancel the connection-state listener before disconnecting so the
+    // teardown disconnect event can't drive any further status work.
     await _connSub?.cancel();
     _connSub = null;
 
@@ -99,9 +107,6 @@ class BleBridgeService extends ChangeNotifier {
     } catch (e) {
       debugPrint('BleBridge: disconnect error: $e');
     }
-
-    _txChar = null;
-    connectionStateNotifier.value = BridgeConnectionState.disconnected;
   }
 
   Future<void> disconnectAfterDrain({
