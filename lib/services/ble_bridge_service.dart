@@ -79,10 +79,18 @@ class BleBridgeService extends ChangeNotifier {
     try {
       _device = BluetoothDevice.fromId(_bridgeMacAddress.toUpperCase());
       await _connSub?.cancel();
+      // A Cancel can land during the await above; starting the OS autoConnect
+      // anyway would hold/chase the bridge invisibly (it is a single-central
+      // device) while the UI reads "Disconnected". Same re-check
+      // Module.bleConnect does after its pre-connect await.
+      if (!_connectIntent) return;
       _registerBleSubscriber(_device!);
       await _device!.connect(autoConnect: true, mtu: null);
     } catch (e) {
       debugPrint('BleBridge: connect error: $e');
+      // Don't let a failure surfacing after a Cancel overwrite the settled
+      // "Disconnected" with an error.
+      if (!_connectIntent) return;
       await _setErrorAndDisconnect(message: describeError(e).message);
     }
   }
@@ -261,6 +269,14 @@ class BleBridgeService extends ChangeNotifier {
     }
 
     _txChar = null;
+    // The BLE teardown above can take seconds and the state still reads
+    // "Connecting..." meanwhile, so Settings offers Cancel. If the user took
+    // it, disconnect() already settled "Disconnected" (only it can move the
+    // state here — the listener was cancelled first); don't overwrite that
+    // with an error the user no longer cares about.
+    if (connectionStateNotifier.value != BridgeConnectionState.connecting) {
+      return;
+    }
     connectionStateNotifier.value = BridgeConnectionState.error;
     notifyListeners();
   }

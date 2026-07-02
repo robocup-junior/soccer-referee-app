@@ -213,6 +213,30 @@ void main() {
       await pending;
     });
 
+    test('cancel during the pre-connect gap never starts the OS autoConnect',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final svc = BleBridgeService();
+      await svc.loadPreferences();
+      svc.bridgeMacAddress = 'AA:BB:CC:DD:EE:FF';
+
+      // connect() suspends at its pre-connect await; the Cancel lands in
+      // that gap. The resumed connect() must bail out instead of registering
+      // the subscriber / starting autoConnect — otherwise the OS would hold
+      // or chase the single-central bridge while the UI reads Disconnected.
+      // (In this headless VM a non-bailing connect() would surface as the
+      // `error` state via the MissingPluginException path.)
+      final pending = svc.connect();
+      await svc.disconnect();
+      await pending;
+
+      expect(
+        svc.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
+      expect(svc.lastErrorMessage, isNull);
+    });
+
     test('connect with empty bridge address leaves state unchanged', () async {
       SharedPreferences.setMockInitialValues({});
       final svc = BleBridgeService();
