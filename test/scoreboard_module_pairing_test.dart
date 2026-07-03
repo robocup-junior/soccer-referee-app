@@ -405,6 +405,42 @@ void main() {
     });
 
     testWidgets(
+        'a confirmed re-Load of the SAME fixture re-pairs an idle module '
+        '(iPhone repro: manual disconnect → reopen link → must reconnect)',
+        (tester) async {
+      final game = await loadedGame(tester);
+
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+      final module = teamById(game, 'A').modules[0];
+      expect(module.macAddress, 'A1:B2:C3:D4:E5:F6');
+
+      // Simulate the referee's manual disconnect having wiped the slot's
+      // engagement: an idle module whose identity a plain same-fixture
+      // refresh must NOT touch (MAC-signature dedupe)...
+      module.macAddress = '';
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+      expect(module.macAddress, '');
+
+      // ...but an explicit user-confirmed Load of the SAME fixture (reopened
+      // deep link → Load button) must re-pair it.
+      game.scoreboardResultService.debugApplyPendingMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _config(homeMacs: ['A1:B2:C3:D4:E5:F6'])),
+        token: 'tok',
+        baseUri: Uri.parse('http://127.0.0.1:8000'),
+      );
+      await tester.pump();
+      await game.confirmScoreboardMatch();
+      await tester.pump();
+
+      expect(module.macAddress, 'A1:B2:C3:D4:E5:F6');
+
+      game.dispose();
+    });
+
+    testWidgets(
         'restore: pre-split snapshot backfills hardwareMac from a MAC-shaped '
         'connection id; split snapshot restores both fields', (tester) async {
       final game = await loadedGame(tester);

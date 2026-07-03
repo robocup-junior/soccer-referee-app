@@ -1423,6 +1423,19 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
                 expectedSignature == pendingSignature))
         ? pendingSignature
         : null;
+    // #82: a confirmed Load is the referee explicitly (re)setting this match
+    // up — drop the MAC-pairing dedupe BEFORE the promotion notifies, so the
+    // pairing sync that runs inside that notify re-pairs even when the fixture
+    // AND its MAC set are unchanged. Without this, re-opening the same link
+    // after manually disconnecting a module left it disconnected forever:
+    // between matches (inGame false) the apply dedupes on the unchanged
+    // signature — no gameInit, so its signature clear never ran — the MAC
+    // signature still matched, and nothing ever re-issued the connect.
+    // Connected slots are safe: applyPresetConfig's idempotency guards keep
+    // re-pairs from churning live links.
+    if (_confirmedLoadSignature != null) {
+      _lastPairedModuleMacsSignature = null;
+    }
     try {
       await scoreboardResultService.confirmPendingMatch(
           expectedSignature: expectedSignature);
