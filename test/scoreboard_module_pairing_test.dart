@@ -8,6 +8,9 @@
 // services whose platform-channel calls reject asynchronously in the headless
 // test VM, which the widget binding tolerates.
 
+import 'dart:convert';
+
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -16,6 +19,8 @@ import 'helpers/mqtt_guard.dart';
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'package:rcj_scoreboard/models/team.dart';
+import 'package:rcj_scoreboard/services/match_state_store.dart';
+import 'package:rcj_scoreboard/utils/ble_address.dart';
 
 Map<String, dynamic> _config({
   String matchCode = 'M-1',
@@ -172,5 +177,379 @@ void main() {
     }
 
     game.dispose();
+  });
+
+  group('#82 hardware-MAC / iOS-UUID split', () {
+    tearDown(() {
+      debugUseIosBleUuidOverride = null;
+    });
+
+    testWidgets('Android pairing backfills hardwareMac from the MAC',
+        (tester) async {
+      final game = await loadedGame(tester);
+
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+
+      final module = teamById(game, 'A').modules[0];
+      expect(module.macAddress, 'A1:B2:C3:D4:E5:F6');
+      expect(module.hardwareMac, 'A1:B2:C3:D4:E5:F6');
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'iOS pairing with a cached UUID connects by UUID and keeps the MAC',
+        (tester) async {
+      debugUseIosBleUuidOverride = true;
+      SharedPreferences.setMockInitialValues({
+        'mqtt_enabled': false,
+        'ios_mac_uuid_cache':
+            jsonEncode({'A1:B2:C3:D4:E5:F6': '12345678-1234-1234-1234-1234567890AB'}),
+      });
+      final game = await loadedGame(tester);
+
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+
+      final module = teamById(game, 'A').modules[0];
+      expect(module.macAddress, '12345678-1234-1234-1234-1234567890AB');
+      expect(module.hardwareMac, 'A1:B2:C3:D4:E5:F6');
+      // Cache hit → nothing pending with the resolver.
+      expect(game.iosMacResolver.pendingCount, 0);
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'iOS enrollment after kickoff gives up immediately (Not found) — '
+        'no scan during a running half', (tester) async {
+      debugUseIosBleUuidOverride = true;
+      final game = await loadedGame(tester);
+      final module = teamById(game, 'A').modules[0];
+      module.hardwareMac = 'A1:B2:C3:D4:E5:F6';
+
+      // Kickoff: the resolver is stopped for the rest of the match. A
+      // fallback enrollment (e.g. a stale cached UUID failing mid-match)
+      // must settle to Not found without any scan.
+      game.startTimer();
+      game.enrollIosMacResolve(module);
+      await tester.pump();
+
+      expect(module.macAddress, '');
+      expect(module.bleStatus, 'Not found');
+      expect(game.iosMacResolver.pendingCount, 0);
+
+      game.stopTimer();
+      game.dispose();
+    });
+
+    testWidgets(
+        'iOS pairing with no cache enrolls the module as Searching...',
+        (tester) async {
+      debugUseIosBleUuidOverride = true;
+      final game = await loadedGame(tester);
+
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+
+      final module = teamById(game, 'A').modules[0];
+      expect(module.macAddress, '');
+      expect(module.hardwareMac, 'A1:B2:C3:D4:E5:F6');
+      expect(module.bleStatus, 'Searching...');
+      expect(game.iosMacResolver.pendingCount, 1);
+
+      // Kickoff stops the resolve scanning for the rest of the match and
+      // settles the pending slot to Not found (invariant #1).
+      game.startTimer();
+      expect(module.bleStatus, 'Not found');
+      expect(game.iosMacResolver.pendingCount, 0);
+
+      game.stopTimer();
+      game.dispose();
+      // Drain any scan/retry timers the resolve loop may have scheduled
+      // before the kickoff stopped it.
+      await tester.pump(const Duration(seconds: 10));
+    });
+
+    testWidgets(
+        'retargeting a CONNECTED slot to a different MAC replaces the '
+        'identity instead of silently keeping the old link (RAVF003)',
+        (tester) async {
+      final game = await loadedGame(tester);
+      final module = teamById(game, 'A').modules[0];
+      // Disabled so applyPresetConfig skips the real bleConnect (headless VM);
+      // the guards under test only read the connected flag.
+      module.disable();
+      module.macAddress = 'AA:AA:AA:AA:AA:01';
+      module.hardwareMac = 'AA:AA:AA:AA:AA:01';
+      module.debugIsConnected = true;
+
+      module.applyPresetConfig('BB:BB:BB:BB:BB:02', '');
+
+      expect(module.macAddress, 'BB:BB:BB:BB:BB:02');
+      expect(module.hardwareMac, 'BB:BB:BB:BB:BB:02');
+      expect(module.isConnected, isFalse); // old link dropped, fresh boundary
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        're-pairing the SAME hardware identity on a connected iOS slot stays '
+        'a no-op (idempotency guard reads the previous identity)',
+        (tester) async {
+      final game = await loadedGame(tester);
+      final module = teamById(game, 'A').modules[0];
+      module.macAddress = '12345678-1234-1234-1234-1234567890AB';
+      module.hardwareMac = 'AA:AA:AA:AA:AA:01';
+      module.debugIsConnected = true;
+
+      module.applyPresetConfig('AA:AA:AA:AA:AA:01', '');
+
+      expect(module.macAddress, '12345678-1234-1234-1234-1234567890AB');
+      expect(module.isConnected, isTrue);
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'retargeting a connected slot to a hardware MAC awaiting resolution '
+        'drops the live link (empty connection id path)', (tester) async {
+      final game = await loadedGame(tester);
+      final module = teamById(game, 'A').modules[0];
+      module.macAddress = '12345678-1234-1234-1234-1234567890AB';
+      module.hardwareMac = 'AA:AA:AA:AA:AA:01';
+      module.debugIsConnected = true;
+
+      module.applyPresetConfig('', '', hardwareMac: 'BB:BB:BB:BB:BB:02');
+
+      expect(module.hardwareMac, 'BB:BB:BB:BB:BB:02');
+      expect(module.isConnected, isFalse);
+      // The WHOLE old identity is retired (round-2 review): a leftover
+      // connection id would let a snapshot/preset persist a mismatched
+      // (old UUID, new MAC) pair that cold-resumes the wrong robot and
+      // poisons the UUID cache.
+      expect(module.macAddress, '');
+      expect(module.bleDevice, isNull);
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'a re-resolved STALE UUID reconnects the idle module instead of '
+        'stranding it on Searching (round-2 review)', (tester) async {
+      debugUseIosBleUuidOverride = true;
+      final game = await loadedGame(tester);
+      final module = teamById(game, 'A').modules[0];
+      module.disable(); // no real bleConnect headless
+      module.hardwareMac = 'AA:AA:AA:AA:AA:01';
+      module.macAddress = '12345678-1234-1234-1234-1234567890AB';
+      module.markSearching();
+      expect(module.isSearching, isTrue);
+
+      // CoreBluetooth commonly re-issues the SAME identifier after the scan
+      // re-observes the module — the resolve must still (re)build the device
+      // and connect, not early-return on id equality.
+      game.debugOnIosMacResolved(
+          0, 'AA:AA:AA:AA:AA:01', '12345678-1234-1234-1234-1234567890AB');
+
+      expect(module.bleDevice, isNotNull);
+      expect(module.isSearching, isFalse);
+      expect(module.hardwareMac, 'AA:AA:AA:AA:AA:01');
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'a Searching module is cancellable: bleDisconnect clears the state '
+        'and the resolver enrollment', (tester) async {
+      debugUseIosBleUuidOverride = true;
+      final game = await loadedGame(tester);
+
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+
+      final module = teamById(game, 'A').modules[0];
+      expect(module.isSearching, isTrue);
+      expect(game.iosMacResolver.pendingCount, 1);
+
+      module.bleDisconnect();
+      await tester.pump();
+
+      expect(module.isSearching, isFalse);
+      expect(module.bleStatus, 'Disconnected');
+      expect(game.iosMacResolver.pendingCount, 0);
+
+      game.dispose();
+      await tester.pump(const Duration(seconds: 10));
+    });
+
+    testWidgets(
+        'connecting a different UUID with no derivable MAC clears the stale '
+        'hardwareMac instead of reporting the previous module (RAVF002)',
+        (tester) async {
+      final game = await loadedGame(tester);
+      final module = teamById(game, 'A').modules[0];
+      module.hardwareMac = 'AA:AA:AA:AA:AA:01';
+
+      module.setBleDevice(
+          BluetoothDevice.fromId('12345678-1234-1234-1234-1234567890AB'));
+
+      expect(module.hardwareMac, '');
+
+      // And a caller that DOES know the MAC keeps it through setBleDevice.
+      module.setBleDevice(
+          BluetoothDevice.fromId('87654321-4321-4321-4321-BA0987654321'),
+          hardwareMac: 'BB:BB:BB:BB:BB:02');
+      expect(module.hardwareMac, 'BB:BB:BB:BB:BB:02');
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'a same-identity re-pair preserves a referee-set custom label; a '
+        'DIFFERENT MAC on the slot reverts it to the default (RAVF002, '
+        'PR #93 review)', (tester) async {
+      final game = await loadedGame(tester);
+
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+      final module = teamById(game, 'A').modules[0];
+      module.setLabel('Rex');
+      expect(module.name, 'Rex');
+
+      // Confirmed re-Load of the SAME fixture (REPEAT has the same shape):
+      // the re-pair must keep the referee's label.
+      game.scoreboardResultService.debugApplyPendingMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _config(homeMacs: ['A1:B2:C3:D4:E5:F6'])),
+        token: 'tok',
+        baseUri: Uri.parse('http://127.0.0.1:8000'),
+      );
+      await tester.pump();
+      await game.confirmScoreboardMatch();
+      await tester.pump();
+      expect(module.name, 'Rex');
+      expect(module.hasCustomLabel, isTrue);
+
+      // A new fixture naming a DIFFERENT MAC on the slot deliberately reverts
+      // the label to the default.
+      apply(game,
+          _config(matchCode: 'M-2', homeMacs: ['11:22:33:44:55:66']));
+      await tester.pump();
+      expect(module.hasCustomLabel, isFalse);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'iOS: a same-identity re-pair via the cached-UUID path preserves the '
+        'custom label too', (tester) async {
+      debugUseIosBleUuidOverride = true;
+      SharedPreferences.setMockInitialValues({
+        'mqtt_enabled': false,
+        'ios_mac_uuid_cache': jsonEncode(
+            {'A1:B2:C3:D4:E5:F6': '12345678-1234-1234-1234-1234567890AB'}),
+      });
+      final game = await loadedGame(tester);
+
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+      final module = teamById(game, 'A').modules[0];
+      expect(module.hardwareMac, 'A1:B2:C3:D4:E5:F6');
+      module.setLabel('Rex');
+
+      game.scoreboardResultService.debugApplyPendingMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _config(homeMacs: ['A1:B2:C3:D4:E5:F6'])),
+        token: 'tok',
+        baseUri: Uri.parse('http://127.0.0.1:8000'),
+      );
+      await tester.pump();
+      await game.confirmScoreboardMatch();
+      await tester.pump();
+
+      expect(module.name, 'Rex');
+      expect(module.hasCustomLabel, isTrue);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'a confirmed re-Load of the SAME fixture re-pairs an idle module '
+        '(iPhone repro: manual disconnect → reopen link → must reconnect)',
+        (tester) async {
+      final game = await loadedGame(tester);
+
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+      final module = teamById(game, 'A').modules[0];
+      expect(module.macAddress, 'A1:B2:C3:D4:E5:F6');
+
+      // Simulate the referee's manual disconnect having wiped the slot's
+      // engagement: an idle module whose identity a plain same-fixture
+      // refresh must NOT touch (MAC-signature dedupe)...
+      module.macAddress = '';
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+      expect(module.macAddress, '');
+
+      // ...but an explicit user-confirmed Load of the SAME fixture (reopened
+      // deep link → Load button) must re-pair it.
+      game.scoreboardResultService.debugApplyPendingMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _config(homeMacs: ['A1:B2:C3:D4:E5:F6'])),
+        token: 'tok',
+        baseUri: Uri.parse('http://127.0.0.1:8000'),
+      );
+      await tester.pump();
+      await game.confirmScoreboardMatch();
+      await tester.pump();
+
+      expect(module.macAddress, 'A1:B2:C3:D4:E5:F6');
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'restore: pre-split snapshot backfills hardwareMac from a MAC-shaped '
+        'connection id; split snapshot restores both fields', (tester) async {
+      final game = await loadedGame(tester);
+      final module = teamById(game, 'A').modules[0];
+
+      // Pre-split snapshot (no hardwareMac key ≙ default ''), disabled so the
+      // restore takes the non-reconnect branch (no bleConnect headless).
+      module.restoreFromSnapshot(const ModuleSnapshot(
+        moduleId: 0,
+        isEnabled: false,
+        macAddress: 'A1:B2:C3:D4:E5:F6',
+        customLabel: null,
+        state: 'stop',
+        lastState: 'stop',
+        penaltyTime: 0,
+      ));
+      expect(module.hardwareMac, 'A1:B2:C3:D4:E5:F6');
+
+      // Split snapshot: an iOS Searching-state slot (hardware MAC known, no
+      // connection id yet).
+      final module2 = teamById(game, 'A').modules[1];
+      module2.restoreFromSnapshot(const ModuleSnapshot(
+        moduleId: 1,
+        isEnabled: false,
+        macAddress: '',
+        hardwareMac: '11:22:33:44:55:66',
+        customLabel: null,
+        state: 'stop',
+        lastState: 'stop',
+        penaltyTime: 0,
+      ));
+      expect(module2.macAddress, '');
+      expect(module2.hardwareMac, '11:22:33:44:55:66');
+
+      game.dispose();
+    });
   });
 }

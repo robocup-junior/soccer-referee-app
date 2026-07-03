@@ -7,6 +7,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/services/ble.dart';
+import 'package:rcj_scoreboard/services/error_messages.dart';
 import 'package:rcj_scoreboard/utils/ble_address.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
 
@@ -36,6 +37,10 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
 
   bool setMacFromModule = true;
   bool setLabelFromModule = true;
+  // #82 (iOS): the last QR resolve's (UUID, hardware MAC) pair — the MAC is
+  // only committed to the module when the user connects that exact UUID.
+  String? _qrResolvedUuid;
+  String? _qrScannedMac;
 
   bool bleIsScanning = false;
   StreamSubscription<List<ScanResult>>? _scanSubscription;
@@ -62,10 +67,19 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
   }
 
   void _postInitLoad() {
-    ble.initCheck().then((result){
+    ble.initCheck().then((result) {
       if (mounted) {
         setState(() {
           deviceStatus = result;
+        });
+      }
+      // A platform failure (BLE stack unavailable) must not surface as an
+      // unhandled async error — show it as the adapter status instead.
+    }).catchError((Object e) {
+      debugPrint('ble initCheck error: $e');
+      if (mounted) {
+        setState(() {
+          deviceStatus = describeError(e).message;
         });
       }
     });
@@ -114,9 +128,20 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
 
     if (name == null || name.trim().isEmpty) return;
 
+    if (!mounted) return;
+    final module = Provider.of<Module>(context, listen: false);
     final device = SavedDevice.create(
       name: name.trim(),
       macAddress: mac,
+      // #82: keep the stable hardware identity with the saved device — but
+      // only when it provably belongs to the SAVED address (the text field is
+      // free-typed and may describe a different device than the module's
+      // current pairing).
+      hardwareMac: isMacFormat(mac)
+          ? mac
+          : (mac.toUpperCase() == module.macAddress.toUpperCase()
+              ? module.hardwareMac
+              : ''),
       label: _labelController.text.trim(),
     );
     await PresetService().saveDevice(device);
@@ -152,8 +177,11 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
       _labelController.text = selected.label;
     });
     // Single apply path shared with presets: sets the label (empty -> default)
-    // and connects only when the module is enabled.
-    module.applyPresetConfig(selected.macAddress, selected.label);
+    // and connects only when the module is enabled. The hardware MAC rides
+    // along (#82); a stale iOS UUID falls back to the resolver via
+    // bleConnect's Peripheral-not-found handler.
+    module.applyPresetConfig(selected.macAddress, selected.label,
+        hardwareMac: selected.hardwareMac);
     FlutterBluePlus.stopScan();
   }
 
@@ -230,9 +258,9 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     super.dispose();
   }
 
-  // Shared with the bridge address field via utils/ble_address.dart so both
-  // screens use the same UUID-vs-MAC mask.
-  final maskFormatter = buildBleAddressMask();
+  // The module address formatters live in utils/ble_address.dart
+  // (buildModuleAddressFormatters): iOS accepts MAC or UUID (#82), Android
+  // keeps the MAC mask shared with the bridge field.
 
   @override
   Widget build(BuildContext context) {
@@ -241,7 +269,14 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
 
     if (setMacFromModule) {
       setMacFromModule = false;
-      _controller.text = module.macAddress;
+      // Seed with the connection id; when there is none, fall back to the
+      // known hardware MAC (#82) — an iOS slot whose UUID was never resolved
+      // ("Not found": module was off at load, arrived mid-match) then shows
+      // its MAC, and the Connect button's MAC branch resolves + connects it
+      // in one tap instead of complaining about an empty field.
+      _controller.text = module.macAddress.isNotEmpty
+          ? module.macAddress
+          : module.hardwareMac;
     }
 
     if (setLabelFromModule) {
@@ -338,11 +373,13 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
             TextField(
 
               controller: _controller,
-              inputFormatters: [maskFormatter],
+              // #82: iOS accepts a MAC too (resolved by scan on Connect), so
+              // the module field can't use the fixed UUID mask there.
+              inputFormatters: buildModuleAddressFormatters(),
               decoration: InputDecoration(
-                labelText: useIosBleUuid ? 'Enter device UUID' : 'Enter MAC Address',
+                labelText: moduleAddressLabel,
                 labelStyle: const TextStyle(color: Colors.grey),
-                hintText: bleAddressHint,
+                hintText: moduleAddressHint,
                 hintStyle: const TextStyle(color: Colors.grey),
                 border: const OutlineInputBorder(),
 
@@ -384,20 +421,61 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
               child: ElevatedButton(
 
                 onPressed: () async {
-                  // Connected OR mid-connect → the button cancels/disconnects,
-                  // so a stuck "Connecting..." (dead module) can always be broken.
-                  if (module.isConnected || module.isConnecting) {
+                  // Connected OR mid-connect OR Searching (#82, iOS resolver)
+                  // → the button cancels/disconnects, so a stuck
+                  // "Connecting..."/"Searching..." can always be broken.
+                  if (module.isConnected ||
+                      module.isConnecting ||
+                      module.isSearching) {
                     module.bleDisconnect();
                   } else {
-                    final mac = _controller.text.trim();
-                    if (mac.isEmpty) {
+                    final address = _controller.text.trim();
+                    if (address.isEmpty) {
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                             content: Text('Enter a device address first')),
                       );
                       return;
                     }
-                    module.setBleDevice(BluetoothDevice.fromId(mac.toUpperCase()));
+                    // #82: iOS can't connect by MAC — a MAC-shaped entry is
+                    // resolved to the device's CoreBluetooth UUID by scan
+                    // first (same flow as the QR path), and the MAC is kept
+                    // as the module's stable hardware identity.
+                    // DELIBERATE (design §3a): manual, referee-initiated
+                    // scans stay available even mid-half — pairing a spare on
+                    // iOS is only possible via a scan, and the referee
+                    // controls the moment. Only AUTOMATIC scanning is gated
+                    // off running halves (IosMacResolveController).
+                    if (useIosBleUuid && isMacFormat(address)) {
+                      final resolvedUuid =
+                          await resolveIosDeviceUuid(address);
+                      if (!context.mounted) return;
+                      if (resolvedUuid == null) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                              content: Text(
+                                  'No device found for that MAC — is the module on?')),
+                        );
+                        return;
+                      }
+                      _controller.text = resolvedUuid;
+                      module.setBleDevice(BluetoothDevice.fromId(resolvedUuid),
+                          hardwareMac: address);
+                      module.bleConnect();
+                      return;
+                    }
+                    // #82: if this UUID came from the QR flow, carry the
+                    // scanned hardware MAC with the connect (see the stash in
+                    // handleIosResult); otherwise setBleDevice derives or
+                    // clears it.
+                    final qrMac = (_qrResolvedUuid != null &&
+                            address.toUpperCase() ==
+                                _qrResolvedUuid!.toUpperCase())
+                        ? _qrScannedMac
+                        : null;
+                    module.setBleDevice(
+                        BluetoothDevice.fromId(address.toUpperCase()),
+                        hardwareMac: qrMac);
                     module.bleConnect();
                     FlutterBluePlus.stopScan();
                   }
@@ -405,7 +483,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.grey[700],
                 ),
-                child: Text(module.isConnected ? 'Disconnect' : module.isConnecting ? 'Cancel' : 'Connect', style: const TextStyle(color: Colors.white, fontSize: 16, ),),
+                child: Text(module.isConnected ? 'Disconnect' : (module.isConnecting || module.isSearching) ? 'Cancel' : 'Connect', style: const TextStyle(color: Colors.white, fontSize: 16, ),),
               ),
             ),
 
@@ -480,8 +558,9 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
           );
           if (!context.mounted) return;
           if (result != null) {
-            //result = 'RCJ-soccer_module-XX:XX:XX:XX:XX:XX'
-            // --> map result (ble device name) to uuid
+            // result is the module's hardware MAC ('AA:BB:..'; the firmware
+            // QR encodes the same MAC its advertised name 'RCJs-m_<MAC>'
+            // carries). On iOS map it to the CoreBluetooth UUID by scan.
             if (useIosBleUuid) {
               handleIosResult(result);
             } else {
@@ -502,6 +581,13 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
       if (resolvedUuid != null) {
         if (mounted) {
           _controller.text = resolvedUuid;
+          // #82: the QR carried the module's hardware MAC. Do NOT write it to
+          // the module yet — an abandoned/mistaken scan must not retarget the
+          // slot's reported identity (least of all over a live link). Stash
+          // it; the Connect button passes it along when the user actually
+          // connects this UUID.
+          _qrResolvedUuid = resolvedUuid;
+          _qrScannedMac = '$pResult'.trim().toUpperCase();
         }
         return;
       }

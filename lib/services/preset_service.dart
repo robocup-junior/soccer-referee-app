@@ -6,23 +6,31 @@ import 'package:uuid/uuid.dart';
 class ModuleConfig {
   final int moduleId;
   final String macAddress;
+
+  /// The module's permanent hardware MAC (#82) — '' when unknown. On iOS
+  /// [macAddress] is a per-phone CoreBluetooth UUID; this field lets a preset
+  /// re-resolve/report the real MAC. Lenient read: pre-split presets lack it.
+  final String hardwareMac;
   final String label;
 
   const ModuleConfig({
     required this.moduleId,
     required this.macAddress,
+    this.hardwareMac = '',
     required this.label,
   });
 
   Map<String, dynamic> toJson() => {
         'moduleId': moduleId,
         'macAddress': macAddress,
+        'hardwareMac': hardwareMac,
         'label': label,
       };
 
   factory ModuleConfig.fromJson(Map<String, dynamic> json) => ModuleConfig(
         moduleId: json['moduleId'] as int,
         macAddress: json['macAddress'] as String? ?? '',
+        hardwareMac: json['hardwareMac'] as String? ?? '',
         label: json['label'] as String? ?? '',
       );
 }
@@ -64,24 +72,31 @@ class SavedDevice {
   final String id;
   String name;
   final String macAddress;
+
+  /// The module's permanent hardware MAC (#82) — '' when unknown (e.g. an iOS
+  /// device saved by manually-typed UUID). Lenient read for pre-split entries.
+  final String hardwareMac;
   final String label;
 
   SavedDevice({
     required this.id,
     required this.name,
     required this.macAddress,
+    this.hardwareMac = '',
     required this.label,
   });
 
   factory SavedDevice.create({
     required String name,
     required String macAddress,
+    String hardwareMac = '',
     required String label,
   }) =>
       SavedDevice(
         id: const Uuid().v4(),
         name: name,
         macAddress: macAddress,
+        hardwareMac: hardwareMac,
         label: label,
       );
 
@@ -89,6 +104,7 @@ class SavedDevice {
         'id': id,
         'name': name,
         'macAddress': macAddress,
+        'hardwareMac': hardwareMac,
         'label': label,
       };
 
@@ -96,6 +112,7 @@ class SavedDevice {
         id: json['id'] as String,
         name: json['name'] as String,
         macAddress: json['macAddress'] as String? ?? '',
+        hardwareMac: json['hardwareMac'] as String? ?? '',
         label: json['label'] as String? ?? '',
       );
 }

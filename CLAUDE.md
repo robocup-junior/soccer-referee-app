@@ -34,6 +34,8 @@ Cross-platform **Android + iOS (iPhone)** Flutter app (portrait-only) that contr
 | `lib/services/ble.dart` | BLE adapter init/enable only |
 | `lib/services/mqtt.dart` | MQTT publish, connection management |
 | `lib/services/ble_bridge_service.dart` | BLE scoreboard bridge: MQTT-over-BLE publish, dedup queue, write-with-response ACK |
+| `lib/services/ios_mac_resolver.dart` | #82 iOS MAC→UUID batch-scan resolver: match-load auto-connect bookkeeping; scans only between play, stops at kickoff |
+| `lib/utils/ble_address.dart` | Platform address helpers: MAC/UUID formats, `RCJs-m_<MAC>` name parsing, batch scan resolve |
 | `lib/models/bridge_message.dart` | `BridgeMessage` framing (`topic\x00value`) + `BridgeTopics` names |
 | `lib/services/match_data.dart` | HTTP fetch of match schedule |
 | `lib/widgets/critical_gesture_detector.dart` | `CriticalGestureDetector` + `criticalButtonGestures` — single/double-tap gating for critical actions |
