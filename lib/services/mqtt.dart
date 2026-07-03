@@ -14,6 +14,8 @@ enum MqttConnectionStateEx { disconnected, connecting, connected, error }
 
 const String _defaultMqttPassword = 'S_p-@P2_rL7ZFv9';
 const String _legacyMqttPasswordHint = 'S_p-@P2_rL7ZFv9XYZ';
+const String _defaultMqttServer =
+    'f2ec5c0344964af6a9b036e32a4f726c.s1.eu.hivemq.cloud';
 
 class MqttService {
   MqttServerClient? _client;
@@ -58,8 +60,7 @@ class MqttService {
     _autoConnect = prefs.getBool('mqtt_auto_connect') ?? false;
     _topic = prefs.getString('mqtt_topic') ?? '';
     _port = prefs.getInt('mqtt_port') ?? 8883;
-    _server = prefs.getString('mqtt_server') ??
-        'f2ec5c0344964af6a9b036e32a4f726c.s1.eu.hivemq.cloud';
+    _server = prefs.getString('mqtt_server') ?? _defaultMqttServer;
     _username = prefs.getString('mqtt_username') ?? 'RCj_soccer_2026';
     final storedPassword = prefs.getString('mqtt_password');
     if (storedPassword == _legacyMqttPasswordHint) {
@@ -194,6 +195,20 @@ class MqttService {
   Future<bool> _connect() async {
     if (_server.isEmpty || _port <= 0) {
       debugPrint('MQTT_LOGS::Error: Server or port not set.');
+      return false;
+    }
+
+    // Live-broker backstop (review #94): the shipped defaults are a WORKING
+    // production account, so an unseeded future test driving a match-load
+    // path would otherwise open a real TLS socket from CI and publish
+    // retained reset state onto a real field's topics. Refuse only under
+    // flutter_test AND only for the shipped production server — real devices
+    // never set FLUTTER_TEST, and tests against local/custom brokers (e.g.
+    // 127.0.0.1 in mqtt_service_test) stay fully functional.
+    if (Platform.environment.containsKey('FLUTTER_TEST') &&
+        _server == _defaultMqttServer) {
+      debugPrint(
+          'MQTT_LOGS::Refusing to dial the production broker from a test run');
       return false;
     }
 

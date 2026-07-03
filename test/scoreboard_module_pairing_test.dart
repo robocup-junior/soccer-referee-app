@@ -11,6 +11,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'helpers/mqtt_guard.dart';
+
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'package:rcj_scoreboard/models/team.dart';
@@ -43,10 +45,7 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
-    // MQTT ships enabled by default (#88); these suites drive Game with the
-    // REAL MqttService, so seed the explicit disable or every config apply
-    // fires a real network connect and leaks timers into the test binding.
-    await prefs.setBool('mqtt_enabled', false);
+    await seedMqttDisabledForGameTests();
   });
 
   // A loaded Game with every slot disabled. applyPresetConfig then sets each

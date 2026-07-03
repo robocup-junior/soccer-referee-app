@@ -65,6 +65,25 @@ void main() {
     expect(service.secureConnection, isFalse);
   });
 
+  test('connect refuses the shipped production broker under flutter_test',
+      () async {
+    // Review #94 backstop: fresh prefs leave _server at the shipped
+    // production default; a test-run connect must refuse before opening a
+    // socket (an unseeded CI test could otherwise publish retained state to
+    // a live field). Local/custom brokers stay allowed — every other test
+    // here uses 127.0.0.1.
+    final service = MqttService();
+    await service.loadPreferences();
+
+    final result = await service.connect();
+
+    expect(result, isFalse);
+    expect(
+      service.connectionStateNotifier.value,
+      MqttConnectionStateEx.disconnected,
+    );
+  });
+
   test(
       'connect still attempts when the state already reads connecting '
       '(the reconnect loop pre-sets it before every retry)', () async {
