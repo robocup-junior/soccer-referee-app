@@ -405,6 +405,77 @@ void main() {
     });
 
     testWidgets(
+        'a same-identity re-pair preserves a referee-set custom label; a '
+        'DIFFERENT MAC on the slot reverts it to the default (RAVF002, '
+        'PR #93 review)', (tester) async {
+      final game = await loadedGame(tester);
+
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+      final module = teamById(game, 'A').modules[0];
+      module.setLabel('Rex');
+      expect(module.name, 'Rex');
+
+      // Confirmed re-Load of the SAME fixture (REPEAT has the same shape):
+      // the re-pair must keep the referee's label.
+      game.scoreboardResultService.debugApplyPendingMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _config(homeMacs: ['A1:B2:C3:D4:E5:F6'])),
+        token: 'tok',
+        baseUri: Uri.parse('http://127.0.0.1:8000'),
+      );
+      await tester.pump();
+      await game.confirmScoreboardMatch();
+      await tester.pump();
+      expect(module.name, 'Rex');
+      expect(module.hasCustomLabel, isTrue);
+
+      // A new fixture naming a DIFFERENT MAC on the slot deliberately reverts
+      // the label to the default.
+      apply(game,
+          _config(matchCode: 'M-2', homeMacs: ['11:22:33:44:55:66']));
+      await tester.pump();
+      expect(module.hasCustomLabel, isFalse);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'iOS: a same-identity re-pair via the cached-UUID path preserves the '
+        'custom label too', (tester) async {
+      debugUseIosBleUuidOverride = true;
+      SharedPreferences.setMockInitialValues({
+        'mqtt_enabled': false,
+        'ios_mac_uuid_cache': jsonEncode(
+            {'A1:B2:C3:D4:E5:F6': '12345678-1234-1234-1234-1234567890AB'}),
+      });
+      final game = await loadedGame(tester);
+
+      apply(game, _config(homeMacs: ['A1:B2:C3:D4:E5:F6']));
+      await tester.pump();
+      final module = teamById(game, 'A').modules[0];
+      expect(module.hardwareMac, 'A1:B2:C3:D4:E5:F6');
+      module.setLabel('Rex');
+
+      game.scoreboardResultService.debugApplyPendingMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _config(homeMacs: ['A1:B2:C3:D4:E5:F6'])),
+        token: 'tok',
+        baseUri: Uri.parse('http://127.0.0.1:8000'),
+      );
+      await tester.pump();
+      await game.confirmScoreboardMatch();
+      await tester.pump();
+
+      expect(module.name, 'Rex');
+      expect(module.hasCustomLabel, isTrue);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
         'a confirmed re-Load of the SAME fixture re-pairs an idle module '
         '(iPhone repro: manual disconnect → reopen link → must reconnect)',
         (tester) async {

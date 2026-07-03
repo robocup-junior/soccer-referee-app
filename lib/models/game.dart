@@ -1628,18 +1628,33 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // each slot fall back to its default name (A1..A5) via Module.name;
     // applyPresetConfig is idempotent (skips a slot already on that MAC) so a
     // re-pair won't churn live BLE links.
+    //
+    // Label rule (PR #93 review, RAVF002): a SAME-identity re-pair — REPEAT or
+    // a confirmed re-Load of the unchanged fixture, both of which re-run this
+    // after the MAC-set dedupe was dropped — must PRESERVE a referee-set
+    // custom label (applyPresetConfig always applies its label argument, so
+    // passing '' here wiped them). A slot whose identity CHANGES still gets
+    // '' — reverting to the default name on a new fixture is deliberate.
     final homeId = config.homeIsLeft ? 'A' : 'B';
     for (final team in teams) {
       final macs =
           team.id == homeId ? config.homeModuleMacs : config.awayModuleMacs;
       for (var i = 0; i < team.modules.length && i < macs.length; i++) {
+        final module = team.modules[i];
+        final macUpper = macs[i].toUpperCase();
+        final sameIdentity = macs[i].isNotEmpty &&
+            (module.hardwareMac == macUpper ||
+                // Pre-split slots may hold the MAC only as the connection id.
+                module.macAddress.toUpperCase() == macUpper);
+        final label =
+            sameIdentity && module.hasCustomLabel ? module.name : '';
         if (useIosBleUuid && macs[i].isNotEmpty) {
           // #82: iOS can't fromId() a MAC — route through the cached-UUID /
           // batch-scan resolver. Synchronous except the unawaited scan kick,
           // so it stays safe inside this notify-chain call site.
-          _pairIosModuleByMac(team.modules[i], macs[i], label: '');
+          _pairIosModuleByMac(module, macs[i], label: label);
         } else {
-          team.modules[i].applyPresetConfig(macs[i], '');
+          module.applyPresetConfig(macs[i], label);
         }
       }
     }
@@ -1945,9 +1960,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   ///
   /// #82: reports `Module.hardwareMac` — the stable hardware identity — never
   /// the connection id (`macAddress`), which on iOS is a per-phone CoreBluetooth
-  /// UUID the scoreboard can't diff against `home_module_macs`. Fallback: a
-  /// MAC-shaped connection id (Android edge paths that predate the split) still
-  /// reports; a UUID-only slot (iOS, MAC never learned) honestly reports ''.
+  /// UUID the scoreboard can't diff against `home_module_macs`. The MAC-shaped
+  /// connection-id fallback is belt-and-suspenders for FUTURE direct writers of
+  /// `macAddress` (every in-PR writer backfills `hardwareMac`, so it should be
+  /// unreachable today); a UUID-only slot (iOS, MAC never learned) honestly
+  /// reports ''.
   List<ActualModuleReport> _actualModulesForTeamId(String teamId) {
     final reports = <ActualModuleReport>[];
     for (final team in teams) {
