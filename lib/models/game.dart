@@ -912,6 +912,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void _maybeAutoConnectMqttOnMatchLoad() {
     if (!mqttService.isEnabled) return;
     if (mqttService.isConnected) return;
+    // No field topic, no auto-connect (review #94): a fixture whose venue
+    // carries no number (e.g. "Center Court", #50) leaves the topic empty on
+    // a fresh install, and publishCMMessage would then land the rebroadcast's
+    // RETAINED state on the venue-shared rcj_soccer/* base namespace. A
+    // manually configured field (persisted topic) still auto-connects, and
+    // the Settings Connect button is unaffected.
+    if (mqttService.topic.isEmpty) return;
     // No bail on a `connecting` state: the bounded reconnect loop pins the
     // state there almost continuously during a broker blip, and a load that
     // bailed would never rebroadcast — leaving the previous match's retained

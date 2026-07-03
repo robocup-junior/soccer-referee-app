@@ -15,6 +15,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'helpers/mqtt_guard.dart';
+
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/models/scoreboard_result.dart';
@@ -158,13 +160,14 @@ Map<String, dynamic> _scoreboardConfig({
   int durationSeconds = 600,
   String homeTeamName = 'Home',
   String awayTeamName = 'Away',
+  String venue = 'Field 1',
 }) =>
     {
       'match_code': matchCode,
       'home_team': homeTeamName,
       'away_team': awayTeamName,
       'home_is_left': homeIsLeft,
-      'venue': 'Field 1',
+      'venue': venue,
       'scheduled_start': null,
       'duration_seconds': durationSeconds,
       'timezone': 'Europe/Prague',
@@ -264,10 +267,7 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     prefs = await SharedPreferences.getInstance();
     await prefs.clear();
-    // MQTT ships enabled by default (#88); these suites drive Game with the
-    // REAL MqttService, so seed the explicit disable or every config apply
-    // fires a real network connect and leaks timers into the test binding.
-    await prefs.setBool('mqtt_enabled', false);
+    await seedMqttDisabledForGameTests();
   });
 
   Future<void> persist(MatchSnapshot snapshot) async {
@@ -2637,10 +2637,12 @@ void main() {
       Game game, {
       String matchCode = 'M-88',
       int version = 1,
+      String venue = 'Field 1',
     }) {
       game.scoreboardResultService.debugApplyMatchConfig(
         ScoreboardMatchConfig.fromJson(
-          _scoreboardConfig(matchCode: matchCode, version: version),
+          _scoreboardConfig(
+              matchCode: matchCode, version: version, venue: venue),
         ),
         token: 'test-token',
         baseUri: Uri.parse('http://127.0.0.1:9'),
@@ -2693,6 +2695,37 @@ void main() {
       applyConfig(game);
       await tester.pump();
       applyConfig(game);
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 1);
+      game.dispose();
+    });
+
+    testWidgets(
+        'a no-digit venue with no configured field does not auto-connect',
+        (tester) async {
+      // Review #94: with an empty topic the rebroadcast would land RETAINED
+      // state on the venue-shared rcj_soccer/* base namespace ("Center
+      // Court" is a supported no-digit venue, #50).
+      final game = await gameWithRecordingMqtt(tester);
+      final mqtt = game.mqttService as _RecordingMqttService;
+      expect(mqtt.topic, isEmpty);
+
+      applyConfig(game, venue: 'Center Court');
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 0);
+      game.dispose();
+    });
+
+    testWidgets(
+        'a no-digit venue still auto-connects when a field is configured',
+        (tester) async {
+      final game = await gameWithRecordingMqtt(tester);
+      final mqtt = game.mqttService as _RecordingMqttService;
+      mqtt.topicField = '3';
+
+      applyConfig(game, venue: 'Center Court');
       await tester.pump();
 
       expect(mqtt.connectCalls, 1);
