@@ -97,14 +97,26 @@ class ScoreboardResultService with ChangeNotifier {
   bool hasResultFor(String matchCode) =>
       _outbox.any((item) => item.matchCode == matchCode);
 
-  /// True if [matchCode] has an outbox item that should still BLOCK re-opening
-  /// the full-time result review. Every state blocks EXCEPT a terminal rejection
-  /// (HTTP 401/422): that result is correctable, so the review must stay
-  /// reachable for the referee to fix and re-submit (RAVF002). A retry-exhausted
-  /// transient failure (5xx / network) is NOT terminal here and keeps blocking —
-  /// it is re-sent via [retryPendingNow], not by re-opening the review.
-  bool hasUnresolvedResultFor(String matchCode) => _outbox.any(
-      (item) => item.matchCode == matchCode && !_isTerminalRejection(item));
+  /// True if [matchCode] has an outbox item FROM THIS RUN that should still
+  /// BLOCK re-opening the full-time result review. Every state blocks EXCEPT a
+  /// terminal rejection (HTTP 401/422): that result is correctable, so the
+  /// review must stay reachable for the referee to fix and re-submit (RAVF002).
+  /// A retry-exhausted transient failure (5xx / network) is NOT terminal here
+  /// and keeps blocking — it is re-sent via [retryPendingNow], not by
+  /// re-opening the review.
+  ///
+  /// "This run" is scoped by the item's capability TOKEN (result
+  /// run-provenance, issue #68 R2-A): tokens are per link issuance, so a REPEAT
+  /// of the same fixture on the SAME single-use token stays suppressed (a
+  /// second submission can't succeed anyway), while a RE-ISSUED link for the
+  /// same match code — a replay or correction, carrying a fresh token — is a
+  /// new run that must be able to review and submit. Without the token scope, a
+  /// phone that ever submitted a fixture could never submit it again (found
+  /// live: full time offered only REPEAT, no review).
+  bool hasUnresolvedResultFor(String matchCode) => _outbox.any((item) =>
+      item.matchCode == matchCode &&
+      item.token == _token &&
+      !_isTerminalRejection(item));
 
   static bool _isTerminalRejection(ResultOutboxItem item) =>
       item.state == ResultSubmissionState.failed &&
@@ -471,8 +483,12 @@ class ScoreboardResultService with ChangeNotifier {
   String? _submittedStatusForCommittedMatch() {
     final config = _matchConfig;
     if (config == null) return null;
+    // Token-scoped (issue #68 R2-A): a submitted item from a PREVIOUS link
+    // issuance must not label the current, not-yet-submitted run of the same
+    // fixture as "✓ Submitted" (found live via Settings → Refresh).
     final submitted = _outbox.any((item) =>
         item.matchCode == config.matchCode &&
+        item.token == _token &&
         item.state == ResultSubmissionState.submitted);
     return submitted ? '✓ Submitted ${config.matchCode}' : null;
   }
@@ -556,6 +572,8 @@ class ScoreboardResultService with ChangeNotifier {
     String? comment,
     bool homeConfirmed = false,
     bool awayConfirmed = false,
+    List<ActualModuleReport> actualHomeModules = const [],
+    List<ActualModuleReport> actualAwayModules = const [],
   }) async {
     final token = _token;
     final matchConfig = _matchConfig;
@@ -570,8 +588,12 @@ class ScoreboardResultService with ChangeNotifier {
     // is identified by the internal retryCount, not the free-text errorMessage
     // (which on 401/422 comes from server-controlled body['reason']), so genuine
     // rejections stay non-tracked and replaceable by a fresh enqueue.
+    // Scoped to THIS run's token (issue #68 R2-A): a previous link issuance's
+    // item — even a submitted one — is that run's audit record and must not
+    // block a re-issued link's fresh submission (see hasUnresolvedResultFor).
     final alreadyTracked = _outbox.any((item) =>
         item.matchCode == matchConfig.matchCode &&
+        item.token == token &&
         (item.state != ResultSubmissionState.failed ||
             item.retryCount >= _maxSubmissionRetries));
     if (alreadyTracked) {
@@ -592,6 +614,8 @@ class ScoreboardResultService with ChangeNotifier {
       version: matchConfig.version,
       idempotencyKey: _uuid.v4(),
       comment: comment,
+      actualHomeModules: actualHomeModules,
+      actualAwayModules: actualAwayModules,
       state: ResultSubmissionState.pending,
       responseStatus: null,
       responseBody: null,
@@ -729,6 +753,17 @@ class ScoreboardResultService with ChangeNotifier {
       'version': item.version,
       'idempotency_key': item.idempotencyKey,
       if (item.comment?.isNotEmpty ?? false) 'comment': item.comment,
+      // Report the actually-fielded modules per team (#85), read from the
+      // PERSISTED item — never re-derived live — so a retry replays submit-time
+      // state. Omitted entirely when both lists are empty (pre-#85 queued items,
+      // non-referee edge) so the legacy payload stays byte-for-byte unchanged;
+      // absence means "no report", not "no modules".
+      if (item.actualHomeModules.isNotEmpty ||
+          item.actualAwayModules.isNotEmpty)
+        'actual_modules': {
+          'home': item.actualHomeModules.map((m) => m.toJson()).toList(),
+          'away': item.actualAwayModules.map((m) => m.toJson()).toList(),
+        },
     };
 
     try {

@@ -1,8 +1,10 @@
 import 'package:flutter/widgets.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/models/bridge_message.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'dart:async';
+import 'dart:convert';
 import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/services/ble_adapter_monitor.dart';
 import 'package:rcj_scoreboard/services/ble_bridge_service.dart';
@@ -14,6 +16,8 @@ import 'package:rcj_scoreboard/services/wakelock_service.dart';
 import 'package:rcj_scoreboard/services/preset_service.dart';
 import 'package:rcj_scoreboard/services/scoreboard_result_service.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
+import 'package:rcj_scoreboard/services/ios_mac_resolver.dart';
+import 'package:rcj_scoreboard/utils/ble_address.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum MatchStage {
@@ -103,6 +107,24 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   VibrationService vibrationService = VibrationService();
   WakelockService wakelockService = WakelockService();
   ScoreboardResultService scoreboardResultService = ScoreboardResultService();
+  // ---- #82: iOS MAC→UUID resolution ----
+  // iOS cannot connect by hardware MAC; modules are found by ONE batch scan at
+  // match load (MAC→UUID), cached here across matches (a UUID is per-phone but
+  // stable enough to reuse; a stale entry is dropped when its connect fails
+  // with "Peripheral not found" and the module re-enrolls). The controller
+  // scans only while no half runs and stops for good at kickoff (invariant #1);
+  // each resolved module gets exactly one connect(autoConnect:true) and
+  // reconnection stays OS-owned (invariant #5).
+  static const String _iosMacUuidCacheKey = 'ios_mac_uuid_cache';
+  final Map<String, String> _iosMacUuidCache = {};
+  bool _iosMacUuidCacheDirty = false;
+  @visibleForTesting
+  late final IosMacResolveController iosMacResolver = IosMacResolveController(
+    canScanNow: () =>
+        !_isGameRunning && currentStage != MatchStage.fullTime,
+    onResolved: _onIosMacResolved,
+    onGaveUp: _onIosMacResolveGaveUp,
+  );
   String? _lastAppliedScoreboardSignature;
   // MAC-set fingerprint of the last module auto-pair (see
   // _syncScoreboardModulePairing). Separate from _lastAppliedScoreboardSignature
@@ -145,6 +167,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   // link at full time can't bind the just-ended match's scores to the new
   // fixture. Cleared on a fresh match (gameInit).
   String? _fullTimeResultSignature;
+  bool _fullTimeTransportTeardownDone = false;
 
   // Callback to request showing the dialog
   void Function()? onRequestSwitchTeamOrderDialog;
@@ -236,11 +259,34 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _periodTime = _prefs!.getInt(_periodTimeKey) ?? _defaultPeriodTimeSeconds;
     _halfTimeDuration =
         _prefs!.getInt(_halfTimeDurationKey) ?? _defaultHalfTimeDurationSeconds;
-    _numberOfPlayers = (_prefs!.getInt(_numberOfPlayersKey) ??
-            _defaultPlayersPerTeam)
-        .clamp(1, _maxPlayer)
-        .toInt();
-    _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
+    _numberOfPlayers =
+        (_prefs!.getInt(_numberOfPlayersKey) ?? _defaultPlayersPerTeam)
+            .clamp(1, _maxPlayer)
+            .toInt();
+    _penaltyTime =
+        _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
+
+    // #82: load the persisted iOS MAC→UUID cache before any (re-)pairing below
+    // so a reload/cold start connects by cached UUID without a scan. Entries
+    // resolved BEFORE this load (early deep-link pairing) are fresher than
+    // the stored ones — stored values only fill gaps, and a flagged early
+    // write flushes the merged map.
+    final rawIosMacCache = _prefs!.getString(_iosMacUuidCacheKey);
+    if (rawIosMacCache != null) {
+      try {
+        (jsonDecode(rawIosMacCache) as Map<String, dynamic>)
+            .forEach((mac, uuid) {
+          if (uuid is String && uuid.isNotEmpty) {
+            _iosMacUuidCache.putIfAbsent(mac.toUpperCase(), () => uuid);
+          }
+        });
+      } catch (e) {
+        debugPrint('ios_mac_uuid_cache unreadable, ignoring: $e');
+      }
+    }
+    if (_iosMacUuidCacheDirty) {
+      _persistIosMacUuidCache();
+    }
 
     // Single-tap pref: flush a pre-load toggle if one happened, otherwise adopt
     // the stored value. Reading unconditionally would clobber an early toggle.
@@ -313,10 +359,20 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _isGameRunning = false;
     timerButtonText = 'START';
     inGame = false;
+    // #82: between-matches boundary — forget pending iOS resolves and re-arm
+    // scanning for the next match's load (REPEAT / confirmed Load / bootstrap).
+    // Also drop the MAC-set dedupe so the follow-up pairing sync re-runs even
+    // for the SAME fixture: a slot that ended the previous match unresolved
+    // ("Not found") must be searched again for the rematch (#82 review round
+    // 2). applyPresetConfig is idempotent for already-connected slots, so the
+    // re-pair can't churn live links.
+    iosMacResolver.reset();
+    _lastPairedModuleMacsSignature = null;
     _suppressScoreboardFinalResult = false;
     _resumedFixtureMatchCode = null;
     _resumedFixtureVersion = null;
     _fullTimeResultSignature = null;
+    _fullTimeTransportTeardownDone = false;
     _resetNoShowPenaltyGoals();
 
     stopTimer();
@@ -504,6 +560,25 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
         for (final module in team.modules) {
           final moduleSnap = byId[module.moduleId];
           if (moduleSnap != null) module.restoreFromSnapshot(moduleSnap);
+        }
+      }
+
+      // #82 (iOS): a slot saved while still awaiting its UUID carries a
+      // hardware MAC but no connection id — resume its resolution (cached
+      // UUID first, else re-enroll). Pass the restored label so the
+      // always-apply-label rule can't wipe it. Slots restored WITH a UUID
+      // reconnect above; a stale UUID re-enrolls itself via bleConnect's
+      // Peripheral-not-found fallback.
+      if (useIosBleUuid) {
+        for (final team in teams) {
+          for (final module in team.modules) {
+            if (module.isEnabled &&
+                module.hardwareMac.isNotEmpty &&
+                module.macAddress.isEmpty) {
+              _pairIosModuleByMac(module, module.hardwareMac,
+                  label: module.hasCustomLabel ? module.name : '');
+            }
+          }
         }
       }
 
@@ -744,6 +819,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (currentStage == MatchStage.firstHalf ||
         currentStage == MatchStage.secondHalf) {
       _isGameRunning = true;
+      // #82: kickoff — stop iOS resolve scanning for the rest of the match
+      // (a scan competes with the BLE radio, invariant #1). Synchronous flag +
+      // unawaited stopScan, idempotent for warm-resume replay bursts; covers
+      // every kickoff path since they all run through startTimer with a half
+      // as the current stage. iOS-only: on Android the resolver never scans,
+      // and the stray global stopScan would kill a legitimate settings scan.
+      if (useIosBleUuid) {
+        iosMacResolver.stopForMatch();
+      }
     }
     isTimeRunning = true;
     _runClockStartedAt = DateTime.now();
@@ -808,20 +892,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           _markDirtyFlush();
           break;
         case MatchStage.secondHalf:
-          currentStage = MatchStage.fullTime;
-          _resetNoShowPenaltyGoals();
-          if (!noShowModeActive) {
-            stopAll(true);
-            gameOverAll();
-          }
-          timerButtonText = 'REPEAT';
-          _enterFullTimeResultReview();
-          // The match is over: stop the OS autoConnect from chasing modules
-          // that are powered down for good (e.g. a unit still off from a
-          // late penalty). In-match these reconnect unbounded on purpose; at
-          // full time we settle the ones still off to "Disconnected".
-          disconnectInactiveModules();
-          _persistOrClearAtFullTime();
+          _completeMatchToFullTime();
           break;
         default:
           debugPrint('unknown match stage');
@@ -837,6 +908,128 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
 
     notifyListeners();
+  }
+
+  /// The one true *->fullTime transition. Runs the full set of full-time
+  /// side-effects: stage flip, no-show reset, robot stop + game-over (skipped
+  /// when no-show mode owned the robots), REPEAT affordance, result review
+  /// arming (RAVF003 snapshot + unresolved-result gate), module teardown, and
+  /// snapshot persist-or-clear. Called from the natural second-half tick
+  /// expiry and from endMatchEarly() (#84) — never build a bespoke shortcut
+  /// around it. [forceStop] is for ending early out of the half-time break:
+  /// modules parked there have _lastState == halfTime, which an unforced
+  /// Module.stopAll re-dispatches to halfTime() (a fresh break countdown)
+  /// instead of STOP — the same reason the halfTime->secondHalf paths use
+  /// stopAll(true, force: true). The natural second-half expiry keeps the
+  /// unforced call it always had. Callers own _broadcastStageAndTime() +
+  /// notifyListeners() afterwards (the natural tick does both once at the end
+  /// of _tickTimer, shared with the other stage transitions).
+  void _completeMatchToFullTime({bool forceStop = false}) {
+    // Captured before _resetNoShowPenaltyGoals() below clears the flag; when
+    // no-show mode owned the robots they were never started, so the stop +
+    // game-over fan-out is skipped exactly as the pre-#84 tick block did.
+    final noShowModeActive = _noShowPenaltyGoalsActive;
+    currentStage = MatchStage.fullTime;
+    _resetNoShowPenaltyGoals();
+    if (!noShowModeActive) {
+      stopAll(true, force: forceStop);
+      gameOverAll();
+    }
+    timerButtonText = 'REPEAT';
+    _enterFullTimeResultReview();
+    // The match is over: stop the OS autoConnect from chasing modules
+    // that are powered down for good (e.g. a unit still off from a
+    // late penalty). In-match these reconnect unbounded on purpose; at
+    // full time we settle the ones still off to "Disconnected".
+    disconnectInactiveModules();
+    // #82: defensive re-arm of the iOS MAC resolver for the next load.
+    // Pending is already empty here — kickoff's stopForMatch settled every
+    // enrolled slot and post-kickoff enrollments give up synchronously — so
+    // this only resets the stopped-for-match flag ahead of gameInit.
+    iosMacResolver.reset();
+    _persistOrClearAtFullTime();
+    unawaited(_teardownFieldTransportsAtFullTime());
+  }
+
+  // Release the field infrastructure at full time (#87): referees rotate
+  // phones per field, and the bridge accepts a single central — while the old
+  // phone holds it (or the MQTT session), the next phone can't take over.
+  // Launched unawaited from _completeMatchToFullTime so both the natural
+  // second-half expiry and endMatchEarly() (#84) inherit it, and nothing on
+  // the robot STOP path waits on it (invariant #1). The 1 s delay + stage
+  // re-check mirror gameOverAll(): the callers' synchronous final
+  // _broadcastStageAndTime() runs before the first await resumes, so the
+  // final "Game Over" publish always precedes the MQTT disconnect, and a
+  // REPEAT during the delay aborts the teardown. One-shot per match
+  // (re-armed by gameInit) so a second entry into the full-time block no-ops.
+  Future<void> _teardownFieldTransportsAtFullTime() async {
+    if (_fullTimeTransportTeardownDone) return;
+    _fullTimeTransportTeardownDone = true;
+    await Future<void>.delayed(const Duration(seconds: 1));
+    if (currentStage != MatchStage.fullTime) return;
+
+    // Tear down a connected OR still-connecting bridge link — the same
+    // stop-chasing-a-powered-down-unit policy disconnectInactiveModules()
+    // applies to robot modules. Only a CONNECTED bridge gets the bounded
+    // drain (it lets the last queued score frame reach the scoreboard before
+    // the link drops); a connecting one cannot drain its queue by definition,
+    // so draining it would only pin the teardown at the full timeout.
+    // The drain can take seconds: if a REPEAT or a confirmed Load starts a
+    // new match meanwhile (gameInit re-arms the teardown flag and moves the
+    // stage off fullTime — and a Load may have just auto-connected MQTT via
+    // #88), a stale disconnect would silently strip the new match's
+    // transports, so the epoch is re-checked inside the drain (via
+    // shouldAbort, protecting the bridge) and once more below (protecting
+    // MQTT).
+    bool staleTeardown() =>
+        !_fullTimeTransportTeardownDone || currentStage != MatchStage.fullTime;
+    final bridgeState = bleBridgeService.connectionStateNotifier.value;
+    if (bridgeState == BridgeConnectionState.connected) {
+      await bleBridgeService.disconnectAfterDrain(shouldAbort: staleTeardown);
+    } else if (bridgeState == BridgeConnectionState.connecting) {
+      await bleBridgeService.disconnect();
+    }
+    if (staleTeardown()) return;
+    mqttService.disconnect();
+  }
+
+  // Load-only reconnect: a same-match full-time refresh must not undo #87's
+  // teardown, but a fresh or confirmed match load should claim the field.
+  void _maybeAutoConnectMqttOnMatchLoad() {
+    if (!mqttService.isEnabled) return;
+    if (mqttService.isConnected) return;
+    // No field topic, no auto-connect (review #94): a fixture whose venue
+    // carries no number (e.g. "Center Court", #50) leaves the topic empty on
+    // a fresh install, and publishCMMessage would then land the rebroadcast's
+    // RETAINED state on the venue-shared rcj_soccer/* base namespace. A
+    // manually configured field (persisted topic) still auto-connects, and
+    // the Settings Connect button is unaffected.
+    if (mqttService.topic.isEmpty) return;
+    // No bail on a `connecting` state: the bounded reconnect loop pins the
+    // state there almost continuously during a broker blip, and a load that
+    // bailed would never rebroadcast — leaving the previous match's retained
+    // topics on the new field. connect() serializes internally, so calling
+    // it while another attempt is in flight just queues this caller.
+    //
+    // Fire-and-forget: a broker outage must not delay match load, and the
+    // Settings status label reports the outcome. On success, rebroadcast the
+    // CURRENT state: the load path's gameInit() broadcasts ran while MQTT was
+    // still disconnected (publishMessage drops them), so without this the new
+    // match's retained topics would keep the previous match's data until the
+    // first in-match event. Broadcasting whatever is live now is always safe,
+    // even if the fixture changed again while connecting.
+    unawaited(mqttService.connect().then((connected) {
+      if (connected) {
+        _broadcastFullState();
+      }
+    }).catchError((Object e) {
+      // The service maps expected failures to its error state; this guard
+      // only keeps an unexpected Exception escape from becoming an uncaught
+      // async error on the fire-and-forget load path. Errors (programming
+      // bugs) still surface — swallowing them here would hide a broken
+      // load-time MQTT behind a debugPrint.
+      debugPrint('MQTT auto-connect failed: $e');
+    }, test: (e) => e is Exception));
   }
 
   // Upper bound on background catch-up ticks: only the window the timer runs
@@ -901,6 +1094,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // dirty flag and don't re-write a snapshot after the clear.
       gameInit();
       setTeamToDefaultOrder();
+      // #82: REPEAT replays the same fixture with no config re-apply, so the
+      // service listener never re-runs the pairing sync — do it here (gameInit
+      // dropped the MAC-set dedupe) so unresolved iOS slots are searched again
+      // for the rematch. Self-guards on a missing config.
+      _syncScoreboardModulePairing();
       notifyListeners();
       notifyModulesScore();
       _clearMatchState();
@@ -1195,6 +1393,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _timer?.cancel();
+    iosMacResolver.dispose();
     mqttService.dispose();
     bleBridgeService.dispose();
     wakelockService.dispose();
@@ -1330,6 +1529,19 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
                 expectedSignature == pendingSignature))
         ? pendingSignature
         : null;
+    // #82: a confirmed Load is the referee explicitly (re)setting this match
+    // up — drop the MAC-pairing dedupe BEFORE the promotion notifies, so the
+    // pairing sync that runs inside that notify re-pairs even when the fixture
+    // AND its MAC set are unchanged. Without this, re-opening the same link
+    // after manually disconnecting a module left it disconnected forever:
+    // between matches (inGame false) the apply dedupes on the unchanged
+    // signature — no gameInit, so its signature clear never ran — the MAC
+    // signature still matched, and nothing ever re-issued the connect.
+    // Connected slots are safe: applyPresetConfig's idempotency guards keep
+    // re-pairs from churning live links.
+    if (_confirmedLoadSignature != null) {
+      _lastPairedModuleMacsSignature = null;
+    }
     try {
       await scoreboardResultService.confirmPendingMatch(
           expectedSignature: expectedSignature);
@@ -1469,6 +1681,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // #71: a 25-min scheduling slot is mapped to a 10-min half + 5-min break.
       _applyScoreboardTiming(config);
       gameInit();
+      _maybeAutoConnectMqttOnMatchLoad();
     } else if (isConfirmedNewFixtureLoad) {
       // RAVF002: the referee confirmed the "Load match?" overwrite while a match
       // is in progress or finished. The dialog warns it "replaces the match in
@@ -1498,6 +1711,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // synchronous part (_dirty=false + initiating the tombstone write) runs now;
       // only the disk completion is awaited later, off the robot hot path.
       _confirmedLoadClear = _clearMatchStateAndWait();
+      _maybeAutoConnectMqttOnMatchLoad();
     } else if (reArmedFromSuppression && currentStage == MatchStage.fullTime) {
       // The bound fixture's config only surfaced AFTER this resumed match had
       // already run to full-time while suppressed. Now that the bound fixture's
@@ -1522,14 +1736,150 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // each slot fall back to its default name (A1..A5) via Module.name;
     // applyPresetConfig is idempotent (skips a slot already on that MAC) so a
     // re-pair won't churn live BLE links.
+    //
+    // Label rule (PR #93 review, RAVF002): a SAME-identity re-pair — REPEAT or
+    // a confirmed re-Load of the unchanged fixture, both of which re-run this
+    // after the MAC-set dedupe was dropped — must PRESERVE a referee-set
+    // custom label (applyPresetConfig always applies its label argument, so
+    // passing '' here wiped them). A slot whose identity CHANGES still gets
+    // '' — reverting to the default name on a new fixture is deliberate.
     final homeId = config.homeIsLeft ? 'A' : 'B';
     for (final team in teams) {
       final macs =
           team.id == homeId ? config.homeModuleMacs : config.awayModuleMacs;
       for (var i = 0; i < team.modules.length && i < macs.length; i++) {
-        team.modules[i].applyPresetConfig(macs[i], '');
+        final module = team.modules[i];
+        final macUpper = macs[i].toUpperCase();
+        final sameIdentity = macs[i].isNotEmpty &&
+            (module.hardwareMac == macUpper ||
+                // Pre-split slots may hold the MAC only as the connection id.
+                module.macAddress.toUpperCase() == macUpper);
+        final label =
+            sameIdentity && module.hasCustomLabel ? module.name : '';
+        if (useIosBleUuid && macs[i].isNotEmpty) {
+          // #82: iOS can't fromId() a MAC — route through the cached-UUID /
+          // batch-scan resolver. Synchronous except the unawaited scan kick,
+          // so it stays safe inside this notify-chain call site.
+          _pairIosModuleByMac(module, macs[i], label: label);
+        } else {
+          module.applyPresetConfig(macs[i], label);
+        }
       }
     }
+  }
+
+  Module? _moduleById(int moduleId) => teams
+      .expand((t) => t.modules)
+      .where((m) => m.moduleId == moduleId)
+      .firstOrNull;
+
+  void _persistIosMacUuidCache() {
+    if (_prefs == null) {
+      // A deep-linked pairing can resolve before _loadPrefs assigns _prefs;
+      // flag it so the cache load flushes the merged map instead of silently
+      // losing the early entries until the next resolve.
+      _iosMacUuidCacheDirty = true;
+      return;
+    }
+    _iosMacUuidCacheDirty = false;
+    _prefs!.setString(_iosMacUuidCacheKey, jsonEncode(_iosMacUuidCache));
+  }
+
+  /// #82 (iOS): get [module] paired to hardware [mac] — cached UUID first,
+  /// else enroll it with the batch-scan resolver ("Searching..."). [label]
+  /// follows applyPresetConfig's always-apply rule; pass the module's current
+  /// label to preserve it (cold-resume does).
+  void _pairIosModuleByMac(Module module, String mac, {required String label}) {
+    final macUpper = mac.toUpperCase();
+    if (module.isConnected && module.hardwareMac == macUpper) {
+      // Already live on this exact module: apply the label rule, keep the
+      // link, and backfill the cache from the live connection id.
+      module.applyPresetConfig('', label, hardwareMac: macUpper);
+      iosMacResolver.cancel(module.moduleId);
+      if (_iosMacUuidCache[macUpper] != module.macAddress) {
+        _iosMacUuidCache[macUpper] = module.macAddress;
+        _persistIosMacUuidCache();
+      }
+      return;
+    }
+    final cachedUuid = _iosMacUuidCache[macUpper];
+    if (cachedUuid != null && cachedUuid.isNotEmpty) {
+      iosMacResolver.cancel(module.moduleId);
+      module.applyPresetConfig(cachedUuid, label, hardwareMac: macUpper);
+    } else {
+      module.applyPresetConfig('', label, hardwareMac: macUpper);
+      module.markSearching();
+      iosMacResolver.enroll(module.moduleId, macUpper);
+    }
+  }
+
+  void _onIosMacResolved(int moduleId, String mac, String uuid) {
+    final module = _moduleById(moduleId);
+    if (module == null) return;
+    // Re-target guard: the slot may have been repointed (manual QR/scan) while
+    // the batch scan ran — a stale hit must not touch it.
+    if (module.hardwareMac != mac) return;
+    _iosMacUuidCache[mac] = uuid;
+    _persistIosMacUuidCache();
+    // Live or in-flight link on this slot → leave it alone; churning
+    // setBleDevice would drop it. (isConnected with the matching hardwareMac
+    // guard above implies the link IS this module — the retarget paths
+    // retire stale identities before enrolling.) An IDLE module always gets
+    // a fresh device + connect, even when the resolved UUID equals the one
+    // already stored: that is exactly the stale-cache recovery case — the
+    // earlier connect() failed with "Peripheral not found", the scan has
+    // just re-observed the module (often under the SAME identifier, which is
+    // what makes it connectable again), and skipping here would strand the
+    // slot on "Searching..." forever (#82 review round 2).
+    if (module.isConnected || module.isConnecting) return;
+    module.setBleDevice(BluetoothDevice.fromId(uuid), hardwareMac: mac);
+    if (module.isEnabled) {
+      module.bleConnect();
+    }
+  }
+
+  /// #82 (iOS): warm the MAC→UUID cache from any successful connection —
+  /// hand-paired modules (QR / scan list / typed MAC) then auto-connect at
+  /// the next match load without costing a scan. Called by Module's
+  /// connected event; no-op on Android.
+  void recordIosMacUuid(String mac, String uuid) {
+    if (!useIosBleUuid) return;
+    final macUpper = mac.toUpperCase();
+    if (macUpper.isEmpty || uuid.isEmpty) return;
+    if (_iosMacUuidCache[macUpper] == uuid) return;
+    _iosMacUuidCache[macUpper] = uuid;
+    _persistIosMacUuidCache();
+  }
+
+  void _onIosMacResolveGaveUp(int moduleId) {
+    _moduleById(moduleId)?.markSearchGaveUp();
+  }
+
+  // The resolver's live callback is private; tests drive it directly to cover
+  // the stale-UUID recovery shape (a real scan can't run headless).
+  @visibleForTesting
+  void debugOnIosMacResolved(int moduleId, String mac, String uuid) =>
+      _onIosMacResolved(moduleId, mac, uuid);
+
+  /// #82 (iOS): a connect() failed because its identity can never connect —
+  /// stale cached UUID ("Peripheral not found") or a MAC fed to fromId. Drop
+  /// the dead cache entry and hand the module to the resolver. Called by
+  /// Module.bleConnect's catch, once per failed connect CALL (never from
+  /// disconnect events — invariant #5).
+  void enrollIosMacResolve(Module module) {
+    if (!useIosBleUuid || module.hardwareMac.isEmpty) return;
+    if (_iosMacUuidCache.remove(module.hardwareMac) != null) {
+      _persistIosMacUuidCache();
+    }
+    module.markSearching();
+    iosMacResolver.enroll(module.moduleId, module.hardwareMac);
+  }
+
+  /// #82: Cancel affordance for a "Searching..." module (no device yet) — the
+  /// resolver forgets it so an in-flight scan hit can't revive it. Called by
+  /// Module.bleDisconnect on every platform (no-op when not enrolled).
+  void cancelIosMacResolve(Module module) {
+    iosMacResolver.cancel(module.moduleId);
   }
 
   /// Pair the linked fixture's modules if the MAC set (or side) changed since the
@@ -1571,6 +1921,59 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       return false;
     }
     return true;
+  }
+
+  /// Whether the "End match now" early-end affordance (#84) applies: a
+  /// deep-link (scoreboard) fixture is loaded and submittable, and the match
+  /// has not already reached full time (also makes endMatchEarly idempotent).
+  /// Manual matches have nothing to confirm/submit, so they never qualify.
+  bool get canEndMatchEarly {
+    if (currentStage == MatchStage.fullTime) return false;
+    final config = scoreboardResultService.matchConfig;
+    if (config == null || config.matchCode.isEmpty) return false;
+    if (!scoreboardResultService.hasToken) return false;
+    // A still-unresolved prior result for this fixture (REPEAT while the first
+    // run's POST is in flight) means _enterFullTimeResultReview would refuse
+    // to arm the review — ending early would strand the referee at full time
+    // with no result editor, breaking the dialog's promise. Hide the button
+    // instead, matching the review suppression at a natural full time.
+    if (scoreboardResultService.hasUnresolvedResultFor(config.matchCode)) {
+      return false;
+    }
+    return _canSubmitScoreboardResult(config);
+  }
+
+  /// End the match NOW (#84: team no-show -> forfeit/contumation win) and jump
+  /// to the result review. Works from any stage, clock running or not, and
+  /// reuses the exact secondHalf->fullTime side-effects so every full-time
+  /// invariant (RAVF003 kill-before-submit snapshot, unresolved-result gate,
+  /// REPEAT behaviour, module teardown) holds. Gated on [canEndMatchEarly], so
+  /// it is a no-op for manual matches and once already at full time.
+  void endMatchEarly() {
+    if (!canEndMatchEarly) return;
+    // Modules parked in the half-time break need the forced STOP dispatch —
+    // decided here, before the transition below moves the stage off halfTime.
+    final endedFromHalfTime = currentStage == MatchStage.halfTime;
+    // Cancels a running half clock OR the half-time break countdown, and
+    // clears the background run-clock anchors so a backgrounded app cannot
+    // catch the ended match up later.
+    stopTimer();
+    // Every natural path reaches fullTime only when the clock hits 0:00, and
+    // Home, the MQTT/bridge sinks, and the persisted RAVF003 snapshot all
+    // surface _remainingTime as-is — an early end must not present "full time
+    // with 10:00 left".
+    _remainingTime = 0;
+    // A match ended administratively "happened" even if the clock never
+    // started (during live play inGame is otherwise only set by startTimer;
+    // the cold-resume restore paths set it too). Required twice
+    // over: Home's return-from-Settings path calls gameInit() when !inGame,
+    // which would wipe the full-time state just set below; and the cold-resume
+    // path only restores a snapshot when snapshot.inGame is true, so the
+    // RAVF003 kill-before-submit review snapshot must record an in-game match.
+    inGame = true;
+    _completeMatchToFullTime(forceStop: endedFromHalfTime);
+    _broadcastStageAndTime();
+    notifyListeners();
   }
 
   bool get needsScoreboardResultReview {
@@ -1709,6 +2112,42 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     );
   }
 
+  /// Builds the actually-fielded module report for one team (#85): one entry per
+  /// ENABLED slot (disabled slots — beyond `numberOfPlayers` — are omitted), with
+  /// `robot` = slot index + 1 (same 1-based convention as auto-pair), the MAC
+  /// currently on that slot (uppercase; '' when never paired), and its live BLE
+  /// link state. Read-only wrt BLE (macAddress/isConnected only). Keyed by team
+  /// id, never list position, so a half-time team-order swap can't cross sides.
+  ///
+  /// #82: reports `Module.hardwareMac` — the stable hardware identity — never
+  /// the connection id (`macAddress`), which on iOS is a per-phone CoreBluetooth
+  /// UUID the scoreboard can't diff against `home_module_macs`. The MAC-shaped
+  /// connection-id fallback is belt-and-suspenders for FUTURE direct writers of
+  /// `macAddress` (every in-PR writer backfills `hardwareMac`, so it should be
+  /// unreachable today); a UUID-only slot (iOS, MAC never learned) honestly
+  /// reports ''.
+  List<ActualModuleReport> _actualModulesForTeamId(String teamId) {
+    final reports = <ActualModuleReport>[];
+    for (final team in teams) {
+      if (team.id != teamId) continue;
+      for (var i = 0; i < team.modules.length; i++) {
+        final module = team.modules[i];
+        if (!module.isEnabled) continue;
+        final mac = module.hardwareMac.isNotEmpty
+            ? module.hardwareMac
+            : (isMacFormat(module.macAddress) ? module.macAddress : '');
+        reports.add(ActualModuleReport(
+          robot: i + 1,
+          // Same normalization as the restore path so the round-trip is
+          // idempotent (see ActualModuleReport.normalizeMac).
+          mac: ActualModuleReport.normalizeMac(mac),
+          connected: module.isConnected,
+        ));
+      }
+    }
+    return reports;
+  }
+
   Future<bool> submitScoreboardResult({
     required String expectedSignature,
     required int homeGoals,
@@ -1744,6 +2183,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     final homeTeamId = _scoreboardHomeTeamId ?? (homeIsLeft ? 'A' : 'B');
     final awayTeamId = _scoreboardAwayTeamId ?? (homeIsLeft ? 'B' : 'A');
 
+    // Snapshot the actually-fielded comm modules per team NOW, before the await
+    // and keyed by the same team ids as the scores above (#85). This is a pure
+    // read of macAddress/isConnected — no BLE connect/send — so it can't affect
+    // the START/STOP latency invariants, and capturing pre-await freezes the
+    // submit-time state so a later retry (even post-relaunch, replayed from the
+    // persisted outbox) reports what was fielded at submit, not at retry.
+    final actualHomeModules = _actualModulesForTeamId(homeTeamId);
+    final actualAwayModules = _actualModulesForTeamId(awayTeamId);
+
     final trimmedComment = comment?.trim();
     final submitted = await scoreboardResultService.enqueueFinalResult(
       homeGoals: homeGoals,
@@ -1753,6 +2201,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           : trimmedComment,
       homeConfirmed: homeConfirmed,
       awayConfirmed: awayConfirmed,
+      actualHomeModules: actualHomeModules,
+      actualAwayModules: actualAwayModules,
     );
     if (submitted) {
       // Persist the referee's (possibly corrected) review scores onto the live
@@ -1831,8 +2281,14 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // isConnected is false while autoConnect keeps retrying. Without this a
       // "disconnect all" would skip those modules, leaving them retrying and
       // later consuming GATT slots after the referee asked to disconnect.
+      // Same for iOS slots still Searching (#82): skipping one would let a
+      // later resolver round auto-connect a module the referee just asked to
+      // disconnect (bleDisconnect cancels the enrollment).
       for (var module in team.modules.where((module) =>
-          module.isEnabled && (module.isConnected || module.isConnecting))) {
+          module.isEnabled &&
+          (module.isConnected ||
+              module.isConnecting ||
+              module.isSearching))) {
         module.bleDisconnect();
       }
     }
@@ -2074,6 +2530,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
     return '1 goal/$_noShowPenaltyGoalIntervalSeconds sec';
   }
+
   String get noShowPenaltyScoringTeamName =>
       _noShowPenaltyScoringTeam?.name ?? '';
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;
@@ -2135,10 +2592,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   GamePreset createPreset(String name) {
     final configs = teams
         .expand((t) => t.modules)
-        .where((m) => m.macAddress.isNotEmpty)
+        // #82: a slot still waiting for its iOS UUID has only a hardware MAC —
+        // it belongs in the preset too.
+        .where((m) => m.macAddress.isNotEmpty || m.hardwareMac.isNotEmpty)
         .map((m) => ModuleConfig(
               moduleId: m.moduleId,
               macAddress: m.macAddress,
+              hardwareMac: m.hardwareMac,
               label: m.hasCustomLabel ? m.name : '',
             ))
         .toList();
@@ -2151,7 +2611,26 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           .expand((t) => t.modules)
           .where((m) => m.moduleId == config.moduleId)
           .firstOrNull;
-      module?.applyPresetConfig(config.macAddress, config.label);
+      if (module == null) continue;
+      if (useIosBleUuid && config.hardwareMac.isNotEmpty) {
+        // #82: the preset's stored connection id is this phone's best-known
+        // UUID for the MAC — seed the cache with it, then pair through the
+        // resolver (a stale UUID falls back to the scan via bleConnect's
+        // Peripheral-not-found handler).
+        final macUpper = config.hardwareMac.toUpperCase();
+        if (config.macAddress.isNotEmpty &&
+            _iosMacUuidCache[macUpper] != config.macAddress) {
+          // Last writer wins — the preset was saved from a live pairing, so
+          // it is at least as fresh as whatever the cache holds; a stale seed
+          // self-heals via the Peripheral-not-found fallback.
+          _iosMacUuidCache[macUpper] = config.macAddress;
+          _persistIosMacUuidCache();
+        }
+        _pairIosModuleByMac(module, macUpper, label: config.label);
+      } else {
+        module.applyPresetConfig(config.macAddress, config.label,
+            hardwareMac: config.hardwareMac);
+      }
     }
     notifyListeners();
   }

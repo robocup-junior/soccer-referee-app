@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'package:rcj_scoreboard/utils/ble_address.dart';
 
 class BarcodeScannerSimple extends StatefulWidget {
   const BarcodeScannerSimple({super.key});
@@ -16,20 +17,9 @@ class _BarcodeScannerSimpleState extends State<BarcodeScannerSimple> {
     if (macAddress == null) {
       return false;
     }
-
-    // Check if the length is exactly 17 characters
-    if (macAddress.length != 17) {
-      return false;
-    }
-
-    // Define the regular expression pattern for a MAC address
-    final RegExp macAddressRegExp = RegExp(
-      r'^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$',
-      caseSensitive: true,
-    );
-
-    // Check if the input string matches the MAC address pattern
-    return macAddressRegExp.hasMatch(macAddress);
+    // Single source of truth for the MAC shape (#82): the same strict
+    // colon-separated pattern the identity split keys on (ble_address.dart).
+    return isMacFormat(macAddress);
   }
 
   Widget _buildBarcode(Barcode? value) {

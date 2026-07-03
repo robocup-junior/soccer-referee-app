@@ -8,18 +8,130 @@
 // delays) by either not starting the clock or cancelling/draining it before the
 // test returns.
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'helpers/mqtt_guard.dart';
+
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/screens/home.dart';
+import 'package:rcj_scoreboard/services/ble_bridge_service.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
+import 'package:rcj_scoreboard/services/mqtt.dart';
+
+class _RecordingMqttService extends MqttService {
+  _RecordingMqttService(
+    this.log, {
+    this.enabled = true,
+    this.throwOnConnect = false,
+    MqttConnectionStateEx initialState = MqttConnectionStateEx.connected,
+  }) {
+    connectionStateNotifier.value = initialState;
+  }
+
+  final List<String> log;
+  final bool enabled;
+  final bool throwOnConnect;
+  String _topic = '';
+  int connectCalls = 0;
+  int disconnectCalls = 0;
+
+  @override
+  bool get isEnabled => enabled;
+
+  @override
+  bool get isConnected =>
+      connectionStateNotifier.value == MqttConnectionStateEx.connected;
+
+  @override
+  String get topic => _topic;
+
+  @override
+  String get fieldNumber => _topic.replaceFirst('field_', '');
+
+  @override
+  set topic(String value) {
+    if (value.isNotEmpty) _topic = value;
+  }
+
+  @override
+  set topicField(String value) {
+    topic = 'field_$value';
+  }
+
+  @override
+  Future<bool> connect() async {
+    connectCalls++;
+    log.add('mqtt:connect');
+    if (throwOnConnect) {
+      throw Exception('broker exploded');
+    }
+    connectionStateNotifier.value = MqttConnectionStateEx.connected;
+    return true;
+  }
+
+  @override
+  void publishGameState(MatchStage state) {
+    log.add('mqtt:publishGameState:${state.name}');
+  }
+
+  @override
+  void publishTime(int remainingTime) {
+    log.add('mqtt:publishTime:$remainingTime');
+  }
+
+  @override
+  void disconnect() {
+    disconnectCalls++;
+    log.add('mqtt:disconnect');
+    connectionStateNotifier.value = MqttConnectionStateEx.disconnected;
+  }
+}
+
+class _RecordingBleBridgeService extends BleBridgeService {
+  _RecordingBleBridgeService(this.log);
+
+  final List<String> log;
+  int connectCalls = 0;
+  int disconnectAfterDrainCalls = 0;
+
+  @override
+  Future<void> connect() async {
+    connectCalls++;
+    log.add('bridge:connect');
+    connectionStateNotifier.value = BridgeConnectionState.connected;
+  }
+
+  // When set, disconnectAfterDrain blocks on it — lets a test hold the
+  // teardown "mid-drain" and race a REPEAT/Load against it.
+  Completer<void>? drainGate;
+
+  @override
+  Future<void> disconnectAfterDrain({
+    Duration timeout = const Duration(seconds: 3),
+    bool Function()? shouldAbort,
+  }) async {
+    disconnectAfterDrainCalls++;
+    log.add('bridge:disconnectAfterDrain');
+    final gate = drainGate;
+    if (gate != null) {
+      await gate.future;
+    }
+    // Mirror the real service: a caller-side abort keeps the link.
+    if (shouldAbort?.call() ?? false) {
+      log.add('bridge:drainAborted');
+      return;
+    }
+    connectionStateNotifier.value = BridgeConnectionState.disconnected;
+  }
+}
 
 ModuleSnapshot _moduleSnap({
   required int id,
@@ -48,13 +160,14 @@ Map<String, dynamic> _scoreboardConfig({
   int durationSeconds = 600,
   String homeTeamName = 'Home',
   String awayTeamName = 'Away',
+  String venue = 'Field 1',
 }) =>
     {
       'match_code': matchCode,
       'home_team': homeTeamName,
       'away_team': awayTeamName,
       'home_is_left': homeIsLeft,
-      'venue': 'Field 1',
+      'venue': venue,
       'scheduled_start': null,
       'duration_seconds': durationSeconds,
       'timezone': 'Europe/Prague',
@@ -154,6 +267,7 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     prefs = await SharedPreferences.getInstance();
     await prefs.clear();
+    await seedMqttDisabledForGameTests();
   });
 
   Future<void> persist(MatchSnapshot snapshot) async {
@@ -373,6 +487,139 @@ void main() {
       expect(find.text('cleared'), findsOneWidget); // robot 1 ok
       expect(find.text('failed'), findsOneWidget); // robot 2 failed
       expect(find.textContaining('battery low'), findsOneWidget);
+      game.dispose();
+    });
+  });
+
+  group('actual module report captured at submit (#85)', () {
+    // Applies a referee fixture live, sets up each team's slots (enable/disable +
+    // mac) WITHOUT a real bleConnect (unsupported headless), then submits and
+    // inspects the queued outbox item. connected is false throughout — the live
+    // BLE link can't be stood up in the test VM, so connected:true is covered by
+    // the on-device scenario; here we prove slot selection, numbering, mac
+    // normalisation and side mapping by team id.
+    Future<Game> refereeGame(WidgetTester tester,
+        {required bool homeIsLeft, String code = 'M-MOD'}) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(_scoreboardConfig(
+            matchCode: code, version: 1, homeIsLeft: homeIsLeft)),
+        token: 'test-token',
+      );
+      await tester.pump();
+      return game;
+    }
+
+    Team teamById(Game game, String id) =>
+        game.teams.firstWhere((t) => t.id == id);
+
+    // Enable exactly [macs].length slots with the given (possibly empty) macs;
+    // disable the rest so they must be omitted from the report.
+    void fieldSlots(Team team, List<String> macs) {
+      for (var i = 0; i < team.modules.length; i++) {
+        if (i < macs.length) {
+          team.modules[i].enable();
+          team.modules[i].macAddress = macs[i];
+        } else {
+          team.modules[i].disable();
+        }
+      }
+    }
+
+    testWidgets('home list = home-side team modules; disabled slots omitted',
+        (tester) async {
+      final game = await refereeGame(tester, homeIsLeft: true);
+      // homeIsLeft:true -> team A is home.
+      fieldSlots(teamById(game, 'A'), ['aa:bb:cc:dd:ee:01', '']);
+      fieldSlots(teamById(game, 'B'), ['bb:bb:cc:dd:ee:02']);
+
+      final item = await submitCurrentReview(tester, game, 'M-MOD');
+
+      expect(item.actualHomeModules, const [
+        ActualModuleReport(
+            robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: false),
+        ActualModuleReport(robot: 2, mac: '', connected: false),
+      ]);
+      expect(item.actualAwayModules, const [
+        ActualModuleReport(
+            robot: 1, mac: 'BB:BB:CC:DD:EE:02', connected: false),
+      ]);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('a home/away swap (homeIsLeft:false) keeps sides by team id',
+        (tester) async {
+      final game =
+          await refereeGame(tester, homeIsLeft: false, code: 'M-MSWAP');
+      // homeIsLeft:false -> team B is home, so team B's modules are the home list.
+      fieldSlots(teamById(game, 'B'), ['bb:bb:cc:dd:ee:01']);
+      fieldSlots(teamById(game, 'A'), ['aa:aa:cc:dd:ee:02']);
+
+      final item = await submitCurrentReview(tester, game, 'M-MSWAP');
+
+      expect(item.actualHomeModules, const [
+        ActualModuleReport(
+            robot: 1, mac: 'BB:BB:CC:DD:EE:01', connected: false),
+      ]);
+      expect(item.actualAwayModules, const [
+        ActualModuleReport(
+            robot: 1, mac: 'AA:AA:CC:DD:EE:02', connected: false),
+      ]);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('a mid-match module replacement reports the NEW mac',
+        (tester) async {
+      final game = await refereeGame(tester, homeIsLeft: true, code: 'M-MREP');
+      final teamA = teamById(game, 'A');
+      fieldSlots(teamA, ['aa:bb:cc:dd:ee:01']);
+      fieldSlots(teamById(game, 'B'), ['bb:bb:cc:dd:ee:02']);
+
+      // Referee swaps in a spare mid-match: slot 1's mac changes.
+      teamA.modules[0].macAddress = 'aa:bb:cc:dd:ee:99';
+
+      final item = await submitCurrentReview(tester, game, 'M-MREP');
+
+      expect(item.actualHomeModules.single.mac, 'AA:BB:CC:DD:EE:99');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets(
+        'the report prefers hardwareMac and never leaks an iOS UUID (#82)',
+        (tester) async {
+      final game = await refereeGame(tester, homeIsLeft: true, code: 'M-M82');
+      final teamA = teamById(game, 'A');
+      final teamB = teamById(game, 'B');
+      fieldSlots(teamA, ['', '']);
+      fieldSlots(teamB, ['']);
+
+      // iOS-style slot: connection id is a CoreBluetooth UUID, the hardware
+      // MAC was recovered from the QR / advertised name.
+      teamA.modules[0].macAddress = '12345678-1234-1234-1234-1234567890ab';
+      teamA.modules[0].hardwareMac = 'AA:BB:CC:DD:EE:10';
+      // iOS-style slot whose MAC was never learned: reports '' — an
+      // unreportable per-phone UUID must never reach the server.
+      teamA.modules[1].macAddress = '87654321-4321-4321-4321-BA0987654321';
+      // Pre-split Android-style slot: MAC-shaped connection id only.
+      teamB.modules[0].macAddress = 'bb:bb:cc:dd:ee:02';
+
+      final item = await submitCurrentReview(tester, game, 'M-M82');
+
+      expect(item.actualHomeModules, const [
+        ActualModuleReport(
+            robot: 1, mac: 'AA:BB:CC:DD:EE:10', connected: false),
+        ActualModuleReport(robot: 2, mac: '', connected: false),
+      ]);
+      expect(item.actualAwayModules.single.mac, 'BB:BB:CC:DD:EE:02');
+
+      await tester.pump(const Duration(milliseconds: 1500));
       game.dispose();
     });
   });
@@ -1999,6 +2246,729 @@ void main() {
       expect(game.scoreboardResultService.submittedCount, 1);
 
       await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+  });
+
+  group('end match early (#84)', () {
+    Future<Game> loadScoreboardFixture(
+      WidgetTester tester, {
+      String matchCode = 'M-84',
+      int version = 1,
+    }) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: matchCode, version: version),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      return game;
+    }
+
+    testWidgets('gate: manual match is not eligible and no-ops',
+        (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+
+      expect(game.canEndMatchEarly, isFalse);
+      game.endMatchEarly();
+
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.inGame, isFalse);
+      game.dispose();
+    });
+
+    testWidgets('gate: empty match code is not eligible and no-ops',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester, matchCode: '');
+
+      expect(game.canEndMatchEarly, isFalse);
+      game.endMatchEarly();
+
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.inGame, isFalse);
+      game.dispose();
+    });
+
+    testWidgets('before kickoff persists a full-time review snapshot',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
+      expect(game.canEndMatchEarly, isTrue);
+      game.endMatchEarly();
+
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.inGame, isTrue);
+      expect(game.remainingTime, 0);
+      expect(game.timerButtonText, 'REPEAT');
+      expect(game.needsScoreboardResultReview, isTrue);
+      expect(reviewRequests, 1);
+
+      final saved = await waitForSavedSnapshot(
+        tester,
+        (snapshot) => snapshot.stage == 'fullTime' && snapshot.inGame,
+      );
+      expect(saved.isRefereeMatch, isTrue);
+      expect(saved.scoreboardMatchCode, 'M-84');
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('mid first half stops the running clock and arms review',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      game.teams[0].score = 1;
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 2));
+      expect(game.isTimeRunning, isTrue);
+
+      game.endMatchEarly();
+
+      expect(game.isTimeRunning, isFalse);
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.remainingTime, 0);
+      expect(game.needsScoreboardResultReview, isTrue);
+      expect(reviewRequests, 1);
+      expect(game.teams[0].score, 1);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('half-time break running is cancelled cleanly', (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      // Mirror the real firstHalf->halfTime transition state: break countdown
+      // on the clock and the SKIP affordance, not first-half leftovers.
+      game.currentStage = MatchStage.halfTime;
+      game.setRemainingTime(game.halfTimeDuration);
+      game.timerButtonText = 'SKIP';
+      game.startTimer();
+      await tester.pump();
+
+      game.endMatchEarly();
+
+      expect(game.isTimeRunning, isFalse);
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.remainingTime, 0);
+      expect(game.timerButtonText, 'REPEAT');
+      expect(game.needsScoreboardResultReview, isTrue);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('idempotent after full time', (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
+      game.endMatchEarly();
+      final stage = game.currentStage;
+      final inGame = game.inGame;
+      final timerButtonText = game.timerButtonText;
+      final scoreA = game.teams[0].score;
+      final scoreB = game.teams[1].score;
+
+      expect(game.canEndMatchEarly, isFalse);
+      game.endMatchEarly();
+
+      expect(game.currentStage, stage);
+      expect(game.inGame, inGame);
+      expect(game.timerButtonText, timerButtonText);
+      expect(game.teams[0].score, scoreA);
+      expect(game.teams[1].score, scoreB);
+      expect(reviewRequests, 1);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('unresolved same-fixture result hides early end and no-ops',
+        (tester) async {
+      // A still-in-flight prior result for this fixture would make
+      // _enterFullTimeResultReview refuse to arm the review, so ending early
+      // would strand the referee at full time with no result editor. The
+      // gate must hide the affordance instead.
+      await _seedOutbox(prefs, [
+        _outboxItem(
+          matchCode: 'M-84',
+          state: ResultSubmissionState.pending,
+        ),
+      ]);
+      final game = await loadScoreboardFixture(tester);
+      var reviewRequests = 0;
+      game.onRequestReviewScoreboardResult = () {
+        reviewRequests++;
+      };
+
+      expect(game.canEndMatchEarly, isFalse);
+      game.endMatchEarly();
+
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.inGame, isFalse);
+      expect(reviewRequests, 0);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('gate: fixture without a token is not eligible and no-ops',
+        (tester) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-84', version: 1),
+        ),
+      );
+      await tester.pump();
+
+      expect(game.canEndMatchEarly, isFalse);
+      game.endMatchEarly();
+
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.inGame, isFalse);
+      game.dispose();
+    });
+
+    testWidgets('second half ends early like the natural transition',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      game.teams[1].score = 2;
+      game.currentStage = MatchStage.secondHalf;
+      game.startTimer();
+      await tester.pump(const Duration(seconds: 1));
+
+      game.endMatchEarly();
+
+      expect(game.isTimeRunning, isFalse);
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.remainingTime, 0);
+      expect(game.timerButtonText, 'REPEAT');
+      expect(game.needsScoreboardResultReview, isTrue);
+      expect(game.teams[1].score, 2);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('half-time early end force-stops break-parked modules',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      game.currentStage = MatchStage.halfTime;
+      // Park an enabled module in the break state exactly as halfTimeAll
+      // does at the firstHalf->halfTime transition.
+      final module = game.teams[0].modules[0];
+      module.enable();
+      module.halfTime();
+      expect(module.lastState, ModuleState.halfTime);
+
+      game.endMatchEarly();
+
+      // The forced dispatch must not re-enter halfTime() (an unforced
+      // Module.stopAll switches on _lastState == halfTime and would send a
+      // fresh break countdown); force lands the module on STOP synchronously.
+      expect(module.lastState, ModuleState.stop);
+      expect(game.currentStage, MatchStage.fullTime);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('no-show mode is reset when ended early', (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      game.startNoShowPenaltyGoals(game.teams[0]);
+      expect(game.noShowPenaltyGoalsActive, isTrue);
+
+      game.endMatchEarly();
+
+      expect(game.noShowPenaltyGoalsActive, isFalse);
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(game.isTimeRunning, isFalse);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('submit after early end queues the normal result',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+
+      game.endMatchEarly();
+      final result = await submitCurrentReview(tester, game, 'M-84');
+
+      expect(result.matchCode, 'M-84');
+      expect(result.homeGoals, 0);
+      expect(result.awayGoals, 0);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+
+    testWidgets('REPEAT after early end starts a fresh match', (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      game.teams[0].score = 2;
+
+      game.endMatchEarly();
+      game.toggleTimer();
+
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(game.teams[0].score, 0);
+      expect(game.teams[1].score, 0);
+      expect(game.inGame, isFalse);
+
+      await tester.pump(const Duration(milliseconds: 1500));
+      game.dispose();
+    });
+  });
+
+  group('transport teardown at full time (#87)', () {
+    Future<Game> loadScoreboardFixture(
+      WidgetTester tester, {
+      String matchCode = 'M-87',
+      int version = 1,
+    }) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: matchCode, version: version),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      return game;
+    }
+
+    Future<void> pumpPastTransportTeardownDelay(WidgetTester tester) async {
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump();
+    }
+
+    testWidgets(
+        'tears down connected bridge and MQTT after the final full-time publish',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      final mqtt = _RecordingMqttService(log);
+      final bridge = _RecordingBleBridgeService(log);
+      bridge.connectionStateNotifier.value = BridgeConnectionState.connected;
+      game.mqttService = mqtt;
+      game.bleBridgeService = bridge;
+
+      game.endMatchEarly();
+      expect(game.currentStage, MatchStage.fullTime);
+
+      await pumpPastTransportTeardownDelay(tester);
+
+      expect(bridge.disconnectAfterDrainCalls, 1);
+      expect(mqtt.disconnectCalls, 1);
+      final publishIndex = log.indexOf('mqtt:publishGameState:fullTime');
+      final disconnectIndex = log.indexOf('mqtt:disconnect');
+      expect(publishIndex, isNonNegative);
+      expect(disconnectIndex, isNonNegative);
+      expect(publishIndex, lessThan(disconnectIndex));
+
+      game.dispose();
+    });
+
+    testWidgets('never-connected transports are no-ops at full time',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      final bridge = _RecordingBleBridgeService(log);
+      bridge.connectionStateNotifier.value = BridgeConnectionState.disconnected;
+      final mqtt = MqttService();
+      await mqtt.loadPreferences();
+      expect(
+        mqtt.connectionStateNotifier.value,
+        MqttConnectionStateEx.disconnected,
+      );
+      game.bleBridgeService = bridge;
+      game.mqttService = mqtt;
+
+      game.endMatchEarly();
+      await pumpPastTransportTeardownDelay(tester);
+
+      expect(bridge.disconnectAfterDrainCalls, 0);
+      expect(
+        mqtt.connectionStateNotifier.value,
+        MqttConnectionStateEx.disconnected,
+      );
+
+      game.dispose();
+    });
+
+    testWidgets('REPEAT before the teardown delay cancels stale disconnects',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      final mqtt = _RecordingMqttService(log);
+      final bridge = _RecordingBleBridgeService(log);
+      bridge.connectionStateNotifier.value = BridgeConnectionState.connected;
+      game.mqttService = mqtt;
+      game.bleBridgeService = bridge;
+
+      game.endMatchEarly();
+      expect(game.currentStage, MatchStage.fullTime);
+      game.toggleTimer();
+      expect(game.currentStage, MatchStage.firstHalf);
+
+      await pumpPastTransportTeardownDelay(tester);
+
+      expect(bridge.disconnectAfterDrainCalls, 0);
+      expect(mqtt.disconnectCalls, 0);
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'REPEAT does not reconnect transports and allows the next teardown',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      final mqtt = _RecordingMqttService(log);
+      final bridge = _RecordingBleBridgeService(log);
+      bridge.connectionStateNotifier.value = BridgeConnectionState.connected;
+      game.mqttService = mqtt;
+      game.bleBridgeService = bridge;
+
+      game.endMatchEarly();
+      await pumpPastTransportTeardownDelay(tester);
+      expect(bridge.disconnectAfterDrainCalls, 1);
+      expect(mqtt.disconnectCalls, 1);
+
+      game.toggleTimer();
+      expect(game.currentStage, MatchStage.firstHalf);
+      expect(bridge.connectCalls, 0);
+      expect(mqtt.connectCalls, 0);
+      expect(
+        bridge.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
+      expect(
+        mqtt.connectionStateNotifier.value,
+        MqttConnectionStateEx.disconnected,
+      );
+
+      bridge.connectionStateNotifier.value = BridgeConnectionState.connected;
+      mqtt.connectionStateNotifier.value = MqttConnectionStateEx.connected;
+
+      game.endMatchEarly();
+      await pumpPastTransportTeardownDelay(tester);
+
+      expect(bridge.disconnectAfterDrainCalls, 2);
+      expect(mqtt.disconnectCalls, 2);
+      expect(bridge.connectCalls, 0);
+      expect(mqtt.connectCalls, 0);
+
+      game.dispose();
+    });
+
+    testWidgets('REPEAT mid-drain does not disconnect the new match MQTT',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      final mqtt = _RecordingMqttService(log);
+      final bridge = _RecordingBleBridgeService(log);
+      bridge.connectionStateNotifier.value = BridgeConnectionState.connected;
+      bridge.drainGate = Completer<void>();
+      game.mqttService = mqtt;
+      game.bleBridgeService = bridge;
+
+      game.endMatchEarly();
+      // Past the 1 s delay: the teardown is now blocked inside the bridge
+      // drain (the longest real window — up to 3 s when a bridge is live).
+      await pumpPastTransportTeardownDelay(tester);
+      expect(bridge.disconnectAfterDrainCalls, 1);
+      expect(mqtt.disconnectCalls, 0);
+
+      // REPEAT lands mid-drain: a new match starts (gameInit re-arms the
+      // teardown epoch), then the drain finally completes.
+      game.toggleTimer();
+      expect(game.currentStage, MatchStage.firstHalf);
+      bridge.drainGate!.complete();
+      await tester.pump();
+      await tester.pump();
+
+      // The stale teardown must keep the bridge (drain aborts) and must not
+      // touch the new match's MQTT session.
+      expect(
+        bridge.connectionStateNotifier.value,
+        BridgeConnectionState.connected,
+      );
+      expect(log, contains('bridge:drainAborted'));
+      expect(mqtt.disconnectCalls, 0);
+
+      game.dispose();
+    });
+
+    testWidgets(
+        'a still-connecting bridge is disconnected without burning the drain',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      final mqtt = _RecordingMqttService(log);
+      final bridge = _RecordingBleBridgeService(log);
+      bridge.connectionStateNotifier.value = BridgeConnectionState.connecting;
+      game.mqttService = mqtt;
+      game.bleBridgeService = bridge;
+
+      game.endMatchEarly();
+      await pumpPastTransportTeardownDelay(tester);
+
+      // A connecting bridge cannot drain its queue (sends require a live
+      // link), so the teardown must take the plain-disconnect path instead of
+      // pinning itself at the drain timeout.
+      expect(bridge.disconnectAfterDrainCalls, 0);
+      expect(
+        bridge.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
+      expect(mqtt.disconnectCalls, 1);
+
+      game.dispose();
+    });
+  });
+
+  group('mqtt auto-connect on match load (#88)', () {
+    Future<Game> gameWithRecordingMqtt(
+      WidgetTester tester, {
+      bool enabled = true,
+      bool throwOnConnect = false,
+      MqttConnectionStateEx initialState = MqttConnectionStateEx.disconnected,
+    }) async {
+      final game = Game();
+      await settleLoad(tester);
+      game.mqttService = _RecordingMqttService(
+        <String>[],
+        enabled: enabled,
+        throwOnConnect: throwOnConnect,
+        initialState: initialState,
+      );
+      return game;
+    }
+
+    void applyConfig(
+      Game game, {
+      String matchCode = 'M-88',
+      int version = 1,
+      String venue = 'Field 1',
+    }) {
+      game.scoreboardResultService.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(
+              matchCode: matchCode, version: version, venue: venue),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+    }
+
+    Future<void> pumpPastTransportTeardownDelay(WidgetTester tester) async {
+      await tester.pump(const Duration(seconds: 1));
+      await tester.pump();
+    }
+
+    testWidgets('enabled disconnected MQTT connects on fresh fixture apply',
+        (tester) async {
+      final game = await gameWithRecordingMqtt(tester);
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      applyConfig(game);
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 1);
+      game.dispose();
+    });
+
+    testWidgets('successful auto-connect rebroadcasts the loaded match state',
+        (tester) async {
+      final game = await gameWithRecordingMqtt(tester);
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      applyConfig(game);
+      await tester.pump();
+
+      // The load path's gameInit() broadcasts ran while MQTT was still
+      // disconnected (dropped), so the hook must rebroadcast after the
+      // connect succeeds — otherwise the new field_N keeps the previous
+      // match's retained data until the first in-match event.
+      final connectIndex = mqtt.log.indexOf('mqtt:connect');
+      final stateIndex =
+          mqtt.log.lastIndexOf('mqtt:publishGameState:firstHalf');
+      expect(connectIndex, isNonNegative);
+      expect(stateIndex, isNonNegative);
+      expect(stateIndex, greaterThan(connectIndex));
+
+      game.dispose();
+    });
+
+    testWidgets('deduped same fixture does not connect again', (tester) async {
+      final game = await gameWithRecordingMqtt(tester);
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      applyConfig(game);
+      await tester.pump();
+      applyConfig(game);
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 1);
+      game.dispose();
+    });
+
+    testWidgets(
+        'a no-digit venue with no configured field does not auto-connect',
+        (tester) async {
+      // Review #94: with an empty topic the rebroadcast would land RETAINED
+      // state on the venue-shared rcj_soccer/* base namespace ("Center
+      // Court" is a supported no-digit venue, #50).
+      final game = await gameWithRecordingMqtt(tester);
+      final mqtt = game.mqttService as _RecordingMqttService;
+      expect(mqtt.topic, isEmpty);
+
+      applyConfig(game, venue: 'Center Court');
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 0);
+      game.dispose();
+    });
+
+    testWidgets(
+        'a no-digit venue still auto-connects when a field is configured',
+        (tester) async {
+      final game = await gameWithRecordingMqtt(tester);
+      final mqtt = game.mqttService as _RecordingMqttService;
+      mqtt.topicField = '3';
+
+      applyConfig(game, venue: 'Center Court');
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 1);
+      game.dispose();
+    });
+
+    testWidgets('disabled MQTT is not auto-connected', (tester) async {
+      final game = await gameWithRecordingMqtt(tester, enabled: false);
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      applyConfig(game);
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 0);
+      game.dispose();
+    });
+
+    testWidgets(
+        'auto-connect proceeds and rebroadcasts while the state reads '
+        'connecting', (tester) async {
+      // The bounded reconnect loop pins the public state at `connecting`
+      // almost continuously during a broker blip; a load in that window must
+      // still get its serialized connect + rebroadcast, or the new fixture's
+      // retained topics keep the previous match's data.
+      final game = await gameWithRecordingMqtt(
+        tester,
+        initialState: MqttConnectionStateEx.connecting,
+      );
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      applyConfig(game);
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 1);
+      final connectIndex = mqtt.log.indexOf('mqtt:connect');
+      final stateIndex =
+          mqtt.log.lastIndexOf('mqtt:publishGameState:firstHalf');
+      expect(stateIndex, greaterThan(connectIndex));
+      game.dispose();
+    });
+
+    testWidgets('a throwing connect does not crash the load path',
+        (tester) async {
+      final game = await gameWithRecordingMqtt(tester, throwOnConnect: true);
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      // An exception escaping the fire-and-forget hook would surface as an
+      // uncaught async error and fail this test via the widget binding.
+      applyConfig(game);
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 1);
+      expect(game.currentStage, MatchStage.firstHalf);
+      game.dispose();
+    });
+
+    testWidgets(
+        'same-fixture full-time version bump after teardown does not reconnect',
+        (tester) async {
+      final game = await gameWithRecordingMqtt(tester);
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      applyConfig(game);
+      await tester.pump();
+      expect(mqtt.connectCalls, 1);
+
+      game.endMatchEarly();
+      await pumpPastTransportTeardownDelay(tester);
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(
+        mqtt.connectionStateNotifier.value,
+        MqttConnectionStateEx.disconnected,
+      );
+
+      applyConfig(game, version: 2);
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 1);
+      game.dispose();
+    });
+
+    testWidgets('confirmed new-fixture Load at full time reconnects',
+        (tester) async {
+      final game = await gameWithRecordingMqtt(tester);
+      final mqtt = game.mqttService as _RecordingMqttService;
+
+      applyConfig(game, matchCode: 'M-88-A');
+      await tester.pump();
+      expect(mqtt.connectCalls, 1);
+
+      game.endMatchEarly();
+      await pumpPastTransportTeardownDelay(tester);
+      expect(game.currentStage, MatchStage.fullTime);
+      expect(
+        mqtt.connectionStateNotifier.value,
+        MqttConnectionStateEx.disconnected,
+      );
+
+      game.scoreboardResultService.debugApplyPendingMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+          _scoreboardConfig(matchCode: 'M-88-B', version: 1),
+        ),
+        token: 'test-token',
+        baseUri: Uri.parse('http://127.0.0.1:9'),
+      );
+      await tester.pump();
+      await game.confirmScoreboardMatch();
+      await tester.pump();
+
+      expect(mqtt.connectCalls, 2);
       game.dispose();
     });
   });

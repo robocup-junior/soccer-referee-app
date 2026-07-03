@@ -35,6 +35,11 @@ MATCH = {
     "timezone": "UTC",
     "version": 1,
     "status": "SCHEDULED",
+    # Per-robot comm-module MACs (rcj-scoreboard #70 / app #85 read path). Ordered
+    # by robot number; the app auto-pairs these onto each side's module slots, so
+    # the result POST's actual_modules can be diffed against them after a swap.
+    "home_module_macs": ["AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:02"],
+    "away_module_macs": ["AA:BB:CC:DD:EE:03", "AA:BB:CC:DD:EE:04"],
     # Per-robot inspection (rcj-scoreboard #116 / app #78). Mix of every badge
     # case: ok, failed+note, missing, ok+note. Team-level keys kept for compat.
     "home_inspection_status": "ok",
@@ -131,6 +136,13 @@ class H(BaseHTTPRequestHandler):
         if not _auth_ok(self):
             return self._send(401, {"reason": "invalid_token"})
 
+        # Surface the #85 actual-modules report on its own line so device-test
+        # evidence is a single grep. Absent on pre-#85 / non-referee submissions.
+        actual_modules = payload.get("actual_modules")
+        if actual_modules is not None:
+            print("[mock] actual_modules=%s" % json.dumps(actual_modules),
+                  flush=True)
+
         idem = payload.get("idempotency_key")
         if idem and idem in SEEN_IDEMPOTENCY:
             print("[mock] idempotent replay for %s" % idem, flush=True)
@@ -151,6 +163,7 @@ class H(BaseHTTPRequestHandler):
             "home_goals": payload.get("home_goals"),
             "away_goals": payload.get("away_goals"),
             "comment": payload.get("comment"),
+            "actual_modules": actual_modules,
         }
         if idem:
             SEEN_IDEMPOTENCY[idem] = resp

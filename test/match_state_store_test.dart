@@ -44,6 +44,7 @@ MatchSnapshot _sampleSnapshot({
         moduleId: 0,
         isEnabled: true,
         macAddress: 'AA:BB:CC:DD:EE:FF',
+        hardwareMac: 'AA:BB:CC:DD:EE:FF',
         customLabel: 'R1',
         state: 'damage',
         lastState: 'play',
@@ -87,6 +88,7 @@ void main() {
       final m0 = back.modules[0];
       expect(m0.moduleId, 0);
       expect(m0.macAddress, 'AA:BB:CC:DD:EE:FF');
+      expect(m0.hardwareMac, 'AA:BB:CC:DD:EE:FF');
       expect(m0.customLabel, 'R1');
       expect(m0.state, 'damage');
       expect(m0.lastState, 'play');
@@ -96,6 +98,20 @@ void main() {
       expect(m1.isEnabled, isFalse);
       expect(m1.customLabel, isNull);
       expect(m1.macAddress, '');
+      expect(m1.hardwareMac, '');
+    });
+
+    test(
+        'pre-split module JSON (no hardwareMac key, #82) reads back with an '
+        'empty hardwareMac instead of throwing', () {
+      final json = _sampleSnapshot().toJson();
+      // Simulate a snapshot written before the #82 split.
+      for (final m in json['modules'] as List<dynamic>) {
+        (m as Map<String, dynamic>).remove('hardwareMac');
+      }
+      final back = MatchSnapshot.fromJson(json);
+      expect(back.modules[0].hardwareMac, '');
+      expect(back.modules[0].macAddress, 'AA:BB:CC:DD:EE:FF');
     });
 
     test('round-trips scoreboard referee binding fields', () {
