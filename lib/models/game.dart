@@ -167,6 +167,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   // link at full time can't bind the just-ended match's scores to the new
   // fixture. Cleared on a fresh match (gameInit).
   String? _fullTimeResultSignature;
+  bool _fullTimeTransportTeardownDone = false;
 
   // Callback to request showing the dialog
   void Function()? onRequestSwitchTeamOrderDialog;
@@ -371,6 +372,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _resumedFixtureMatchCode = null;
     _resumedFixtureVersion = null;
     _fullTimeResultSignature = null;
+    _fullTimeTransportTeardownDone = false;
     _resetNoShowPenaltyGoals();
 
     stopTimer();
@@ -890,25 +892,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           _markDirtyFlush();
           break;
         case MatchStage.secondHalf:
-          currentStage = MatchStage.fullTime;
-          _resetNoShowPenaltyGoals();
-          if (!noShowModeActive) {
-            stopAll(true);
-            gameOverAll();
-          }
-          timerButtonText = 'REPEAT';
-          _enterFullTimeResultReview();
-          // The match is over: stop the OS autoConnect from chasing modules
-          // that are powered down for good (e.g. a unit still off from a
-          // late penalty). In-match these reconnect unbounded on purpose; at
-          // full time we settle the ones still off to "Disconnected".
-          disconnectInactiveModules();
-          // #82: defensive re-arm for the next load. Pending is already
-          // empty here — kickoff's stopForMatch settled every enrolled slot
-          // and post-kickoff enrollments give up synchronously — so this
-          // only resets the stopped-for-match flag ahead of gameInit.
-          iosMacResolver.reset();
-          _persistOrClearAtFullTime();
+          _completeMatchToFullTime();
           break;
         default:
           debugPrint('unknown match stage');
@@ -924,6 +908,128 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
 
     notifyListeners();
+  }
+
+  /// The one true *->fullTime transition. Runs the full set of full-time
+  /// side-effects: stage flip, no-show reset, robot stop + game-over (skipped
+  /// when no-show mode owned the robots), REPEAT affordance, result review
+  /// arming (RAVF003 snapshot + unresolved-result gate), module teardown, and
+  /// snapshot persist-or-clear. Called from the natural second-half tick
+  /// expiry and from endMatchEarly() (#84) — never build a bespoke shortcut
+  /// around it. [forceStop] is for ending early out of the half-time break:
+  /// modules parked there have _lastState == halfTime, which an unforced
+  /// Module.stopAll re-dispatches to halfTime() (a fresh break countdown)
+  /// instead of STOP — the same reason the halfTime->secondHalf paths use
+  /// stopAll(true, force: true). The natural second-half expiry keeps the
+  /// unforced call it always had. Callers own _broadcastStageAndTime() +
+  /// notifyListeners() afterwards (the natural tick does both once at the end
+  /// of _tickTimer, shared with the other stage transitions).
+  void _completeMatchToFullTime({bool forceStop = false}) {
+    // Captured before _resetNoShowPenaltyGoals() below clears the flag; when
+    // no-show mode owned the robots they were never started, so the stop +
+    // game-over fan-out is skipped exactly as the pre-#84 tick block did.
+    final noShowModeActive = _noShowPenaltyGoalsActive;
+    currentStage = MatchStage.fullTime;
+    _resetNoShowPenaltyGoals();
+    if (!noShowModeActive) {
+      stopAll(true, force: forceStop);
+      gameOverAll();
+    }
+    timerButtonText = 'REPEAT';
+    _enterFullTimeResultReview();
+    // The match is over: stop the OS autoConnect from chasing modules
+    // that are powered down for good (e.g. a unit still off from a
+    // late penalty). In-match these reconnect unbounded on purpose; at
+    // full time we settle the ones still off to "Disconnected".
+    disconnectInactiveModules();
+    // #82: defensive re-arm of the iOS MAC resolver for the next load.
+    // Pending is already empty here — kickoff's stopForMatch settled every
+    // enrolled slot and post-kickoff enrollments give up synchronously — so
+    // this only resets the stopped-for-match flag ahead of gameInit.
+    iosMacResolver.reset();
+    _persistOrClearAtFullTime();
+    unawaited(_teardownFieldTransportsAtFullTime());
+  }
+
+  // Release the field infrastructure at full time (#87): referees rotate
+  // phones per field, and the bridge accepts a single central — while the old
+  // phone holds it (or the MQTT session), the next phone can't take over.
+  // Launched unawaited from _completeMatchToFullTime so both the natural
+  // second-half expiry and endMatchEarly() (#84) inherit it, and nothing on
+  // the robot STOP path waits on it (invariant #1). The 1 s delay + stage
+  // re-check mirror gameOverAll(): the callers' synchronous final
+  // _broadcastStageAndTime() runs before the first await resumes, so the
+  // final "Game Over" publish always precedes the MQTT disconnect, and a
+  // REPEAT during the delay aborts the teardown. One-shot per match
+  // (re-armed by gameInit) so a second entry into the full-time block no-ops.
+  Future<void> _teardownFieldTransportsAtFullTime() async {
+    if (_fullTimeTransportTeardownDone) return;
+    _fullTimeTransportTeardownDone = true;
+    await Future<void>.delayed(const Duration(seconds: 1));
+    if (currentStage != MatchStage.fullTime) return;
+
+    // Tear down a connected OR still-connecting bridge link — the same
+    // stop-chasing-a-powered-down-unit policy disconnectInactiveModules()
+    // applies to robot modules. Only a CONNECTED bridge gets the bounded
+    // drain (it lets the last queued score frame reach the scoreboard before
+    // the link drops); a connecting one cannot drain its queue by definition,
+    // so draining it would only pin the teardown at the full timeout.
+    // The drain can take seconds: if a REPEAT or a confirmed Load starts a
+    // new match meanwhile (gameInit re-arms the teardown flag and moves the
+    // stage off fullTime — and a Load may have just auto-connected MQTT via
+    // #88), a stale disconnect would silently strip the new match's
+    // transports, so the epoch is re-checked inside the drain (via
+    // shouldAbort, protecting the bridge) and once more below (protecting
+    // MQTT).
+    bool staleTeardown() =>
+        !_fullTimeTransportTeardownDone || currentStage != MatchStage.fullTime;
+    final bridgeState = bleBridgeService.connectionStateNotifier.value;
+    if (bridgeState == BridgeConnectionState.connected) {
+      await bleBridgeService.disconnectAfterDrain(shouldAbort: staleTeardown);
+    } else if (bridgeState == BridgeConnectionState.connecting) {
+      await bleBridgeService.disconnect();
+    }
+    if (staleTeardown()) return;
+    mqttService.disconnect();
+  }
+
+  // Load-only reconnect: a same-match full-time refresh must not undo #87's
+  // teardown, but a fresh or confirmed match load should claim the field.
+  void _maybeAutoConnectMqttOnMatchLoad() {
+    if (!mqttService.isEnabled) return;
+    if (mqttService.isConnected) return;
+    // No field topic, no auto-connect (review #94): a fixture whose venue
+    // carries no number (e.g. "Center Court", #50) leaves the topic empty on
+    // a fresh install, and publishCMMessage would then land the rebroadcast's
+    // RETAINED state on the venue-shared rcj_soccer/* base namespace. A
+    // manually configured field (persisted topic) still auto-connects, and
+    // the Settings Connect button is unaffected.
+    if (mqttService.topic.isEmpty) return;
+    // No bail on a `connecting` state: the bounded reconnect loop pins the
+    // state there almost continuously during a broker blip, and a load that
+    // bailed would never rebroadcast — leaving the previous match's retained
+    // topics on the new field. connect() serializes internally, so calling
+    // it while another attempt is in flight just queues this caller.
+    //
+    // Fire-and-forget: a broker outage must not delay match load, and the
+    // Settings status label reports the outcome. On success, rebroadcast the
+    // CURRENT state: the load path's gameInit() broadcasts ran while MQTT was
+    // still disconnected (publishMessage drops them), so without this the new
+    // match's retained topics would keep the previous match's data until the
+    // first in-match event. Broadcasting whatever is live now is always safe,
+    // even if the fixture changed again while connecting.
+    unawaited(mqttService.connect().then((connected) {
+      if (connected) {
+        _broadcastFullState();
+      }
+    }).catchError((Object e) {
+      // The service maps expected failures to its error state; this guard
+      // only keeps an unexpected Exception escape from becoming an uncaught
+      // async error on the fire-and-forget load path. Errors (programming
+      // bugs) still surface — swallowing them here would hide a broken
+      // load-time MQTT behind a debugPrint.
+      debugPrint('MQTT auto-connect failed: $e');
+    }, test: (e) => e is Exception));
   }
 
   // Upper bound on background catch-up ticks: only the window the timer runs
@@ -1575,6 +1681,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // #71: a 25-min scheduling slot is mapped to a 10-min half + 5-min break.
       _applyScoreboardTiming(config);
       gameInit();
+      _maybeAutoConnectMqttOnMatchLoad();
     } else if (isConfirmedNewFixtureLoad) {
       // RAVF002: the referee confirmed the "Load match?" overwrite while a match
       // is in progress or finished. The dialog warns it "replaces the match in
@@ -1604,6 +1711,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // synchronous part (_dirty=false + initiating the tombstone write) runs now;
       // only the disk completion is awaited later, off the robot hot path.
       _confirmedLoadClear = _clearMatchStateAndWait();
+      _maybeAutoConnectMqttOnMatchLoad();
     } else if (reArmedFromSuppression && currentStage == MatchStage.fullTime) {
       // The bound fixture's config only surfaced AFTER this resumed match had
       // already run to full-time while suppressed. Now that the bound fixture's
@@ -1813,6 +1921,59 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       return false;
     }
     return true;
+  }
+
+  /// Whether the "End match now" early-end affordance (#84) applies: a
+  /// deep-link (scoreboard) fixture is loaded and submittable, and the match
+  /// has not already reached full time (also makes endMatchEarly idempotent).
+  /// Manual matches have nothing to confirm/submit, so they never qualify.
+  bool get canEndMatchEarly {
+    if (currentStage == MatchStage.fullTime) return false;
+    final config = scoreboardResultService.matchConfig;
+    if (config == null || config.matchCode.isEmpty) return false;
+    if (!scoreboardResultService.hasToken) return false;
+    // A still-unresolved prior result for this fixture (REPEAT while the first
+    // run's POST is in flight) means _enterFullTimeResultReview would refuse
+    // to arm the review — ending early would strand the referee at full time
+    // with no result editor, breaking the dialog's promise. Hide the button
+    // instead, matching the review suppression at a natural full time.
+    if (scoreboardResultService.hasUnresolvedResultFor(config.matchCode)) {
+      return false;
+    }
+    return _canSubmitScoreboardResult(config);
+  }
+
+  /// End the match NOW (#84: team no-show -> forfeit/contumation win) and jump
+  /// to the result review. Works from any stage, clock running or not, and
+  /// reuses the exact secondHalf->fullTime side-effects so every full-time
+  /// invariant (RAVF003 kill-before-submit snapshot, unresolved-result gate,
+  /// REPEAT behaviour, module teardown) holds. Gated on [canEndMatchEarly], so
+  /// it is a no-op for manual matches and once already at full time.
+  void endMatchEarly() {
+    if (!canEndMatchEarly) return;
+    // Modules parked in the half-time break need the forced STOP dispatch —
+    // decided here, before the transition below moves the stage off halfTime.
+    final endedFromHalfTime = currentStage == MatchStage.halfTime;
+    // Cancels a running half clock OR the half-time break countdown, and
+    // clears the background run-clock anchors so a backgrounded app cannot
+    // catch the ended match up later.
+    stopTimer();
+    // Every natural path reaches fullTime only when the clock hits 0:00, and
+    // Home, the MQTT/bridge sinks, and the persisted RAVF003 snapshot all
+    // surface _remainingTime as-is — an early end must not present "full time
+    // with 10:00 left".
+    _remainingTime = 0;
+    // A match ended administratively "happened" even if the clock never
+    // started (during live play inGame is otherwise only set by startTimer;
+    // the cold-resume restore paths set it too). Required twice
+    // over: Home's return-from-Settings path calls gameInit() when !inGame,
+    // which would wipe the full-time state just set below; and the cold-resume
+    // path only restores a snapshot when snapshot.inGame is true, so the
+    // RAVF003 kill-before-submit review snapshot must record an in-game match.
+    inGame = true;
+    _completeMatchToFullTime(forceStop: endedFromHalfTime);
+    _broadcastStageAndTime();
+    notifyListeners();
   }
 
   bool get needsScoreboardResultReview {

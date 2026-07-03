@@ -14,6 +14,8 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'helpers/mqtt_guard.dart';
+
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'package:rcj_scoreboard/models/team.dart';
@@ -48,6 +50,7 @@ void main() {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
     await prefs.clear();
+    await seedMqttDisabledForGameTests();
   });
 
   // A loaded Game with every slot disabled. applyPresetConfig then sets each
