@@ -736,6 +736,53 @@ void main() {
       expect(service.statusMessage, '✓ Submitted M-SUBMIT');
     });
 
+    test(
+        'a submitted result from a PREVIOUS link issuance does not own a '
+        're-issued run of the same fixture (issue #68 R2-A, found live)',
+        () async {
+      final client = _FakeHttpClient(
+          (_) => http.Response(jsonEncode({'version': 3}), 200));
+      final service = ScoreboardResultService(httpClient: client);
+      service.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _matchJson(matchCode: 'SV3-03', version: 2)),
+        token: 'token-old',
+        baseUri: Uri.parse('http://127.0.0.1:8080'),
+      );
+      expect(await service.enqueueFinalResult(homeGoals: 0, awayGoals: 0),
+          isTrue);
+      await _waitFor(
+        () => service.outbox.single.state == ResultSubmissionState.submitted,
+        reason: 'first run submission did not finish',
+      );
+
+      // SAME token (REPEAT of the same fixture): the delivered result still
+      // owns the run — review stays suppressed and re-enqueue is refused.
+      expect(service.hasUnresolvedResultFor('SV3-03'), isTrue);
+      expect(await service.enqueueFinalResult(homeGoals: 9, awayGoals: 9),
+          isFalse);
+
+      // RE-ISSUED link: same fixture, NEW token (server bumped the version).
+      // The previous run's item is an audit record, not this run's result:
+      // the review gate must open and a fresh submission must be accepted —
+      // without the token scope this phone could never submit SV3-03 again.
+      service.debugApplyMatchConfig(
+        ScoreboardMatchConfig.fromJson(
+            _matchJson(matchCode: 'SV3-03', version: 4)),
+        token: 'token-new',
+        baseUri: Uri.parse('http://127.0.0.1:8080'),
+      );
+      expect(service.hasUnresolvedResultFor('SV3-03'), isFalse);
+      expect(await service.enqueueFinalResult(homeGoals: 2, awayGoals: 1),
+          isTrue);
+      expect(service.outbox.length, 2);
+      await _waitFor(
+        () => service.outbox.every(
+            (item) => item.state == ResultSubmissionState.submitted),
+        reason: 'second run submission did not finish',
+      );
+    });
+
     test('POST body carries actual_modules per team (#85)', () async {
       String? postBody;
       final client = _FakeHttpClient((request) {
