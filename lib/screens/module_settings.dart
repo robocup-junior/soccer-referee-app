@@ -7,6 +7,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/services/ble.dart';
+import 'package:rcj_scoreboard/services/error_messages.dart';
 import 'package:rcj_scoreboard/utils/ble_address.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
 
@@ -66,10 +67,19 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
   }
 
   void _postInitLoad() {
-    ble.initCheck().then((result){
+    ble.initCheck().then((result) {
       if (mounted) {
         setState(() {
           deviceStatus = result;
+        });
+      }
+      // A platform failure (BLE stack unavailable) must not surface as an
+      // unhandled async error — show it as the adapter status instead.
+    }).catchError((Object e) {
+      debugPrint('ble initCheck error: $e');
+      if (mounted) {
+        setState(() {
+          deviceStatus = describeError(e).message;
         });
       }
     });
@@ -259,7 +269,14 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
 
     if (setMacFromModule) {
       setMacFromModule = false;
-      _controller.text = module.macAddress;
+      // Seed with the connection id; when there is none, fall back to the
+      // known hardware MAC (#82) — an iOS slot whose UUID was never resolved
+      // ("Not found": module was off at load, arrived mid-match) then shows
+      // its MAC, and the Connect button's MAC branch resolves + connects it
+      // in one tap instead of complaining about an empty field.
+      _controller.text = module.macAddress.isNotEmpty
+          ? module.macAddress
+          : module.hardwareMac;
     }
 
     if (setLabelFromModule) {
