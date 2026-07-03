@@ -145,6 +145,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   // link at full time can't bind the just-ended match's scores to the new
   // fixture. Cleared on a fresh match (gameInit).
   String? _fullTimeResultSignature;
+  bool _fullTimeTransportTeardownDone = false;
 
   // Callback to request showing the dialog
   void Function()? onRequestSwitchTeamOrderDialog;
@@ -236,11 +237,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _periodTime = _prefs!.getInt(_periodTimeKey) ?? _defaultPeriodTimeSeconds;
     _halfTimeDuration =
         _prefs!.getInt(_halfTimeDurationKey) ?? _defaultHalfTimeDurationSeconds;
-    _numberOfPlayers = (_prefs!.getInt(_numberOfPlayersKey) ??
-            _defaultPlayersPerTeam)
-        .clamp(1, _maxPlayer)
-        .toInt();
-    _penaltyTime = _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
+    _numberOfPlayers =
+        (_prefs!.getInt(_numberOfPlayersKey) ?? _defaultPlayersPerTeam)
+            .clamp(1, _maxPlayer)
+            .toInt();
+    _penaltyTime =
+        _prefs!.getInt(_penaltyTimeKey) ?? _defaultPenaltyTimeSeconds;
 
     // Single-tap pref: flush a pre-load toggle if one happened, otherwise adopt
     // the stored value. Reading unconditionally would clobber an early toggle.
@@ -317,6 +319,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _resumedFixtureMatchCode = null;
     _resumedFixtureVersion = null;
     _fullTimeResultSignature = null;
+    _fullTimeTransportTeardownDone = false;
     _resetNoShowPenaltyGoals();
 
     stopTimer();
@@ -859,6 +862,88 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     // full time we settle the ones still off to "Disconnected".
     disconnectInactiveModules();
     _persistOrClearAtFullTime();
+    unawaited(_teardownFieldTransportsAtFullTime());
+  }
+
+  // Release the field infrastructure at full time (#87): referees rotate
+  // phones per field, and the bridge accepts a single central — while the old
+  // phone holds it (or the MQTT session), the next phone can't take over.
+  // Launched unawaited from _completeMatchToFullTime so both the natural
+  // second-half expiry and endMatchEarly() (#84) inherit it, and nothing on
+  // the robot STOP path waits on it (invariant #1). The 1 s delay + stage
+  // re-check mirror gameOverAll(): the callers' synchronous final
+  // _broadcastStageAndTime() runs before the first await resumes, so the
+  // final "Game Over" publish always precedes the MQTT disconnect, and a
+  // REPEAT during the delay aborts the teardown. One-shot per match
+  // (re-armed by gameInit) so a second entry into the full-time block no-ops.
+  Future<void> _teardownFieldTransportsAtFullTime() async {
+    if (_fullTimeTransportTeardownDone) return;
+    _fullTimeTransportTeardownDone = true;
+    await Future<void>.delayed(const Duration(seconds: 1));
+    if (currentStage != MatchStage.fullTime) return;
+
+    // Tear down a connected OR still-connecting bridge link — the same
+    // stop-chasing-a-powered-down-unit policy disconnectInactiveModules()
+    // applies to robot modules. Only a CONNECTED bridge gets the bounded
+    // drain (it lets the last queued score frame reach the scoreboard before
+    // the link drops); a connecting one cannot drain its queue by definition,
+    // so draining it would only pin the teardown at the full timeout.
+    // The drain can take seconds: if a REPEAT or a confirmed Load starts a
+    // new match meanwhile (gameInit re-arms the teardown flag and moves the
+    // stage off fullTime — and a Load may have just auto-connected MQTT via
+    // #88), a stale disconnect would silently strip the new match's
+    // transports, so the epoch is re-checked inside the drain (via
+    // shouldAbort, protecting the bridge) and once more below (protecting
+    // MQTT).
+    bool staleTeardown() =>
+        !_fullTimeTransportTeardownDone || currentStage != MatchStage.fullTime;
+    final bridgeState = bleBridgeService.connectionStateNotifier.value;
+    if (bridgeState == BridgeConnectionState.connected) {
+      await bleBridgeService.disconnectAfterDrain(shouldAbort: staleTeardown);
+    } else if (bridgeState == BridgeConnectionState.connecting) {
+      await bleBridgeService.disconnect();
+    }
+    if (staleTeardown()) return;
+    mqttService.disconnect();
+  }
+
+  // Load-only reconnect: a same-match full-time refresh must not undo #87's
+  // teardown, but a fresh or confirmed match load should claim the field.
+  void _maybeAutoConnectMqttOnMatchLoad() {
+    if (!mqttService.isEnabled) return;
+    if (mqttService.isConnected) return;
+    // No field topic, no auto-connect (review #94): a fixture whose venue
+    // carries no number (e.g. "Center Court", #50) leaves the topic empty on
+    // a fresh install, and publishCMMessage would then land the rebroadcast's
+    // RETAINED state on the venue-shared rcj_soccer/* base namespace. A
+    // manually configured field (persisted topic) still auto-connects, and
+    // the Settings Connect button is unaffected.
+    if (mqttService.topic.isEmpty) return;
+    // No bail on a `connecting` state: the bounded reconnect loop pins the
+    // state there almost continuously during a broker blip, and a load that
+    // bailed would never rebroadcast — leaving the previous match's retained
+    // topics on the new field. connect() serializes internally, so calling
+    // it while another attempt is in flight just queues this caller.
+    //
+    // Fire-and-forget: a broker outage must not delay match load, and the
+    // Settings status label reports the outcome. On success, rebroadcast the
+    // CURRENT state: the load path's gameInit() broadcasts ran while MQTT was
+    // still disconnected (publishMessage drops them), so without this the new
+    // match's retained topics would keep the previous match's data until the
+    // first in-match event. Broadcasting whatever is live now is always safe,
+    // even if the fixture changed again while connecting.
+    unawaited(mqttService.connect().then((connected) {
+      if (connected) {
+        _broadcastFullState();
+      }
+    }).catchError((Object e) {
+      // The service maps expected failures to its error state; this guard
+      // only keeps an unexpected Exception escape from becoming an uncaught
+      // async error on the fire-and-forget load path. Errors (programming
+      // bugs) still surface — swallowing them here would hide a broken
+      // load-time MQTT behind a debugPrint.
+      debugPrint('MQTT auto-connect failed: $e');
+    }, test: (e) => e is Exception));
   }
 
   // Upper bound on background catch-up ticks: only the window the timer runs
@@ -1491,6 +1576,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // #71: a 25-min scheduling slot is mapped to a 10-min half + 5-min break.
       _applyScoreboardTiming(config);
       gameInit();
+      _maybeAutoConnectMqttOnMatchLoad();
     } else if (isConfirmedNewFixtureLoad) {
       // RAVF002: the referee confirmed the "Load match?" overwrite while a match
       // is in progress or finished. The dialog warns it "replaces the match in
@@ -1520,6 +1606,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       // synchronous part (_dirty=false + initiating the tombstone write) runs now;
       // only the disk completion is awaited later, off the robot hot path.
       _confirmedLoadClear = _clearMatchStateAndWait();
+      _maybeAutoConnectMqttOnMatchLoad();
     } else if (reArmedFromSuppression && currentStage == MatchStage.fullTime) {
       // The bound fixture's config only surfaced AFTER this resumed match had
       // already run to full-time while suppressed. Now that the bound fixture's
@@ -2149,6 +2236,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
     return '1 goal/$_noShowPenaltyGoalIntervalSeconds sec';
   }
+
   String get noShowPenaltyScoringTeamName =>
       _noShowPenaltyScoringTeam?.name ?? '';
   bool get isSomeonePlaying => _numberOfPlaying > 0 ? true : false;

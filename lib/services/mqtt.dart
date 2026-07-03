@@ -10,13 +10,19 @@ import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/services/error_messages.dart';
 
-
-
 enum MqttConnectionStateEx { disconnected, connecting, connected, error }
 
+const String _defaultMqttPassword = 'S_p-@P2_rL7ZFv9';
+const String _legacyMqttPasswordHint = 'S_p-@P2_rL7ZFv9XYZ';
+const String _defaultMqttServer =
+    'f2ec5c0344964af6a9b036e32a4f726c.s1.eu.hivemq.cloud';
 
 class MqttService {
   MqttServerClient? _client;
+  // The connect attempt currently in flight, if any (see connect()).
+  Future<bool>? _pendingConnect;
+  // Bumped by disconnect(); invalidates connect() waiters parked before it.
+  int _connectEpoch = 0;
   final String _mainTopic = 'rcj_soccer'; // To store the configured topic
   String _topic = ''; // To store the configured topic
   bool _isEnabled = false; // To store the enabled state
@@ -27,13 +33,15 @@ class MqttService {
   late bool _secureConnection; // To store the secure connection state
   late bool _autoConnect; // To store the auto-connect state
 
-  final String _clientIdentifier = 'client_${const Uuid().v4()}'; // Generate unique client ID
-  final ValueNotifier<MqttConnectionStateEx> connectionStateNotifier = ValueNotifier(MqttConnectionStateEx.disconnected);
+  final String _clientIdentifier =
+      'client_${const Uuid().v4()}'; // Generate unique client ID
+  final ValueNotifier<MqttConnectionStateEx> connectionStateNotifier =
+      ValueNotifier(MqttConnectionStateEx.disconnected);
   String _lastErrorMessage = '';
   late SharedPreferences prefs;
 
-  final StreamController<String> _messageStreamController = StreamController<
-      String>.broadcast();
+  final StreamController<String> _messageStreamController =
+      StreamController<String>.broadcast();
 
   Stream<String> get messageStream => _messageStreamController.stream;
 
@@ -44,16 +52,22 @@ class MqttService {
   /// Loads MQTT settings from SharedPreferences
   Future<void> loadPreferences() async {
     prefs = await SharedPreferences.getInstance();
-    _isEnabled = prefs.getBool('mqtt_enabled') ?? false;
-    _secureConnection = prefs.getBool('mqtt_secure_connection') ?? false;
+    // Working defaults (#88): enabled ships ON so a fresh install's deep-link
+    // match load can auto-connect with zero referee taps. An explicit disable
+    // in Settings writes false and is honored (the setter persists it).
+    _isEnabled = prefs.getBool('mqtt_enabled') ?? true;
+    _secureConnection = prefs.getBool('mqtt_secure_connection') ?? true;
     _autoConnect = prefs.getBool('mqtt_auto_connect') ?? false;
     _topic = prefs.getString('mqtt_topic') ?? '';
     _port = prefs.getInt('mqtt_port') ?? 8883;
-    _server = prefs.getString('mqtt_server') ?? 'f2ec5c0344964af6a9b036e32a4f726c.s1.eu.hivemq.cloud';
+    _server = prefs.getString('mqtt_server') ?? _defaultMqttServer;
     _username = prefs.getString('mqtt_username') ?? 'RCj_soccer_2026';
-    _password = prefs.getString('mqtt_password') ?? 'S_p-@P2_rL7ZFv9XYZ';
+    final storedPassword = prefs.getString('mqtt_password');
+    if (storedPassword == _legacyMqttPasswordHint) {
+      await prefs.setString('mqtt_password', _defaultMqttPassword);
+    }
+    _password = prefs.getString('mqtt_password') ?? _defaultMqttPassword;
   }
-
 
   // Getters for server, port, username, and password
   String? get server => _server;
@@ -143,30 +157,82 @@ class MqttService {
   bool get isConnected =>
       _client?.connectionStatus?.state == MqttConnectionState.connected;
 
-
   Future<bool> connect() async {
+    // Re-entrancy handling (#88): an auto-connect and a manual tap must not
+    // stack clients, but a caller must not be silently dropped either — a
+    // match-load connect can race a connect attempt that a full-time teardown
+    // (#87) just cancelled, and a plain "return false while in flight" would
+    // leave the new match with MQTT down and no retry. So SERIALIZE: wait for
+    // any in-flight attempt to settle, then run a fresh one unless it already
+    // produced a live connection. Keyed on an internal pending future, NOT on
+    // the public connecting state — the bounded reconnect loop in
+    // _onDisconnected sets connectionStateNotifier to `connecting` before
+    // each retry, so a state-based guard would turn every retry into a no-op.
+    // The epoch lets disconnect() veto waiters parked here BEFORE it ran:
+    // without it a queued retry (e.g. a reconnect-loop tick) would wake after
+    // a user/teardown disconnect and reconnect against that explicit intent.
+    // A caller arriving AFTER the disconnect captures the new epoch and
+    // proceeds — exactly the match-load handover case.
+    final epoch = _connectEpoch;
+    while (_pendingConnect != null) {
+      await _pendingConnect;
+      if (_connectEpoch != epoch) {
+        return false;
+      }
+    }
+    if (isConnected) {
+      return true;
+    }
+    final attempt = _connect();
+    _pendingConnect = attempt;
+    try {
+      return await attempt;
+    } finally {
+      _pendingConnect = null;
+    }
+  }
+
+  Future<bool> _connect() async {
     if (_server.isEmpty || _port <= 0) {
       debugPrint('MQTT_LOGS::Error: Server or port not set.');
       return false;
     }
 
+    // Live-broker backstop (review #94): the shipped defaults are a WORKING
+    // production account, so an unseeded future test driving a match-load
+    // path would otherwise open a real TLS socket from CI and publish
+    // retained reset state onto a real field's topics. Refuse only under
+    // flutter_test AND only for the shipped production server — real devices
+    // never set FLUTTER_TEST, and tests against local/custom brokers (e.g.
+    // 127.0.0.1 in mqtt_service_test) stay fully functional.
+    if (Platform.environment.containsKey('FLUTTER_TEST') &&
+        _server == _defaultMqttServer) {
+      debugPrint(
+          'MQTT_LOGS::Refusing to dial the production broker from a test run');
+      return false;
+    }
+
     connectionStateNotifier.value = MqttConnectionStateEx.connecting;
 
+    final client = MqttServerClient.withPort(_server, _clientIdentifier, _port);
+    _client = client;
+    client.logging(
+        on: false); // Disable logging for production, enable for debugging
 
-    _client = MqttServerClient.withPort(_server, _clientIdentifier, _port);
-    _client!.logging(on: false); // Disable logging for production, enable for debugging
-
-
-    _client!.keepAlivePeriod = 300;
+    client.keepAlivePeriod = 300;
     // Capture the current connection in the callback closures so a stale
     // callback from a previous connect() can never read a newer _client.
-    final capturedClient = _client!;
-    _client!.onDisconnected = () => _onDisconnected(capturedClient);
-    _client!.onConnected = _onConnected;
-    _client!.onSubscribed = _onSubscribed;
-    _client!.pongCallback = _pong; // Optional: for keep alive
+    final capturedClient = client;
+    client.onDisconnected = () => _onDisconnected(capturedClient);
+    client.onConnected = () {
+      if (identical(_client, capturedClient)) {
+        _onConnected();
+      }
+    };
+    client.onSubscribed = _onSubscribed;
+    client.pongCallback = _pong; // Optional: for keep alive
 
-    _client!.secure = _secureConnection;
+    client.secure = _secureConnection;
 
     final connMess = MqttConnectMessage()
         .withClientIdentifier(_clientIdentifier)
@@ -175,29 +241,47 @@ class MqttService {
         .startClean()
         .withWillQos(MqttQos.atLeastOnce);
 
-    _client!.connectionMessage = connMess;
+    client.connectionMessage = connMess;
 
     try {
       debugPrint('MQTT_LOGS::Connecting to $_server:$_port...');
-      await _client!.connect(_username, _password); // Pass username/password again here for some brokers
+      await client.connect(_username,
+          _password); // Pass username/password again here for some brokers
     } on NoConnectionException catch (e) {
+      if (!identical(_client, client)) return false;
       debugPrint('MQTT_LOGS::Client exception - $e');
       _lastErrorMessage = 'Network error: Unable to connect';
       connectionStateNotifier.value = MqttConnectionStateEx.error;
     } on SocketException catch (e) {
+      if (!identical(_client, client)) return false;
       debugPrint('MQTT_LOGS::Socket exception - $e');
       _lastErrorMessage = 'Connection failed: ${e.message}';
       connectionStateNotifier.value = MqttConnectionStateEx.error;
+    } on Exception catch (e) {
+      // mqtt_client wraps most secure-connect failures in
+      // NoConnectionException, but its socket onError paths can complete the
+      // awaited future with the raw exception (e.g. a HandshakeException).
+      // connect() is now also called unawaited from the match-load hook, so
+      // an escaped exception would surface as an uncaught async error and pin
+      // the status at "Connecting..." forever. Map anything Exception-shaped
+      // to the error state; real programming errors (Error) still propagate.
+      if (!identical(_client, client)) return false;
+      debugPrint('MQTT_LOGS::Unexpected connect exception - $e');
+      _lastErrorMessage = describeError(e).message;
+      connectionStateNotifier.value = MqttConnectionStateEx.error;
     }
 
-    if (_client!.connectionStatus!.state == MqttConnectionState.connected) {
+    if (!identical(_client, client)) return false;
+
+    if (client.connectionStatus?.state == MqttConnectionState.connected) {
       debugPrint('MQTT_LOGS::Mosquitto client connected');
       return true;
     } else {
-      debugPrint('MQTT_LOGS::ERROR Mosquitto client connection failed - disconnecting, status is ${_client!.connectionStatus}');
-      final status = _client!.connectionStatus!;
+      debugPrint(
+          'MQTT_LOGS::ERROR Mosquitto client connection failed - disconnecting, status is ${client.connectionStatus}');
+      final status = client.connectionStatus;
       _lastErrorMessage = describeMqttReturnCode(
-          status.returnCode ?? MqttConnectReturnCode.noneSpecified);
+          status?.returnCode ?? MqttConnectReturnCode.noneSpecified);
       connectionStateNotifier.value = MqttConnectionStateEx.error;
       return false;
     }
@@ -209,18 +293,17 @@ class MqttService {
         _client!.connectionStatus!.state == MqttConnectionState.connected) {
       final topicToPublish = specificTopic ?? _mainTopic;
       if (topicToPublish.isEmpty) {
-          debugPrint('MQTT_LOGS::Error: Topic not set for publishing.');
-          return;
+        debugPrint('MQTT_LOGS::Error: Topic not set for publishing.');
+        return;
       }
       final builder = MqttClientPayloadBuilder();
       builder.addString(message);
       _client!.publishMessage(
-          topicToPublish,
-          MqttQos.atLeastOnce,
-          builder.payload!,
+          topicToPublish, MqttQos.atLeastOnce, builder.payload!,
           retain: true // Set to true if you want the message to be retained
-      );
-      debugPrint('MQTT_LOGS::Published message: $message to topic: $topicToPublish');
+          );
+      debugPrint(
+          'MQTT_LOGS::Published message: $message to topic: $topicToPublish');
     }
   }
 
@@ -236,10 +319,11 @@ class MqttService {
     publishMessage(message, specificTopic: fullTopic);
   }
 
-
   /// Publishes the remaining time in MM:SS format to the 'time' topic.
   void publishTime(int remainingTime) {
-    publishCMMessage('${(remainingTime ~/ 60).toString().padLeft(2, '0')}:${(remainingTime % 60).toString().padLeft(2, '0')}', topic: 'time');
+    publishCMMessage(
+        '${(remainingTime ~/ 60).toString().padLeft(2, '0')}:${(remainingTime % 60).toString().padLeft(2, '0')}',
+        topic: 'time');
   }
 
   /// Publishes the score of both teams to their respective topics.
@@ -250,8 +334,14 @@ class MqttService {
 
   /// Publishes the score of a specific team to its topic.
   void publishTeamNames(List<Team> teams) {
-    publishCMMessage(teams[0].name.substring(0, teams[0].name.length > 20 ? 20 : teams[0].name.length), topic: "team1_name");
-    publishCMMessage(teams[1].name.substring(0, teams[1].name.length > 20 ? 20 : teams[1].name.length), topic: "team2_name");
+    publishCMMessage(
+        teams[0].name.substring(
+            0, teams[0].name.length > 20 ? 20 : teams[0].name.length),
+        topic: "team1_name");
+    publishCMMessage(
+        teams[1].name.substring(
+            0, teams[1].name.length > 20 ? 20 : teams[1].name.length),
+        topic: "team2_name");
   }
 
   void publishTeam(List<Team> teams) {
@@ -277,12 +367,22 @@ class MqttService {
     publishCMMessage(gameStageString, topic: 'game_stage');
   }
 
-
   void disconnect() {
-    if (_client != null) {
-      debugPrint('MQTT_LOGS::Disconnecting client');
-      _client!.disconnect();
+    // Veto any connect() waiters parked before this call (see connect()) —
+    // even when there is no client yet, an attempt may be mid-prefix.
+    _connectEpoch++;
+    final client = _client;
+    if (client == null) {
+      return;
     }
+    _client = null;
+    debugPrint('MQTT_LOGS::Disconnecting client');
+    try {
+      client.disconnect();
+    } catch (e) {
+      debugPrint('MQTT_LOGS::Disconnect error - $e');
+    }
+    connectionStateNotifier.value = MqttConnectionStateEx.disconnected;
   }
 
   void _onConnected() {
@@ -307,20 +407,24 @@ class MqttService {
       return;
     }
     if (disconnectedClient.connectionStatus?.disconnectionOrigin ==
-            MqttDisconnectionOrigin.solicited) {
+        MqttDisconnectionOrigin.solicited) {
       _client = null;
-      debugPrint('MQTT_LOGS::Disconnected callback is solicited, not attempting reconnection');
+      debugPrint(
+          'MQTT_LOGS::Disconnected callback is solicited, not attempting reconnection');
       connectionStateNotifier.value = MqttConnectionStateEx.disconnected;
       return;
     }
     // Unintentional disconnect: try to reconnect with bounded retries.
     Future<void> attemptReconnect() async {
       int attempts = 0;
-      while (_isEnabled == true && _client != null && !isConnected &&
-             attempts < _maxReconnectAttempts) {
+      while (_isEnabled == true &&
+          _client != null &&
+          !isConnected &&
+          attempts < _maxReconnectAttempts) {
         attempts++;
         connectionStateNotifier.value = MqttConnectionStateEx.connecting;
-        debugPrint('MQTT_LOGS::Attempting to reconnect ($attempts/$_maxReconnectAttempts)...');
+        debugPrint(
+            'MQTT_LOGS::Attempting to reconnect ($attempts/$_maxReconnectAttempts)...');
         bool success = await connect();
         if (success) break;
         // Don't wait after the final failed attempt: the trailing delay would
@@ -334,11 +438,14 @@ class MqttService {
       // Only report exhaustion if this reconnect session is still active: a
       // user disable (_isEnabled == false) or solicited disconnect
       // (_client == null) during the loop must not be flipped back into error.
-      if (_isEnabled == true && _client != null && !isConnected &&
+      if (_isEnabled == true &&
+          _client != null &&
+          !isConnected &&
           attempts >= _maxReconnectAttempts) {
         // Preserve the specific cause connect() recorded on the last attempt
         // instead of hiding it behind a generic message.
-        final cause = _lastErrorMessage.isNotEmpty ? ' ($_lastErrorMessage)' : '';
+        final cause =
+            _lastErrorMessage.isNotEmpty ? ' ($_lastErrorMessage)' : '';
         _lastErrorMessage =
             'Reconnection failed after $_maxReconnectAttempts attempts$cause';
         connectionStateNotifier.value = MqttConnectionStateEx.error;
