@@ -79,17 +79,34 @@ class BleBridgeService extends ChangeNotifier {
     try {
       _device = BluetoothDevice.fromId(_bridgeMacAddress.toUpperCase());
       await _connSub?.cancel();
+      // A Cancel can land during the await above; starting the OS autoConnect
+      // anyway would hold/chase the bridge invisibly (it is a single-central
+      // device) while the UI reads "Disconnected". Same re-check
+      // Module.bleConnect does after its pre-connect await.
+      if (!_connectIntent) return;
       _registerBleSubscriber(_device!);
       await _device!.connect(autoConnect: true, mtu: null);
     } catch (e) {
       debugPrint('BleBridge: connect error: $e');
+      // Don't let a failure surfacing after a Cancel overwrite the settled
+      // "Disconnected" with an error.
+      if (!_connectIntent) return;
       await _setErrorAndDisconnect(message: describeError(e).message);
     }
   }
 
   Future<void> disconnect() async {
-    // Explicit user disconnect — stop intending to be connected.
+    // Explicit user disconnect — stop intending to be connected. Settle the
+    // visible state BEFORE awaiting the (slow) plugin disconnect, mirroring
+    // Module.bleDisconnect: a Cancel on a stuck "Connecting..." must read
+    // "Disconnected" immediately, not after the BLE teardown completes.
     _connectIntent = false;
+    _lastErrorMessage = null;
+    _txChar = null;
+    connectionStateNotifier.value = BridgeConnectionState.disconnected;
+
+    // Cancel the connection-state listener before disconnecting so the
+    // teardown disconnect event can't drive any further status work.
     await _connSub?.cancel();
     _connSub = null;
 
@@ -98,9 +115,40 @@ class BleBridgeService extends ChangeNotifier {
     } catch (e) {
       debugPrint('BleBridge: disconnect error: $e');
     }
+  }
 
-    _txChar = null;
-    connectionStateNotifier.value = BridgeConnectionState.disconnected;
+  /// Drain-then-disconnect for the full-time teardown. [shouldAbort] is
+  /// re-checked while draining and once more before the disconnect: the drain
+  /// can hold this future for seconds, and a caller whose world moved on
+  /// meanwhile (e.g. a REPEAT started a new match) must be able to keep the
+  /// link instead of losing it to a stale teardown.
+  Future<void> disconnectAfterDrain({
+    Duration timeout = const Duration(seconds: 3),
+    bool Function()? shouldAbort,
+  }) async {
+    try {
+      final deadline = DateTime.now().add(timeout);
+      while ((_queue.isNotEmpty || _sendInProgress) &&
+          DateTime.now().isBefore(deadline) &&
+          !(shouldAbort?.call() ?? false)) {
+        final remaining = deadline.difference(DateTime.now());
+        final delay = remaining < const Duration(milliseconds: 100)
+            ? remaining
+            : const Duration(milliseconds: 100);
+        if (delay <= Duration.zero) break;
+        await Future<void>.delayed(delay);
+      }
+    } catch (e) {
+      debugPrint('BleBridge: drain before disconnect failed: $e');
+    }
+
+    if (shouldAbort?.call() ?? false) return;
+
+    try {
+      await disconnect();
+    } catch (e) {
+      debugPrint('BleBridge: disconnectAfterDrain failed: $e');
+    }
   }
 
   void publishTopic(String topic, String value) {
@@ -166,14 +214,29 @@ class BleBridgeService extends ChangeNotifier {
   }
 
   Future<void> _onConnected() async {
+    // Re-check the connect intent after every await: the Cancel button is
+    // offered exactly while this setup phase runs (state `connecting`), and
+    // disconnect() cannot stop an already-running _onConnected — without
+    // these checks a resuming continuation would overwrite the user's settled
+    // "Disconnected" with `connected` (on a link disconnect() is tearing
+    // down) or `error`. Same reason Module.bleConnect re-checks
+    // !_connectIntent after its awaits.
+    if (!_connectIntent) return;
     try {
       try {
         await _device?.requestMtu(247);
       } catch (e) {
         debugPrint('BleBridge: MTU request failed: $e');
       }
+      if (!_connectIntent) return;
 
       final ready = await _discoverBridgeCharacteristic();
+      if (!_connectIntent) {
+        // A Cancel landed during discovery; drop the characteristic the
+        // discovery just installed so the service stays fully torn down.
+        _txChar = null;
+        return;
+      }
       if (!ready) {
         await _setErrorAndDisconnect(
             message: 'Scoreboard service not found on this device');
@@ -186,6 +249,7 @@ class BleBridgeService extends ChangeNotifier {
       await _processQueue();
     } catch (e) {
       debugPrint('BleBridge: initialization error: $e');
+      if (!_connectIntent) return;
       await _setErrorAndDisconnect(message: describeError(e).message);
     }
   }
@@ -205,6 +269,14 @@ class BleBridgeService extends ChangeNotifier {
     }
 
     _txChar = null;
+    // The BLE teardown above can take seconds and the state still reads
+    // "Connecting..." meanwhile, so Settings offers Cancel. If the user took
+    // it, disconnect() already settled "Disconnected" (only it can move the
+    // state here — the listener was cancelled first); don't overwrite that
+    // with an error the user no longer cares about.
+    if (connectionStateNotifier.value != BridgeConnectionState.connecting) {
+      return;
+    }
     connectionStateNotifier.value = BridgeConnectionState.error;
     notifyListeners();
   }

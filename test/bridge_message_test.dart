@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:rcj_scoreboard/models/bridge_message.dart';
+import 'package:rcj_scoreboard/screens/settings.dart';
 import 'package:rcj_scoreboard/services/ble_bridge_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -54,6 +55,31 @@ void main() {
     });
   });
 
+  group('Bridge connection button label (#86)', () {
+    test('maps all bridge states to the Settings button text', () {
+      expect(
+        bridgeConnectionButtonLabel(BridgeConnectionState.connected),
+        'Disconnect',
+      );
+      expect(
+        bridgeConnectionButtonLabel(BridgeConnectionState.connecting),
+        'Cancel',
+      );
+      expect(
+        bridgeConnectionButtonLabel(BridgeConnectionState.disabled),
+        'Connect',
+      );
+      expect(
+        bridgeConnectionButtonLabel(BridgeConnectionState.disconnected),
+        'Connect',
+      );
+      expect(
+        bridgeConnectionButtonLabel(BridgeConnectionState.error),
+        'Connect',
+      );
+    });
+  });
+
   group('BleBridgeService queue (disconnected — no BLE writes)', () {
     // When the service is enabled but not connected, publishTopic enqueues and
     // dedups, while _processQueue returns at its !isConnected guard before ever
@@ -69,7 +95,8 @@ void main() {
       return svc;
     }
 
-    test('same topic dedups to a single queued message (latest wins)', () async {
+    test('same topic dedups to a single queued message (latest wins)',
+        () async {
       final svc = await makeEnabledService();
 
       svc.publishTopic(BridgeTopics.team1Score, '1');
@@ -114,6 +141,118 @@ void main() {
       svc.publishTopic(BridgeTopics.team1Score, '1');
 
       expect(svc.queueDepthNotifier.value, 0);
+    });
+
+    test('disconnectAfterDrain is bounded when a queue cannot drain', () async {
+      final svc = await makeEnabledService();
+
+      svc.publishTopic(BridgeTopics.team1Score, '1');
+      expect(svc.queueDepthNotifier.value, 1);
+
+      await svc.disconnectAfterDrain(
+        timeout: const Duration(milliseconds: 200),
+      );
+
+      expect(
+        svc.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
+      expect(svc.queueDepthNotifier.value, 1);
+    });
+
+    test('disconnectAfterDrain honors shouldAbort and keeps the link',
+        () async {
+      final svc = await makeEnabledService();
+      svc.connectionStateNotifier.value = BridgeConnectionState.connecting;
+      svc.publishTopic(BridgeTopics.team1Score, '1');
+
+      // A stale full-time teardown (REPEAT/Load started a new match mid-
+      // drain) must not disconnect: the abort is honored both inside the
+      // drain wait and before the final disconnect.
+      await svc.disconnectAfterDrain(shouldAbort: () => true);
+
+      expect(
+        svc.connectionStateNotifier.value,
+        BridgeConnectionState.connecting,
+      );
+    });
+  });
+
+  group('BleBridgeService connection lifecycle (#86)', () {
+    test('disconnect cancels a connecting bridge without a device', () async {
+      SharedPreferences.setMockInitialValues({});
+      final svc = BleBridgeService();
+      await svc.loadPreferences();
+
+      svc.connectionStateNotifier.value = BridgeConnectionState.connecting;
+
+      await svc.disconnect();
+
+      expect(
+        svc.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
+      expect(svc.lastErrorMessage, isNull);
+    });
+
+    test('disconnect settles the visible state before the BLE teardown',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final svc = BleBridgeService();
+      await svc.loadPreferences();
+      svc.connectionStateNotifier.value = BridgeConnectionState.connecting;
+
+      // Cancel must read "Disconnected" immediately (the plugin disconnect
+      // can take seconds on Android) — the state settles in the synchronous
+      // prefix of disconnect(), before its first await.
+      final pending = svc.disconnect();
+      expect(
+        svc.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
+      await pending;
+    });
+
+    test('cancel during the pre-connect gap never starts the OS autoConnect',
+        () async {
+      SharedPreferences.setMockInitialValues({});
+      final svc = BleBridgeService();
+      await svc.loadPreferences();
+      svc.bridgeMacAddress = 'AA:BB:CC:DD:EE:FF';
+
+      // connect() suspends at its pre-connect await; the Cancel lands in
+      // that gap. The resumed connect() must bail out instead of registering
+      // the subscriber / starting autoConnect — otherwise the OS would hold
+      // or chase the single-central bridge while the UI reads Disconnected.
+      // (In this headless VM a non-bailing connect() would surface as the
+      // `error` state via the MissingPluginException path.)
+      final pending = svc.connect();
+      await svc.disconnect();
+      await pending;
+
+      expect(
+        svc.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
+      expect(svc.lastErrorMessage, isNull);
+    });
+
+    test('connect with empty bridge address leaves state unchanged', () async {
+      SharedPreferences.setMockInitialValues({});
+      final svc = BleBridgeService();
+      await svc.loadPreferences();
+      expect(svc.bridgeMacAddress, isEmpty);
+      expect(
+        svc.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
+
+      await svc.connect();
+
+      expect(
+        svc.connectionStateNotifier.value,
+        BridgeConnectionState.disconnected,
+      );
     });
   });
 }
