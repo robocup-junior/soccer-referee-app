@@ -104,6 +104,12 @@ String get bleAddressHint => useIosBleUuid
     ? 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
     : 'xx:xx:xx:xx:xx:xx';
 
+/// Hint for the MODULE address field (#82): iOS accepts either shape, so the
+/// hint must not advertise only the UUID (see [buildModuleAddressFormatters]).
+String get moduleAddressHint => useIosBleUuid
+    ? 'xx:xx:xx:xx:xx:xx or xxxxxxxx-xxxx-…'
+    : 'xx:xx:xx:xx:xx:xx';
+
 /// QR codes always encode a MAC (the scanner only accepts a 17-char MAC), but
 /// iOS cannot connect by MAC — it needs the device's CoreBluetooth UUID. Resolve
 /// [mac] to a UUID by BLE-scanning for the device that advertises that MAC in

@@ -362,7 +362,7 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
               decoration: InputDecoration(
                 labelText: moduleAddressLabel,
                 labelStyle: const TextStyle(color: Colors.grey),
-                hintText: bleAddressHint,
+                hintText: moduleAddressHint,
                 hintStyle: const TextStyle(color: Colors.grey),
                 border: const OutlineInputBorder(),
 

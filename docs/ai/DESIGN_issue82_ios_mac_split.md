@@ -1,9 +1,13 @@
 # DESIGN — Issue #82: iOS MAC handling (connection-id vs hardware-MAC split)
 
-> Status: **DESIGN / not yet implemented.** Needs a real iPhone to verify (owner
-> rule: device-test before push). Written 2026-07-02.
+> Status: **IMPLEMENTED** (this PR; written 2026-07-02 as the design, implemented
+> 2026-07-03). Android device-verified; iPhone verification per the PR checklist.
 > Fixes #82 (auto "MAC loading" not working on iOS) and removes the RAVF001 iOS
 > limitation carried knowingly by PR #91 / issue #85.
+> Implementation deviation from §3a.5: automatic resolve-scanning ends for good
+> at the FIRST kickoff of a match ("Not found") rather than resuming at every
+> stop — a module powered on mid-match is connected via the manual scan/QR path.
+> Resuming during the half-time break is a possible future refinement.
 
 ---
 

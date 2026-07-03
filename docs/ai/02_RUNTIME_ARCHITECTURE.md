@@ -151,6 +151,16 @@ Only one incoming message is handled:
 `FlutterBluePlus.startScan(withKeywords: ['RCJ', 'soccer', 'module'], timeout: 3s)`
 Results collected in `ModuleSettingsScreen.devices` list.
 
+**#82 adds a second, AUTOMATIC scan surface (iOS only):** `IosMacResolveController`
+(`lib/services/ios_mac_resolver.dart`) batch-scans at match load to resolve
+server-supplied hardware MACs to CoreBluetooth UUIDs (advertised name
+`RCJs-m_<MAC>`), with a persisted MAC→UUID cache (`ios_mac_uuid_cache`). It
+scans ONLY while no half is running, yields to any foreign (manual) scan, and
+stops permanently at the first kickoff (invariant #1); resolution feeds exactly
+one `connect(autoConnect:true)` per module (invariant #5). Manual scans (this
+section, QR, typed-MAC resolve) remain referee-initiated and allowed anytime by
+design.
+
 ### QR code flow
 `BarcodeScannerSimple` uses `mobile_scanner` to read QR codes. Validates that scanned value matches MAC address regex (`^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$`). Returns MAC string via `Navigator.pop`. Caller sets `_controller.text = result` — user still presses Connect manually.
 

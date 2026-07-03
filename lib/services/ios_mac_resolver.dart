@@ -102,7 +102,13 @@ class IosMacResolveController {
   void stopForMatch() {
     if (_stoppedForMatch) return;
     _stoppedForMatch = true;
-    _stopScan();
+    // Only stop a scan WE might be running. In the common all-resolved-at-load
+    // case the resolver is idle at kickoff, and the global stopScan could only
+    // kill a FOREIGN scan (a referee's settings-list scan or QR/MAC resolve) —
+    // contradicting the yield-to-manual-scans policy (PR #93 review).
+    if (_pending.isNotEmpty || _running) {
+      _stopScan();
+    }
     final gaveUp = List<int>.from(_pending.keys);
     _pending.clear();
     gaveUp.forEach(_onGaveUp);

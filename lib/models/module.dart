@@ -207,6 +207,12 @@ class Module with ChangeNotifier {
   /// The two iOS connect() failures that mean "this connection id cannot ever
   /// connect" (see flutter_blue_plus_darwin FlutterBluePlusPlugin.m): the UUID
   /// is unknown to CoreBluetooth, or the id was not a UUID at all.
+  ///
+  /// These are fbp's INTERNAL error strings (they surface as a raw
+  /// PlatformException, so there is no typed code to match), pinned to the
+  /// locked flutter_blue_plus 1.36.8 / darwin 7.0.3. When upgrading fbp,
+  /// re-verify both against FlutterBluePlusPlugin.m — a reworded message
+  /// silently disables this self-heal path (PR #93 review).
   static bool _isIosUnknownPeripheralError(Object e) {
     final msg = e.toString();
     return msg.contains('Peripheral not found') ||
@@ -436,11 +442,14 @@ class Module with ChangeNotifier {
     _rxSubscription?.cancel();
     _rxSubscription = null;
 
-    // Disconnect from device also disables auto connect
-    await bleDevice?.disconnect();
-
-
-
+    // Disconnect from device also disables auto connect. A failure (BLE off /
+    // unsupported platform) must not surface as an unhandled async error —
+    // the state flags above are already cleared either way.
+    try {
+      await bleDevice?.disconnect();
+    } catch (e) {
+      debugPrint('bleDisconnect error: $e');
+    }
   }
 
   void _playStatus(bool play) {
@@ -935,10 +944,10 @@ class Module with ChangeNotifier {
       // applyPresetConfig's always-apply-label rule.
       macAddress = s.macAddress;
       if (s.hardwareMac.isNotEmpty) {
-        hardwareMac = s.hardwareMac.toUpperCase();
+        hardwareMac = s.hardwareMac;
       } else if (isMacFormat(s.macAddress)) {
         // Pre-split snapshot on Android: the stored connection id IS the MAC.
-        hardwareMac = s.macAddress.toUpperCase();
+        hardwareMac = s.macAddress;
       }
       setLabel(s.customLabel ?? '');
     }

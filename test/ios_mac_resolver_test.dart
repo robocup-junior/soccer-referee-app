@@ -110,6 +110,15 @@ void main() {
     expect(h.scannedBatches, isEmpty);
   });
 
+  test(
+      'stopForMatch with nothing pending and no loop running fires NO global '
+      'stopScan (it could only kill a foreign manual scan)', () async {
+    final h = _Harness();
+    h.controller.stopForMatch();
+    expect(h.stopScanCalls, 0);
+    expect(h.gaveUp, isEmpty);
+  });
+
   test('cancel removes a module mid-flight; its late hit is dropped', () async {
     final h = _Harness();
     h.pendingScan = Completer();
