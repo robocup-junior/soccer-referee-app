@@ -119,6 +119,22 @@ void main() {
     expect(h.gaveUp, isEmpty);
   });
 
+  test(
+      'stopForMatch while the loop is only YIELDING to a foreign scan fires '
+      'NO global stopScan — the radio belongs to the referee', () async {
+    final h = _Harness(retryDelay: const Duration(milliseconds: 200));
+    h.foreignScanRunning = true;
+    h.controller.enroll(3, 'AA:BB:CC:DD:EE:FF');
+    await _settle(); // loop is now parked in the yield delay, _running true
+
+    h.controller.stopForMatch();
+
+    expect(h.stopScanCalls, 0);
+    expect(h.gaveUp, [3]);
+    expect(h.controller.pendingCount, 0);
+    h.controller.dispose();
+  });
+
   test('cancel removes a module mid-flight; its late hit is dropped', () async {
     final h = _Harness();
     h.pendingScan = Completer();

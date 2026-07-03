@@ -70,6 +70,11 @@ class IosMacResolveController {
   final Map<int, String> _pending = {};
   bool _stoppedForMatch = false;
   bool _running = false;
+  // True ONLY while the awaited batch-scan call is in flight — the loop being
+  // active is NOT evidence we own the radio (it may be yielding to a foreign
+  // scan), and stopping a scan we don't own would kill the referee's manual
+  // scan at kickoff (#82 review round 4, both reviewers independently).
+  bool _ownScanInFlight = false;
   bool _disposed = false;
 
   @visibleForTesting
@@ -102,11 +107,11 @@ class IosMacResolveController {
   void stopForMatch() {
     if (_stoppedForMatch) return;
     _stoppedForMatch = true;
-    // Only stop a scan WE might be running. In the common all-resolved-at-load
-    // case the resolver is idle at kickoff, and the global stopScan could only
-    // kill a FOREIGN scan (a referee's settings-list scan or QR/MAC resolve) —
-    // contradicting the yield-to-manual-scans policy (PR #93 review).
-    if (_pending.isNotEmpty || _running) {
+    // Only stop a scan WE actually own. Neither pending work nor an active
+    // loop is evidence of that — the loop may be idle between rounds or
+    // yielding to a referee's manual scan, and the global stopScan would kill
+    // exactly that foreign scan (PR #93 review + round 4, both reviewers).
+    if (_ownScanInFlight) {
       _stopScan();
     }
     final gaveUp = List<int>.from(_pending.keys);
@@ -150,7 +155,13 @@ class IosMacResolveController {
           continue;
         }
         final stopwatch = Stopwatch()..start();
-        final hits = await _scan(_pending.values.toSet());
+        Map<String, String> hits;
+        _ownScanInFlight = true;
+        try {
+          hits = await _scan(_pending.values.toSet());
+        } finally {
+          _ownScanInFlight = false;
+        }
         stopwatch.stop();
         // Gates may have closed while the scan ran (kickoff, dispose, reset):
         // a stale hit must never connect a module the match moved past.
