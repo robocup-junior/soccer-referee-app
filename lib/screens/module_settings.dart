@@ -229,24 +229,6 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
     }
   }
 
-  // @override
-  // Widget build(BuildContext context) {
-  //   return Scaffold(
-  //     appBar: AppBar(
-  //       title: Text('BLE Scanner'),
-  //     ),
-  //     body: ListView.builder(
-  //       itemCount: devices.length,
-  //       itemBuilder: (context, index) {
-  //         return ListTile(
-  //           title: Text(devices[index].platformName),
-  //           subtitle: Text(devices[index].remoteId.toString()),
-  //         );
-  //       },
-  //     ),
-  //   );
-  // }
-
   @override
   void dispose() {
     //SystemChannels.textInput.invokeMethod('TextInput.hide');
@@ -615,54 +597,6 @@ class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
       }
     }
 
-
-
-
-
-
-
-  //     body: Padding(
-  //       padding: const EdgeInsets.all(16.0),
-  //       child: Column(
-  //         children: [
-  //           Column(
-  //             children: [
-  //               Row(
-  //                 children: [
-  //                   Text('Device status:'),
-  //
-  //                   Text(deviceStatus == 'OK' ? widget.module.bleStatus : deviceStatus),
-  //                 ],
-  //               ),
-  //               //MacAddressInputField(),
-  //               TextField(
-  //                 controller: _controller,
-  //                 inputFormatters: [maskFormatter],
-  //                 decoration: InputDecoration(
-  //                   labelText: 'Enter MAC Address',
-  //                   hintText: 'xx:xx:xx:xx:xx:xx',
-  //                   border: OutlineInputBorder(),
-  //                 ),
-  //                 maxLength: 17,
-  //               ),
-  //
-  //               ElevatedButton(
-  //                   onPressed: () {
-  //                     debugPrint(_controller.text);
-  //                     widget.module.setDevice(BluetoothDevice.fromId(_controller.text.toUpperCase()));
-  //                   },
-  //                   child: Text('Connect')
-  //               ),
-  //
-  //
-  //             ],
-  //           )
-  //
-  //         ],
-  //       ),
-  //     ),
-  //   );
-  // }
  }
 
 class _SavedDevicesDialog extends StatefulWidget {

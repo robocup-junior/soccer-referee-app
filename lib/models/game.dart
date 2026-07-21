@@ -2418,27 +2418,6 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (_numberOfPlaying < 2) notifyListeners();
   }
 
-  // void checkNumOfPlaying() {
-  //   bool current = false;
-  //   for (var team in teams) {
-  //     for (var module in team.modules.where((module) => module.isEnabled)) {
-  //       if (module.isPlaying) {
-  //         current = true;
-  //         break;
-  //       }
-  //       if(current) break;
-  //     }
-  //   }
-  //
-  //   //if (!current) stopAll();
-  //
-  //   if (current != _isSomeonePlaying) {
-  //     _isSomeonePlaying = current;
-  //     notifyListeners();
-  //   }
-  //
-  // }
-
   void setTeamToDefaultOrder() {
     // check team order and if necessary switch them
     if (teams.length == 2 && teams[0].id == 'B' && teams[1].id == 'A') {

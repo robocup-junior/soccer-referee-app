@@ -1,5 +1,4 @@
 // lib/services/mqtt_service.dart
-import 'dart:async';
 import 'dart:io';
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
@@ -39,11 +38,6 @@ class MqttService {
       ValueNotifier(MqttConnectionStateEx.disconnected);
   String _lastErrorMessage = '';
   late SharedPreferences prefs;
-
-  final StreamController<String> _messageStreamController =
-      StreamController<String>.broadcast();
-
-  Stream<String> get messageStream => _messageStreamController.stream;
 
   MqttService() {
     loadPreferences().then((_) {}); // Load preferences on initialization
@@ -464,7 +458,6 @@ class MqttService {
   }
 
   void dispose() {
-    _messageStreamController.close();
     disconnect();
   }
 }
