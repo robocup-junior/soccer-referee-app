@@ -7,572 +7,159 @@ import 'package:rcj_scoreboard/services/error_messages.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
 import 'package:rcj_scoreboard/utils/ble_address.dart';
 
+enum ModuleState { play, stop, damage, halfTime, fullTime }
 
-enum ModuleState {
+/// Message ids of the robot-module BLE protocol (first byte of every frame).
+enum BleMsgId {
+  ping,
+  fwVersion,
+  setName,
+  setScore,
   play,
   stop,
   damage,
-  halfTime,
-  fullTime,
+  halfBreak,
+  gameOver,
+  disconnect,
+  askForPenalty,
 }
 
-// BLE Massage IDs
-enum BleMsgId {
-  bleMsgPing,
-  bleMsgFwVersion,
-  bleMsgSetName,
-  bleMsgSetScore,
-  bleMsgPlay,
-  bleMsgStop,
-  bleMsgDamage,
-  bleMsgHalfBreak,
-  bleMsgGameOver,
-  bleMsgDisconnect,
-  bleMsgAskForPenalty,
-  bleMsgMaxId // Must be last be last
-}
+/// Nordic UART Service, shared by robot modules and the scoreboard bridge.
+const String kNusServiceUuid = '6E400001-B5A3-F393-E0A9-E50E24DCCA9E';
+const String kNusTxCharUuid = '6E400002-B5A3-F393-E0A9-E50E24DCCA9E';
+const String kNusRxCharUuid = '6E400003-B5A3-F393-E0A9-E50E24DCCA9E';
 
-
+/// One robot slot: its match state (play / stop / damage ...) and its BLE link.
+///
+/// Reconnection is owned by the OS: `connect(autoConnect: true)` is called once
+/// and retries indefinitely on the same GATT client until `disconnect()`. The
+/// connection-state handler only reflects status (CLAUDE.md invariant #5).
 class Module with ChangeNotifier {
-  final String _name;
-  String? _label;
-  final String _teamId;
-  final Game _game;
-  final int moduleId;
-  final String _serviceUUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
-  final String _characteristicUUIDTX = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E";
-  final String _characteristicUUIDRX = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E";
+  Module(this._game, this._teamId, this.defaultName, this.moduleId);
 
+  final Game _game;
+  final String _teamId;
+  final String defaultName;
+  final int moduleId;
+
+  static final Guid _serviceGuid = Guid.fromString(kNusServiceUuid);
+  static final Guid _txGuid = Guid.fromString(kNusTxCharUuid);
+  static final Guid _rxGuid = Guid.fromString(kNusRxCharUuid);
+
+  // ---- match state ----
+  String? _label;
   ModuleState _state = ModuleState.stop;
   ModuleState _lastState = ModuleState.stop;
-
-
-
-
-  bool _isEnabled = true;
-  bool _isConnected = false;
-  bool _isPlaying = false;
   int _penaltyTime = 0;
-  // One-shot set by [restoreFromSnapshot] on a cold-resume restore. The FIRST
-  // post-restore [bleNotify] (fired seconds later from the reconnect's
-  // connected-event, so a synchronous game-scoped flag would already be cleared)
-  // consumes it and sends at most a STOP — never play/damage — so a robot can't
-  // auto-PLAY or self-release its penalty while the match clock is frozen. It is
-  // per-module so each module's own late reconnect is covered, and one-shot so
-  // it can't linger and suppress the referee's later START.
-  bool _suppressNextRestoreNotify = false;
-  // Whether the module should resume playing when its penalty is cleared or
-  // expires. Captured at penalty() entry: a module penalised from the play
-  // state (the only way a connected module is penalised) resumes play, while a
-  // no-module penalty recorded on a stopped module returns to stop.
+  bool _isEnabled = true;
+  bool _isPlaying = false;
+  // Whether the module resumes play when its penalty clears: a penalty given to
+  // a playing robot resumes play, one recorded on a stopped slot returns to stop.
   bool _resumeAfterPenalty = false;
+  // One-shot armed by a cold-resume restore: the first reconnect after it sends
+  // at most STOP, so a restored damage/play robot can't auto-run while the match
+  // clock is frozen. Cleared by any START path.
+  bool _suppressNextRestoreNotify = false;
+
+  // ---- BLE link ----
+  /// Connection id: the MAC on Android, a per-phone CoreBluetooth UUID on iOS.
   String macAddress = '';
-  // The module's permanent hardware MAC (uppercase, '' if unknown) — the
-  // stable identity the scoreboard server knows (#82). On Android it equals
-  // [macAddress] (a BLE peripheral is addressed by its MAC); on iOS
-  // [macAddress] is a per-phone CoreBluetooth UUID and this is recovered from
-  // the QR scan, the advertised name `RCJs-m_<MAC>`, or the match-load
-  // resolver. Reported in the scoreboard result POST instead of [macAddress].
-  // The cache keys and retarget guards depend on the uppercase invariant, so
-  // the setter owns normalization — call sites must not re-implement it.
   String _hardwareMac = '';
+  String bleStatus = 'Disconnected';
+  bool _isConnected = false;
+  bool _connectIntent = false;
+  bool _isSearching = false;
+  BluetoothDevice? bleDevice;
+  StreamSubscription<BluetoothConnectionState>? _connSub;
+  StreamSubscription<List<int>>? _rxSub;
+  BluetoothCharacteristic? _tx;
+  BluetoothCharacteristic? _rx;
+
+  // ---- getters ----
+  String get name => hasCustomLabel ? _label! : defaultName;
+  bool get hasCustomLabel => _label?.isNotEmpty ?? false;
+  String get currentPenalty => _penaltyTime > 0 ? '$_penaltyTime' : '';
+  int get penaltyTime => _penaltyTime;
+  ModuleState get state => _state;
+  bool get isEnabled => _isEnabled;
+  bool get isPlaying => _isPlaying;
+  bool get isConnected => _isConnected;
+  bool get isConnecting => _connectIntent && !_isConnected;
+  bool get isSearching => _isSearching;
+
+  /// The permanent hardware MAC (uppercase, '' if unknown): the identity the
+  /// scoreboard knows. Equals [macAddress] on Android; on iOS it is recovered
+  /// from the QR code, the advertised name `RCJs-m_<MAC>`, or the resolver.
   String get hardwareMac => _hardwareMac;
   set hardwareMac(String value) => _hardwareMac = value.trim().toUpperCase();
-  // True while the iOS match-load resolver is (or should be) looking for this
-  // module's UUID. A real flag — not a bleStatus string compare — so the
-  // Cancel affordance and disconnectAll can reach the Searching state.
-  bool _isSearching = false;
-  String bleStatus = 'Disconnected';
-  // True while we want to be connected (connect tapped, autoConnect active).
-  // Lets a device-level disconnect read as "Connecting..." (still trying) rather
-  // than "Disconnected", until the user explicitly disconnects.
-  bool _connectIntent = false;
-  BluetoothDevice? bleDevice;
-  StreamSubscription<BluetoothConnectionState>? subscription;
-  // RX-notification listener. Held so it can be cancelled before a replacement
-  // is attached on reconnect (bleInitModule runs on every connected event) and
-  // on teardown — otherwise auto-reconnect would stack duplicate listeners that
-  // each deliver the same inbound message. Cancelling only drops the Dart
-  // subscription; it never turns the characteristic notification off on a live
-  // connection.
-  StreamSubscription<List<int>>? _rxSubscription;
-  BluetoothCharacteristic? bleTX;
-  BluetoothCharacteristic? bleRX;
 
+  @visibleForTesting
+  ModuleState get lastState => _lastState;
+  @visibleForTesting
+  bool get suppressNextRestoreNotify => _suppressNextRestoreNotify;
+  @visibleForTesting
+  set debugIsConnected(bool value) => _isConnected = value;
 
-  Module(this._game, this._teamId, this._name, this.moduleId);
+  // ---- enable / labels ----
 
   void init() {
-    _stop();
+    _enter(ModuleState.stop);
     _penaltyTime = 0;
-    _state = ModuleState.stop;
     _lastState = ModuleState.stop;
     _resumeAfterPenalty = false;
   }
 
-  void enable() {
-    _isEnabled = true;
-  }
+  void enable() => _isEnabled = true;
 
   void disable() {
     _isEnabled = false;
-    _playStatus(false);
+    _setPlaying(false);
     bleDisconnect();
   }
 
-  void bleNotify() async {
-    if (_suppressNextRestoreNotify) {
-      // First reconnect after a cold-resume restore: keep the robot stopped
-      // regardless of the restored _state (esp. a restored `damage` module),
-      // so its penalty countdown does not start while the match clock is
-      // frozen. The referee's double-tap START re-arms play/damage with time.
-      try {
-        await bleSendStop();
-      } finally {
-        _suppressNextRestoreNotify = false;
-      }
-      return;
-    }
-    switch (_state) {
-      case ModuleState.play:
-        await bleSendPlay();
-        break;
-      case ModuleState.stop:
-        await bleSendStop();
-        break;
-      case ModuleState.damage:
-        await bleSendDamage(_penaltyTime);
-        break;
-      case ModuleState.halfTime:
-        await bleSendHalfTime();
-        break;
-      case ModuleState.fullTime:
-        await bleSendGameOver();
-        break;
-      }
-  }
-
-  void  bleConnect() async {
-    //debugPrint('BLE connect...........................');
-    if (bleDevice == null || bleDevice!.isConnected) return;
-    //debugPrint('BLE connect222...........................');
-
-    // Set the intent BEFORE the pre-connect delay so a bleDisconnect() that runs
-    // during the delay (user Cancel / disconnectAll) is observable when we
-    // re-check below — otherwise this in-flight connect would revive autoConnect
-    // after the user asked to stop.
-    _connectIntent = true;
-    bleStatus = 'Connecting...';
+  void setLabel(String label) {
+    _label = label.trim();
     notifyListeners();
-
-    // don't know why but without this delay sometimes it cannot connect more than 5 modules
-    await Future.delayed(const Duration(milliseconds: 100));
-
-    // Abort if the user disconnected (intent cleared) or the device connected
-    // during the delay.
-    if (!_connectIntent || (bleDevice?.isConnected ?? false)) return;
-
-    subscription?.cancel();
-    _registerBleSubscriber(bleDevice!);
-
-    try {
-      //bleStatus = 'Connecting...';
-      await bleDevice?.connect(autoConnect:true, mtu: null);
-    } catch (e) {
-      // The initial connect() failed — drop the connect intent (parity with the
-      // bridge) so a stray event can never flip the message back to
-      // "Connecting...". Reconnection of a module that DID connect is handled by
-      // connect(autoConnect:true) at the OS level, not by re-entering here.
-      _connectIntent = false;
-      bleStatus = describeError(e).message;
-      debugPrint('BLE connect error: $e');
-      subscription?.cancel();
-      // #82 (iOS): connect() never even started because the identity is not
-      // connectable — a stale cached UUID ("Peripheral not found") or a
-      // MAC-shaped id fed to fromId ("invalid remoteId"). When the hardware
-      // MAC is known, hand the module to the match-load resolver (it scans
-      // only while no half runs) instead of leaving a dead error status. This
-      // fires once per failed connect() CALL, never from disconnect events —
-      // it is identity resolution, not reconnection (invariant #5).
-      if (useIosBleUuid &&
-          hardwareMac.isNotEmpty &&
-          _isIosUnknownPeripheralError(e)) {
-        _game.enrollIosMacResolve(this);
-      }
-    }
-    notifyListeners();
-
+    unawaited(bleSendName());
+    _game.persistence.markDirtyAndFlush();
   }
 
-  /// The two iOS connect() failures that mean "this connection id cannot ever
-  /// connect" (see flutter_blue_plus_darwin FlutterBluePlusPlugin.m): the UUID
-  /// is unknown to CoreBluetooth, or the id was not a UUID at all.
-  ///
-  /// These are fbp's INTERNAL error strings (they surface as a raw
-  /// PlatformException, so there is no typed code to match), pinned to the
-  /// locked flutter_blue_plus 1.36.8 / darwin 7.0.3. When upgrading fbp,
-  /// re-verify both against FlutterBluePlusPlugin.m — a reworded message
-  /// silently disables this self-heal path (PR #93 review).
-  static bool _isIosUnknownPeripheralError(Object e) {
-    final msg = e.toString();
-    return msg.contains('Peripheral not found') ||
-        msg.contains('invalid remoteId');
+  // ---- match-state transitions ----
+
+  void _setPlaying(bool playing) {
+    if (playing == _isPlaying) return;
+    _isPlaying = playing;
+    _game.changeNumberOfPlaying(playing ? 1 : -1);
   }
 
-  Future<bool> bleCheckServicesAndGetCharacteristics() async {
-    List<BluetoothService> services = await bleDevice!.discoverServices();
-
-    var service = services.where((element) => element.uuid == Guid.fromString(_serviceUUID));
-    if (service.isEmpty) {
-      debugPrint('Required service not found');
-      bleDisconnect(reason: "Couldn't find robot service");
-      return false;
-    }
-
-    var characteristic = service.firstOrNull?.characteristics.where((element) => element.uuid == Guid.fromString(_characteristicUUIDTX) || element.uuid == Guid.fromString(_characteristicUUIDRX));
-    if (characteristic == null || characteristic.isEmpty) {
-      debugPrint('Required characteristics not found');
-      bleDisconnect(reason: 'Robot is missing expected data channel');
-      return false;
-    }
-
-    bleTX = BluetoothCharacteristic(remoteId: bleDevice!.remoteId, serviceUuid: Guid.fromString(_serviceUUID) , characteristicUuid: Guid.fromString(_characteristicUUIDTX));
-    bleRX = BluetoothCharacteristic(remoteId: bleDevice!.remoteId, serviceUuid: Guid.fromString(_serviceUUID) , characteristicUuid: Guid.fromString(_characteristicUUIDRX));
-
-    return true;
-  }
-
-  Future<void> enableRXNotifications() async {
-    if (bleRX != null) {
-      try {
-        await bleRX!.setNotifyValue(true);
-        // Replace any previous listener so reconnects don't accumulate
-        // duplicate handlers for the same characteristic.
-        await _rxSubscription?.cancel();
-        _rxSubscription = bleRX!.onValueReceived.listen((data) {
-          handleReceivedData(data);
-        });
-      } catch (e) {
-        debugPrint('Error enabling RX notifications: $e');
-      }
-    }
-  }
-
-  void handleReceivedData(List<int> data) {
-    // Example: Convert data to a string
-    // String receivedString = utf8.decode(data);
-    // debugPrint('Received data: $receivedString');
-    switch (BleMsgId.values[data[0]]) {
-      case BleMsgId.bleMsgAskForPenalty:
-        debugPrint('Ask for penalty');
-        _askForPenalty();
-        break;
-      default:
-        debugPrint('Unknown message ID: ${data[0]}');
-    }
-    // Add further processing logic here
-  }
-
-  void bleInitModule() async {
-    await bleCheckServicesAndGetCharacteristics();
-
-    await enableRXNotifications();
-
-    bleSendCurrentState();
-  }
-
-
-  Future<bool> bleSendHalfTime() async {
-    if (!_isConnected) return false;
-    int seconds = 300;
-    seconds = (_game.remainingTime * 1000) + 1000; // module take time in milliseconds and +1000 to start robot exactly when 0 show and not way for 0.x second
-
-    try {
-      await bleTX?.write([7] +
-          [(seconds >> 24) & 0xFF,
-            (seconds >> 16) & 0xFF,
-            (seconds >> 8) & 0xFF,
-            seconds & 0xFF]);
-      return true;
-    } catch (e) {
-      debugPrint('Send HalfTime error');
-      return false;
-    }
-  }
-
-  Future<bool> bleSendGameOver() async {
-    if (!_isConnected) return false;
-    try {
-      await bleTX?.write([BleMsgId.bleMsgGameOver.index, _game.getScore(_teamId), _game.getScore(_teamId, oppositeTeam: true)]);
-      return true;
-    } catch (e) {
-      debugPrint('Send GameOver error');
-      return false;
-    }
-  }
-
-
-  Future<bool> bleSendName() async {
-    if (!_isConnected) return false;
-    try {
-      final displayName = name.padRight(2).substring(0, 2);
-      await bleTX?.write([BleMsgId.bleMsgSetName.index] + displayName.codeUnits);
-      return true;
-    } catch (e) {
-      debugPrint('Send name error');
-      return false;
-    }
-  }
-
-  Future<bool> bleSendScore() async {
-    if (!_isConnected) return false;
-    try {
-      await Future.delayed(const Duration(milliseconds: 200));
-      await bleTX?.write([BleMsgId.bleMsgSetScore.index, _game.getScore(_teamId), _game.getScore(_teamId, oppositeTeam: true)]);
-      return true;
-    } catch (e) {
-      debugPrint('Send score error $e');
-      return false;
-    }
-  }
-
-  Future<bool> bleSendStop() async {
-    if (!_isConnected) return false;
-    try {
-      await bleTX?.write([BleMsgId.bleMsgStop.index]);
-      return true;
-    } catch (e) {
-      debugPrint('Send stop error $e');
-      return false;
-    }
-  }
-
-  Future<bool> bleSendStopAll() async {
-    if (!_isConnected) return false;
-    try {
-      await bleTX?.write([BleMsgId.bleMsgStop.index], timeout:0);
-      return true;
-    } catch (e) {
-      //debugPrint('Send stop all error $e');
-      return false;
-    }
-  }
-
-  Future<bool> bleSendPlayAll() async {
-    if (!_isConnected) return false;
-    try {
-      await bleTX?.write([BleMsgId.bleMsgPlay.index], timeout:0);
-      return true;
-    } catch (e) {
-      //debugPrint('Send play all error $e');
-      return false;
-    }
-  }
-
-
-  Future<bool> bleSendPlay() async {
-    if (!_isConnected) return false;
-    try {
-      await bleTX?.write([BleMsgId.bleMsgPlay.index]);
-      return true;
-    } catch (e) {
-      debugPrint('Send play error');
-      return false;
-    }
-  }
-
-  Future<bool> bleSendDamage(int seconds) async {
-    if (!_isConnected) return false;
-    seconds = (seconds * 1000) + 1000; // module take time in milliseconds and +1000 to start robot exactly when 0 show and not way for 0.x second
-    try {
-      await bleTX?.write([BleMsgId.bleMsgDamage.index] +
-        [(seconds >> 24) & 0xFF,
-        (seconds >> 16) & 0xFF,
-        (seconds >> 8) & 0xFF,
-        seconds & 0xFF]);
-      return true;
-    } catch (e) {
-      debugPrint('Send play error');
-      return false;
-    }
-  }
-
-  void bleSendCurrentState() async {
-    await bleSendName();
-    await bleSendScore();
-    bleNotify();
-  }
-
-
-  void bleDisconnect({String? reason}) async {
-    // #82: a module can be "Searching..." — enrolled with the iOS resolver,
-    // no device yet. Cancel must reach that state too, and an in-flight scan
-    // hit for it must not revive it (the resolver drops non-pending hits).
-    _game.cancelIosMacResolve(this);
-    _isSearching = false;
-    // Note: no `!isConnected` guard. While autoConnect is still retrying the
-    // device is NOT connected, yet we must still call disconnect() to cancel
-    // that pending retry loop and clear the connect intent — otherwise a dead
-    // module is stuck on "Connecting..." forever with no way out.
-    if (bleDevice == null) {
-      // Device-less Cancel (a Searching module): clear the lifecycle flags
-      // and reflect the stop in status.
-      _connectIntent = false;
-      _isConnected = false;
-      if (bleStatus != 'Disconnected') {
-        bleStatus = reason ?? 'Disconnected';
-        notifyListeners();
-      }
-      return;
-    }
-
-    // Clear the connect intent *synchronously* before the async disconnect, so
-    // the disconnect event that disconnect() triggers reads as an intended
-    // "Disconnected" (not "Connecting...") and the OS autoConnect is not seen as
-    // something to keep showing as in-progress.
-    _connectIntent = false;
-    _isConnected = false;
-    bleStatus = reason ?? 'Disconnected';
-    notifyListeners();
-
-    // Cancel the connection-state listener BEFORE disconnecting so the teardown
-    // disconnect event can't drive any further status work.
-    // (Same cancel-first ordering as setBleDevice().)
-    subscription?.cancel();
-    _rxSubscription?.cancel();
-    _rxSubscription = null;
-
-    // Disconnect from device also disables auto connect. A failure (BLE off /
-    // unsupported platform) must not surface as an unhandled async error —
-    // the state flags above are already cleared either way.
-    try {
-      await bleDevice?.disconnect();
-    } catch (e) {
-      debugPrint('bleDisconnect error: $e');
-    }
-  }
-
-  void _playStatus(bool play) {
-    if (play == _isPlaying) return; // skip if the current state is same
-    _isPlaying = play;
-    play ? _game.changeNumberOfPlaying(1) : _game.changeNumberOfPlaying(-1);
-  }
-
-  void playOrDamage() {
-    _clearRestoreSuppress();
-    _lastState = _state;
-    if (_penaltyTime > 0) {
-      _playStatus(false);
-      _state = ModuleState.damage;
-    } else {
-      _playStatus(true);
-      _penaltyTime = 0;
-      _state = ModuleState.play;
-    }
-
+  /// Move to [next], push it to the robot and persist. [flush] schedules a
+  /// write now (single-module actions off the START/STOP fan-out); otherwise
+  /// only the dirty flag is set.
+  void _enter(ModuleState next, {bool playing = false, bool flush = false}) {
+    _setPlaying(playing);
+    _state = next;
     bleNotify();
     notifyListeners();
-    // Single-module action (not the simultaneous START/STOP fan-out), so a
-    // scheduled flush is latency-safe and persists it even when the clock is
-    // stopped (e.g. a robot toggled while the cold-resumed clock is frozen).
-    _game.markMatchStateDirtyAndFlush();
+    flush ? _game.persistence.markDirtyAndFlush() : _game.persistence.markDirty();
   }
 
-  void play() async {
-    _clearRestoreSuppress();
-    // Clearing or expiring a penalty for a module that was not playing before
-    // the penalty (e.g. a no-module penalty recorded on a stopped module) must
-    // return it to stop, not promote it to playing.
+  void play() {
+    _suppressNextRestoreNotify = false;
     if (_state == ModuleState.damage && !_resumeAfterPenalty) {
       _penaltyTime = 0;
-      _stop();
+      _enter(ModuleState.stop);
       return;
     }
     _resumeAfterPenalty = false;
-
     _lastState = _state;
-    _playStatus(true);
     _penaltyTime = 0;
-    _state = ModuleState.play;
-
-    bleNotify();
-    notifyListeners();
-    _game.markMatchStateDirtyAndFlush();
-  }
-
-  void playOrDamageAll() async {
-    _clearRestoreSuppress();
-    _lastState = _state;
-    if (_penaltyTime > 0) {
-      _playStatus(false);
-      _state = ModuleState.damage;
-      bleNotify();
-    } else {
-      _playStatus(true);
-      _penaltyTime = 0;
-      _state = ModuleState.play;
-
-      for (int i = 0; i < 3; i++) {
-        bleSendPlayAll();
-        await Future.delayed(const Duration(milliseconds: 100));
-      }
-      // Send it one more time with acknowledgment to ensure all modules are in play state
-      bleSendPlay();
-    }
-    _game.markMatchStateDirty();
-  }
-
-  void playAll() async {
-    _clearRestoreSuppress();
-    _lastState = _state;
-    _playStatus(true);
-    _penaltyTime = 0;
-    _state = ModuleState.play;
-
-
-
-    for (int i = 0; i < 3; i++) {
-      bleSendPlayAll();
-      await Future.delayed(const Duration(milliseconds: 100));
-    }
-    // Send it one more time with acknowledgment to ensure all modules are in play state
-    bleSendPlay();
-    _game.markMatchStateDirty();
-  }
-
-  // Cancel a pending cold-resume restore suppression: once the referee starts a
-  // robot (any START path), subsequent reconnect bleNotify()s must reflect the
-  // real state, not a lingering STOP. Without this a late reconnect after START
-  // would STOP an already-playing robot (the play START path does not itself
-  // call bleNotify, so it would not otherwise consume the one-shot).
-  void _clearRestoreSuppress() {
-    _suppressNextRestoreNotify = false;
-  }
-
-  void stopAll(bool removePenalty, {bool force = false}) async {
-    if (removePenalty) _penaltyTime = 0;
-    if (force) _lastState = ModuleState.stop;
-
-    switch (_lastState) {
-      case ModuleState.halfTime:
-        halfTime();
-      case ModuleState.fullTime:
-        gameOver();
-      default:
-        _playStatus(false);
-        _state = ModuleState.stop;
-        for (int i = 0; i < 3; i++) {
-          bleSendStopAll();
-          await Future.delayed(const Duration(milliseconds: 100));
-        }
-    }
-    _game.markMatchStateDirty();
+    _enter(ModuleState.play, playing: true, flush: true);
   }
 
   void stop() {
     switch (_lastState) {
       case ModuleState.stop:
-        _stop();
+        _enter(ModuleState.stop);
       case ModuleState.halfTime:
         halfTime();
       case ModuleState.fullTime:
@@ -582,28 +169,83 @@ class Module with ChangeNotifier {
     }
   }
 
-
-
-  void _stop() {
-    _playStatus(false);
-    _state = ModuleState.stop;
-
-    bleNotify();
-    notifyListeners();
-    _game.markMatchStateDirty();
-  }
-
   void penalty(int seconds) {
     _resumeAfterPenalty = _isPlaying || _state == ModuleState.play;
-    _playStatus(false);
     _penaltyTime = seconds;
-    _state = ModuleState.damage;
+    _enter(ModuleState.damage, flush: true);
+  }
 
-    bleNotify();
-    notifyListeners();
-    // Penalty given is a discrete recoverable event; flush it (off the hot path)
-    // so it survives a crash even if the clock isn't running to drive a heartbeat.
-    _game.markMatchStateDirtyAndFlush();
+  void halfTime() {
+    _penaltyTime = 0;
+    _lastState = ModuleState.halfTime;
+    _enter(ModuleState.halfTime);
+  }
+
+  void gameOver() {
+    _lastState = ModuleState.fullTime;
+    _enter(ModuleState.fullTime);
+  }
+
+  /// Re-send the half-time countdown so the robot's break clock stays in sync.
+  void halfTimeSyncTime() {
+    if (_state == ModuleState.halfTime) bleNotify();
+  }
+
+  /// Simultaneous START (CLAUDE.md invariant #1): three fire-and-forget PLAY
+  /// frames, never awaited, then one acknowledged PLAY. With [clearPenalty]
+  /// false a penalised robot is (re)sent DAMAGE instead of PLAY.
+  void playAll({required bool clearPenalty}) async {
+    _suppressNextRestoreNotify = false;
+    _lastState = _state;
+    if (!clearPenalty && _penaltyTime > 0) {
+      _setPlaying(false);
+      _state = ModuleState.damage;
+      bleNotify();
+      _game.persistence.markDirty();
+      return;
+    }
+    _setPlaying(true);
+    _penaltyTime = 0;
+    _state = ModuleState.play;
+    for (var i = 0; i < 3; i++) {
+      bleSendPlayAll();
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    bleSendPlay();
+    _game.persistence.markDirty();
+  }
+
+  /// Simultaneous STOP (invariant #1). A module parked in half-time/full-time
+  /// is re-sent that state instead of STOP unless [force] is set.
+  void stopAll(bool removePenalty, {bool force = false}) async {
+    if (removePenalty) _penaltyTime = 0;
+    if (force) _lastState = ModuleState.stop;
+    switch (_lastState) {
+      case ModuleState.halfTime:
+        halfTime();
+      case ModuleState.fullTime:
+        gameOver();
+      default:
+        _setPlaying(false);
+        _state = ModuleState.stop;
+        for (var i = 0; i < 3; i++) {
+          bleSendStopAll();
+          await Future.delayed(const Duration(milliseconds: 100));
+        }
+    }
+    _game.persistence.markDirty();
+  }
+
+  /// One second of penalty countdown; re-sends DAMAGE every 10 s and releases
+  /// the robot at zero.
+  void notifyTimer() {
+    if (_penaltyTime <= 0) return;
+    _penaltyTime--;
+    if (_penaltyTime <= 0) {
+      play();
+    } else if (_penaltyTime % 10 == 0) {
+      bleSendDamage(_penaltyTime);
+    }
   }
 
   void _askForPenalty() {
@@ -614,203 +256,238 @@ class Module with ChangeNotifier {
     }
   }
 
-  void halfTime() {
-    _playStatus(false);
-    _penaltyTime = 0;
-    _state = ModuleState.halfTime;
-    _lastState = ModuleState.halfTime;
+  // ---- BLE protocol ----
 
-    bleNotify();
-    notifyListeners();
-    _game.markMatchStateDirty();
+  static List<int> _millisFrame(BleMsgId id, int seconds) {
+    // Robots take milliseconds; +1000 so they start exactly when 0 shows.
+    final ms = seconds * 1000 + 1000;
+    return [id.index, (ms >> 24) & 0xFF, (ms >> 16) & 0xFF, (ms >> 8) & 0xFF, ms & 0xFF];
   }
 
-  void halfTimeSyncTime() {
-    if (_state == ModuleState.halfTime) {
-      bleNotify();
+  List<int> _scoreFrame(BleMsgId id) => [
+        id.index,
+        _game.getScore(_teamId),
+        _game.getScore(_teamId, oppositeTeam: true),
+      ];
+
+  /// Write one frame; false when not connected or the write failed. Callers on
+  /// the START/STOP fan-out pass `timeout: 0` (fire-and-forget).
+  Future<bool> _write(List<int> frame, {int timeout = 15}) async {
+    if (!_isConnected) return false;
+    try {
+      await _tx?.write(frame, timeout: timeout);
+      return true;
+    } catch (e) {
+      if (timeout != 0) debugPrint('BLE write ${frame.first} failed: $e');
+      return false;
     }
   }
 
+  Future<bool> bleSendPlayAll() => _write([BleMsgId.play.index], timeout: 0);
+  Future<bool> bleSendStopAll() => _write([BleMsgId.stop.index], timeout: 0);
+  Future<bool> bleSendPlay() => _write([BleMsgId.play.index]);
+  Future<bool> bleSendStop() => _write([BleMsgId.stop.index]);
+  Future<bool> bleSendDamage(int seconds) =>
+      _write(_millisFrame(BleMsgId.damage, seconds));
+  Future<bool> bleSendHalfTime() =>
+      _write(_millisFrame(BleMsgId.halfBreak, _game.remainingTime));
+  Future<bool> bleSendGameOver() => _write(_scoreFrame(BleMsgId.gameOver));
+  Future<bool> bleSendName() => _write(
+      [BleMsgId.setName.index, ...name.padRight(2).substring(0, 2).codeUnits]);
 
-  void gameOver() {
-    _playStatus(false);
-    _state = ModuleState.fullTime;
-    _lastState = ModuleState.fullTime;
-
-    bleNotify();
-    notifyListeners();
-    _game.markMatchStateDirty();
+  Future<bool> bleSendScore() async {
+    if (!_isConnected) return false;
+    await Future.delayed(const Duration(milliseconds: 200));
+    return _write(_scoreFrame(BleMsgId.setScore));
   }
 
+  /// Push the current match state to the robot.
+  void bleNotify() async {
+    if (_suppressNextRestoreNotify) {
+      _suppressNextRestoreNotify = false;
+      await bleSendStop();
+      return;
+    }
+    switch (_state) {
+      case ModuleState.play:
+        await bleSendPlay();
+      case ModuleState.stop:
+        await bleSendStop();
+      case ModuleState.damage:
+        await bleSendDamage(_penaltyTime);
+      case ModuleState.halfTime:
+        await bleSendHalfTime();
+      case ModuleState.fullTime:
+        await bleSendGameOver();
+    }
+  }
 
+  void _handleReceivedData(List<int> data) {
+    if (data.isNotEmpty && data[0] == BleMsgId.askForPenalty.index) {
+      _askForPenalty();
+    } else {
+      debugPrint('Unknown BLE message: $data');
+    }
+  }
 
-  void notifyTimer() {
-    if (_penaltyTime > 0 ) {
-      _penaltyTime --;
-      if (_penaltyTime <= 0) {
-        play();
-      } else if (_penaltyTime % 10 == 0) {
-        bleSendDamage(_penaltyTime);
+  // ---- BLE link lifecycle ----
+
+  void bleConnect() async {
+    if (bleDevice == null || bleDevice!.isConnected) return;
+    _connectIntent = true;
+    bleStatus = 'Connecting...';
+    notifyListeners();
+
+    // Without this delay more than ~5 simultaneous connects intermittently fail.
+    await Future.delayed(const Duration(milliseconds: 100));
+    if (!_connectIntent || (bleDevice?.isConnected ?? false)) return;
+
+    _connSub?.cancel();
+    final device = bleDevice!;
+    _connSub = device.connectionState.listen((s) => _onConnectionState(device, s));
+    try {
+      await bleDevice?.connect(autoConnect: true, mtu: null);
+    } catch (e) {
+      _connectIntent = false;
+      bleStatus = describeError(e).message;
+      debugPrint('BLE connect error: $e');
+      _connSub?.cancel();
+      // iOS: the id itself is unconnectable (stale cached UUID or a MAC fed to
+      // fromId). Hand the slot back to the resolver; this is identity
+      // resolution on a failed connect() CALL, never a reconnect loop.
+      if (useIosBleUuid && _isIosUnknownPeripheralError(e)) {
+        _game.iosPairing.enroll(this);
       }
     }
+    notifyListeners();
   }
 
+  /// flutter_blue_plus' (darwin 7.0.3) internal strings for "this id can never
+  /// connect". Re-verify against FlutterBluePlusPlugin.m when upgrading fbp.
+  static bool _isIosUnknownPeripheralError(Object e) {
+    final msg = e.toString();
+    return msg.contains('Peripheral not found') || msg.contains('invalid remoteId');
+  }
+
+  void _onConnectionState(BluetoothDevice device, BluetoothConnectionState state) {
+    debugPrint('BLE $name: $state');
+    if (state == BluetoothConnectionState.disconnected) {
+      _isConnected = false;
+      // Status only: the OS autoConnect keeps retrying on the same GATT client.
+      bleStatus = _connectIntent ? 'Connecting...' : 'Disconnected';
+      notifyListeners();
+    } else if (state == BluetoothConnectionState.connected) {
+      _isConnected = true;
+      _isSearching = false;
+      bleStatus = 'Connected';
+      // The advertised name is authoritative for the hardware MAC of THIS link.
+      final parsed = _macFromDevice(device);
+      if (parsed != null) hardwareMac = parsed;
+      if (hardwareMac.isNotEmpty) _game.iosPairing.record(hardwareMac, macAddress);
+      notifyListeners();
+      _initLink();
+    }
+  }
+
+  static String? _macFromDevice(BluetoothDevice device) =>
+      macFromAdvertisedName(device.platformName) ??
+      macFromAdvertisedName(device.advName);
+
+  Future<void> _initLink() async {
+    final device = bleDevice!;
+    final services = await device.discoverServices();
+    final service = services.where((s) => s.uuid == _serviceGuid).firstOrNull;
+    if (service == null) {
+      bleDisconnect(reason: "Couldn't find robot service");
+      return;
+    }
+    final hasChars = service.characteristics
+        .any((c) => c.uuid == _txGuid || c.uuid == _rxGuid);
+    if (!hasChars) {
+      bleDisconnect(reason: 'Robot is missing expected data channel');
+      return;
+    }
+    _tx = BluetoothCharacteristic(
+        remoteId: device.remoteId, serviceUuid: _serviceGuid, characteristicUuid: _txGuid);
+    _rx = BluetoothCharacteristic(
+        remoteId: device.remoteId, serviceUuid: _serviceGuid, characteristicUuid: _rxGuid);
+    try {
+      await _rx!.setNotifyValue(true);
+      // Replace the listener so reconnects don't stack duplicate handlers.
+      await _rxSub?.cancel();
+      _rxSub = _rx!.onValueReceived.listen(_handleReceivedData);
+    } catch (e) {
+      debugPrint('Error enabling RX notifications: $e');
+    }
+    await bleSendName();
+    await bleSendScore();
+    bleNotify();
+  }
+
+  /// Cancel connecting / disconnect. Also cancels the OS autoConnect retry loop
+  /// and a pending iOS resolver search, so a stuck slot always has a way out.
+  void bleDisconnect({String? reason}) async {
+    _game.iosPairing.cancel(this);
+    _isSearching = false;
+    _connectIntent = false;
+    _isConnected = false;
+    final status = reason ?? 'Disconnected';
+    if (bleDevice == null) {
+      if (bleStatus != status) {
+        bleStatus = status;
+        notifyListeners();
+      }
+      return;
+    }
+    bleStatus = status;
+    notifyListeners();
+    _cancelLinkListeners();
+    try {
+      await bleDevice?.disconnect();
+    } catch (e) {
+      debugPrint('bleDisconnect error: $e');
+    }
+  }
+
+  void _cancelLinkListeners() {
+    _connSub?.cancel();
+    _rxSub?.cancel();
+    _rxSub = null;
+  }
+
+  /// Point this slot at [device] (or nothing). Tears down the previous link and
+  /// keeps [hardwareMac] in step: explicit > MAC-shaped id > advertised name;
+  /// a changed id with nothing derivable clears the stale MAC.
   void setBleDevice(BluetoothDevice? device, {String? hardwareMac}) {
-    // check if there is currently some device saved in devices if so try to call proper disconnect to it
     if (bleDevice != null) {
-      debugPrint('try disconect previos one');
-      // Fire-and-forget teardown of the replaced device; a failure (BLE off /
-      // unsupported platform) must not surface as an unhandled async error.
-      unawaited(bleDevice?.disconnect().catchError((Object e) {
+      unawaited(bleDevice!.disconnect().catchError((Object e) {
         debugPrint('setBleDevice disconnect error: $e');
       }));
-      // Cancel the old device's connection-state and RX listeners so they can't
-      // drive reconnect work or duplicate-deliver messages against a device
-      // we're replacing.
-      subscription?.cancel();
-      _rxSubscription?.cancel();
-      _rxSubscription = null;
+      _cancelLinkListeners();
     }
-
-    // Swapping the device is a fresh-connection boundary: clear the old
-    // device's reconnect lifecycle so no stale intent carries over (issue #38).
-    // Callers that want a connection call bleConnect() right after, which
-    // re-establishes intent. A pending resolver search is superseded too.
     _connectIntent = false;
     _isConnected = false;
     _isSearching = false;
+    bleDevice = device;
+    if (device == null) return;
 
-     bleDevice = device;
-
-     if (bleDevice == null) return;
-
-     final previousId = macAddress;
-     macAddress = bleDevice!.remoteId.toString();
-     // #82: keep the stable hardware identity in step. Callers that know the
-     // MAC pass it; otherwise derive it from the connection id (Android: the
-     // remoteId IS the MAC) or the advertised/GAP name caches. A CHANGED
-     // connection id with nothing derivable means this is a different physical
-     // module whose MAC we don't know yet — clear the stale value rather than
-     // report the previous module's MAC to the scoreboard (#82 review:
-     // stale-MAC retarget); the connected event re-derives it from the name
-     // once the link is up.
-     if (hardwareMac != null && hardwareMac.isNotEmpty) {
-       this.hardwareMac = hardwareMac;
-     } else if (isMacFormat(macAddress)) {
-       this.hardwareMac = macAddress;
-     } else {
-       final parsed = macFromAdvertisedName(bleDevice!.platformName) ??
-           macFromAdvertisedName(bleDevice!.advName);
-       if (parsed != null) {
-         this.hardwareMac = parsed;
-       } else if (previousId.toUpperCase() != macAddress.toUpperCase()) {
-         this.hardwareMac = '';
-       }
-     }
-  }
-
-  void _registerBleSubscriber(BluetoothDevice device) {
-    subscription = device.connectionState.listen((BluetoothConnectionState state) async {
-      debugPrint('BLE device status: $state');
-      if (state == BluetoothConnectionState.disconnected) {
-        _isConnected = false;
-        debugPrint('disconnect');
-
-        // Reconnection is owned entirely by connect(autoConnect:true): the OS
-        // keeps retrying on the SAME GATT client, unbounded, until disconnect()
-        // is called. That is exactly the in-match behavior we need — a penalised
-        // robot (~1 min off) or a halftime power-down (~5 min) rejoins the
-        // instant it returns, with no referee action. We deliberately do NOT
-        // re-enter bleConnect() here: each call registers a fresh GATT clientIf
-        // without close()-ing the previous BluetoothGatt, leaking ~1 client per
-        // reconnect per module (device-verified on a Pixel 10) and exhausting
-        // Android's ~30-client ceiling within minutes of penalty/halftime
-        // cycling across 10 modules — a tournament-killer. See CLAUDE.md
-        // invariant #5 and docs/ai/02_RUNTIME_ARCHITECTURE.md.
-        //
-        // So this handler only reflects status: while we still intend to be
-        // connected, show "Connecting..." (also covers the initial disconnected
-        // event right after connect()). Post-match teardown of powered-down
-        // modules is a one-shot at the full-time transition
-        // (Game.disconnectInactiveModules), not a per-disconnect action here —
-        // doing it here would also tear down a fresh post-match connect on its
-        // initial disconnected event.
-        bleStatus = _connectIntent ? 'Connecting...' : 'Disconnected';
-        notifyListeners();
-      } else if (state == BluetoothConnectionState.connected) {
-        _isConnected = true;
-        debugPrint('Connect');
-        bleStatus = 'Connected';
-        // #82: once connected the advertised/GAP name is authoritative for
-        // THIS device — (re)derive the hardware MAC so a module connected by
-        // UUID without a QR scan (saved device, scan-list pick) learns it,
-        // and a stale value from a previously-held module can't survive a
-        // retarget. A successful link also warms the iOS MAC→UUID cache so a
-        // hand-paired module needs no scan at the next match load.
-        _isSearching = false;
-        final parsedMac = macFromAdvertisedName(device.platformName) ??
-            macFromAdvertisedName(device.advName);
-        if (parsedMac != null && parsedMac != hardwareMac) {
-          hardwareMac = parsedMac;
-        }
-        if (hardwareMac.isNotEmpty) {
-          _game.recordIosMacUuid(hardwareMac, macAddress);
-        }
-        notifyListeners();
-        bleInitModule();
+    final previousId = macAddress;
+    macAddress = device.remoteId.toString();
+    if (hardwareMac != null && hardwareMac.isNotEmpty) {
+      this.hardwareMac = hardwareMac;
+    } else if (isMacFormat(macAddress)) {
+      this.hardwareMac = macAddress;
+    } else {
+      final parsed = _macFromDevice(device);
+      if (parsed != null) {
+        this.hardwareMac = parsed;
+      } else if (previousId.toUpperCase() != macAddress.toUpperCase()) {
+        this.hardwareMac = '';
       }
-    });
+    }
   }
 
-
-
-
-
-
-  String get currentPenalty => _penaltyTime > 0 ? _penaltyTime.toString() : '';
-
-
-  bool get isEnabled => _isEnabled;
-  bool get isConnected => _isConnected;
-  // Trying to connect (autoConnect retrying), not yet connected. Lets the UI
-  // offer a Cancel action to break out of an endless "Connecting..." loop.
-  bool get isConnecting => _connectIntent && !_isConnected;
-  // #82 (iOS): enrolled with the match-load resolver, no device yet. The
-  // settings button and disconnectAll treat it like isConnecting so the
-  // referee can cancel a slot stuck on "Searching..." (wrong server MAC).
-  bool get isSearching => _isSearching;
-  bool get isPlaying => _isPlaying;
-  String get name => (_label != null && _label!.isNotEmpty) ? _label! : _name;
-  String get defaultName => _name;
-  bool get hasCustomLabel => _label != null && _label!.isNotEmpty;
-  int get penaltyTime => _penaltyTime;
-  ModuleState get state => _state;
-  @visibleForTesting
-  ModuleState get lastState => _lastState;
-  @visibleForTesting
-  bool get suppressNextRestoreNotify => _suppressNextRestoreNotify;
-  // A live BLE link can't be stood up headless; retarget/idempotency guard
-  // tests (#82) flip the connected flag directly instead.
-  @visibleForTesting
-  set debugIsConnected(bool value) => _isConnected = value;
-
-  void setLabel(String label) {
-    _label = label.trim();
-    notifyListeners();
-    // Push the new name to the robot display immediately when connected;
-    // bleSendName() self-guards on connection, so this is a no-op otherwise.
-    // (Not in the START/STOP critical path — fire-and-forget is fine.)
-    unawaited(bleSendName());
-    // A module label is recoverable state. Schedule a flush (not just a dirty
-    // flag): labels are typically edited pre-match while the clock is stopped,
-    // when the heartbeat isn't running, so a bare flag could be lost on a crash.
-    // Off the START/STOP hot path, so the scheduled flush is fine.
-    _game.markMatchStateDirtyAndFlush();
-  }
-
-  /// #82 (iOS): resolver status surface — the module is waiting for the
-  /// match-load scan to learn its CoreBluetooth UUID. Guarded so it can never
-  /// stomp a live or in-progress connection's status.
+  /// iOS resolver status: waiting for the match-load scan to learn the UUID.
   void markSearching() {
     if (_isConnected || _connectIntent) return;
     _isSearching = true;
@@ -818,8 +495,7 @@ class Module with ChangeNotifier {
     notifyListeners();
   }
 
-  /// #82 (iOS): the resolver stopped (kickoff) without finding this module.
-  /// The referee's manual scan/QR pairing stays available.
+  /// iOS resolver stopped (kickoff) without finding this module.
   void markSearchGaveUp() {
     _isSearching = false;
     if (_isConnected || _connectIntent) return;
@@ -827,74 +503,42 @@ class Module with ChangeNotifier {
     notifyListeners();
   }
 
-  void applyPresetConfig(String macAddress, String label,
-      {String? hardwareMac}) {
-    // Always apply the label: an empty label resolves to the default name via
-    // the `name` getter, so reloading a preset whose module used the default
-    // name correctly clears any custom label left over from a previous preset.
+  /// Apply a stored pairing: label (always; '' restores the default name),
+  /// identity, and a connect when enabled. Idempotent for a slot already live
+  /// on the same module so re-pairs never churn a working link.
+  void applyPresetConfig(String macAddress, String label, {String? hardwareMac}) {
     setLabel(label);
-    // #82: resolve the target hardware identity WITHOUT mutating state yet —
-    // the idempotency guards below must compare against the PREVIOUS identity.
-    // (Writing first made "retarget a connected slot to a new MAC" a silent
-    // no-op: the guard read the freshly-written value, returned early, and the
-    // old link stayed up while the slot claimed the new module; #82 review.)
-    // Android callers pass the MAC as the connection id, so it doubles as the
-    // hardware MAC; snapshots/presets/iOS auto-pair pass it explicitly.
-    final targetHardwareMac = (hardwareMac != null && hardwareMac.isNotEmpty)
+    final targetMac = (hardwareMac != null && hardwareMac.isNotEmpty)
         ? hardwareMac.toUpperCase()
         : (isMacFormat(macAddress) ? macAddress.toUpperCase() : '');
-    // A slot may carry only a hardware MAC while the iOS resolver looks for
-    // its UUID — no connection identity yet means nothing to connect. But a
-    // retarget must retire the WHOLE previous identity, not just overwrite
-    // the MAC: keeping the old device/connection id would leave START/STOP
-    // going to the old robot (live link), let a periodic snapshot persist a
-    // mismatched (old UUID, new MAC) pair that cold-resumes the WRONG robot,
-    // and let createPreset seed the UUID cache with a poisoned entry that
-    // connects successfully and so never self-heals (#82 review round 2).
+
     if (macAddress.isEmpty) {
-      if (targetHardwareMac.isEmpty) return;
-      if (this.hardwareMac != targetHardwareMac &&
+      // Hardware MAC only (iOS slot awaiting its UUID). A changed identity
+      // retires the whole previous link, not just the MAC.
+      if (targetMac.isEmpty) return;
+      if (this.hardwareMac != targetMac &&
           (bleDevice != null || this.macAddress.isNotEmpty)) {
-        // Drops the old link (also an in-flight autoConnect), cancels its
-        // listeners, and clears intent/connected; it does not touch
-        // macAddress, so clear that explicitly.
         setBleDevice(null);
         this.macAddress = '';
       }
-      this.hardwareMac = targetHardwareMac;
+      this.hardwareMac = targetMac;
       return;
     }
-    final newMac = macAddress.toUpperCase();
-    // Already connected to this exact module: just (re)label it. Re-running
-    // setBleDevice()+bleConnect() would disconnect the live link and then race
-    // bleConnect()'s isConnected guard, leaving it stuck on "Connecting...".
-    if (_isConnected && this.macAddress.toUpperCase() == newMac) {
-      if (targetHardwareMac.isNotEmpty) {
-        this.hardwareMac = targetHardwareMac;
-      }
+
+    final newId = macAddress.toUpperCase();
+    if (_isConnected && this.macAddress.toUpperCase() == newId) {
+      if (targetMac.isNotEmpty) this.hardwareMac = targetMac;
       return;
     }
-    // Same, keyed on the PREVIOUS hardware identity (#82): on iOS the stored
-    // connection id is a UUID, so a re-pair passing the module's hardware MAC
-    // would never match the guard above and would churn a live link — the
-    // auto-pair path relies on re-pairs being no-ops (see
-    // _syncScoreboardModulePairing). A DIFFERENT MAC falls through to
-    // setBleDevice, which replaces the link.
-    if (_isConnected &&
-        this.hardwareMac.isNotEmpty &&
-        this.hardwareMac == newMac) {
+    if (_isConnected && this.hardwareMac.isNotEmpty && this.hardwareMac == newId) {
       return;
     }
-    setBleDevice(BluetoothDevice.fromId(newMac),
-        hardwareMac: targetHardwareMac);
-    if (_isEnabled) {
-      bleConnect();
-    }
+    setBleDevice(BluetoothDevice.fromId(newId), hardwareMac: targetMac);
+    if (_isEnabled) bleConnect();
   }
 
-  // ---- Cold-resume snapshot / restore (#45) ----
+  // ---- cold-resume snapshot ----
 
-  /// Capture this module's recoverable state for the match snapshot.
   ModuleSnapshot toSnapshot() => ModuleSnapshot(
         moduleId: moduleId,
         isEnabled: _isEnabled,
@@ -906,47 +550,23 @@ class Module with ChangeNotifier {
         penaltyTime: _penaltyTime,
       );
 
-  /// Restore this module from a cold-resume snapshot. Ordering matters:
-  ///   1. apply `isEnabled` first — `disable()` disconnects and
-  ///      `applyPresetConfig` only reconnects when enabled, so the flag must be
-  ///      correct before the reconnect step;
-  ///   2. set the normalized state/penalty and arm the restore-notify one-shot;
-  ///   3. re-establish the BLE device (a cold kill built a fresh Module with no
-  ///      device), reusing the preset-load path for the auto-reconnect.
+  /// Restore from a snapshot. play/halfTime/fullTime normalise to stop (a
+  /// restored `play` would auto-PLAY on reconnect); damage is kept, with the
+  /// restore-notify one-shot armed so the reconnect sends STOP only.
   void restoreFromSnapshot(ModuleSnapshot s) {
-    if (s.isEnabled) {
-      enable();
-    } else {
-      disable();
-    }
-
+    s.isEnabled ? enable() : disable();
     _penaltyTime = s.penaltyTime;
-    // Normalize play/halfTime/fullTime -> stop for BOTH _state and _lastState:
-    // a restored `play` _state would make the reconnect bleNotify() emit
-    // bleSendPlay() (auto-PLAY), and a `play` _lastState would make the
-    // single-tap Module.stop() (switches on _lastState) a silent no-op. Keep
-    // damage/stop as-is.
-    _state = _normalizeRestoredState(_parseState(s.state));
-    _lastState = _normalizeRestoredState(_parseState(s.lastState));
+    _state = _restoredState(s.state);
+    _lastState = _restoredState(s.lastState);
     _suppressNextRestoreNotify = true;
 
     if (s.isEnabled && s.macAddress.isNotEmpty) {
-      // applyPresetConfig() sets the label, builds the device and reconnects.
-      // It takes a non-null label, hence `?? ''` (an empty label resolves to
-      // the default name via the `name` getter). The hardware MAC rides along
-      // (#82); a pre-split Android snapshot has none, but applyPresetConfig
-      // backfills it from the MAC-shaped connection id.
-      applyPresetConfig(s.macAddress, s.customLabel ?? '',
-          hardwareMac: s.hardwareMac);
+      applyPresetConfig(s.macAddress, s.customLabel ?? '', hardwareMac: s.hardwareMac);
     } else {
-      // Not reconnecting: still record the identities (for a later manual
-      // connect / the iOS resolver) and apply the label, mirroring
-      // applyPresetConfig's always-apply-label rule.
       macAddress = s.macAddress;
       if (s.hardwareMac.isNotEmpty) {
         hardwareMac = s.hardwareMac;
       } else if (isMacFormat(s.macAddress)) {
-        // Pre-split snapshot on Android: the stored connection id IS the MAC.
         hardwareMac = s.macAddress;
       }
       setLabel(s.customLabel ?? '');
@@ -954,67 +574,6 @@ class Module with ChangeNotifier {
     notifyListeners();
   }
 
-  ModuleState _parseState(String name) => ModuleState.values.firstWhere(
-        (s) => s.name == name,
-        orElse: () => ModuleState.stop,
-      );
-
-  ModuleState _normalizeRestoredState(ModuleState state) {
-    switch (state) {
-      case ModuleState.damage:
-        return ModuleState.damage;
-      case ModuleState.stop:
-      case ModuleState.play:
-      case ModuleState.halfTime:
-      case ModuleState.fullTime:
-        return ModuleState.stop;
-    }
-  }
-
+  static ModuleState _restoredState(String name) =>
+      name == ModuleState.damage.name ? ModuleState.damage : ModuleState.stop;
 }
-
-
-// class BleDeviceHandler {
-//
-//   BluetoothDevice device;
-//   var subscription;
-//
-//
-//   BleDeviceHandler(this.device) {
-//
-//   }
-//
-//   void _registerSubscriber() {
-//     subscription = device.connectionState.listen((BluetoothConnectionState state) async {
-//       debugPrint('BLE device status: $state');
-//       if (state == BluetoothConnectionState.disconnected) {
-//         // 1. typically, start a periodic timer that tries to
-//         //    reconnect, or just call connect() again right now
-//         // 2. you must always re-discover services after disconnection!
-//         String bleStatus = 'Disconnected';
-//         notifyListeners();
-//         debugPrint("disconnect");
-//       } else if (state == BluetoothConnectionState.connected) {
-//         String bleStatus = 'Connect';
-//       }
-//     });
-//     device.cancelWhenDisconnected(subscription, delayed:true, next:true);
-//   }
-//
-//   Future connect() async {
-//     _registerSubscriber();
-//
-//     // Connect to the device
-//     try {
-//       await device.connect();
-//     } catch (e) {
-//       debugPrint('BLE connect error');
-//     }
-//
-//
-//   }
-//
-//
-//
-//
-// }

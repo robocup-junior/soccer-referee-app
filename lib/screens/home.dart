@@ -89,7 +89,7 @@ class _HomeState extends State<Home> {
       if (!game.inGame) {
         game.gameInit();
       } else {
-        game.gameRefresh();
+        game.broadcastFullState();
       }
     }
   }
@@ -460,9 +460,7 @@ Widget buildTeamContainer(Team team, Game game) {
               color: Colors.transparent,
               border: Border(
                 top: BorderSide(
-                  color: team.id == "A"
-                      ? const Color(0xFF77FF00)
-                      : const Color(0xFFFF00FF), // Neon green or neon magenta
+                  color: AppColors.team(team.id),
                   width: 5,
                 ),
               ),

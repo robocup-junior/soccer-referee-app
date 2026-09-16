@@ -745,7 +745,7 @@ void main() {
       // A referee START path must cancel the suppression synchronously, so a
       // LATE reconnect after START reflects the real (playing) state instead of
       // sending a stale STOP.
-      m0.playOrDamageAll();
+      m0.playAll(clearPenalty: false);
       expect(m0.suppressNextRestoreNotify, isFalse);
 
       await tester.pump(const Duration(milliseconds: 400)); // drain fan-out
@@ -3488,7 +3488,7 @@ void main() {
       final game = Game();
       await settleLoad(tester);
 
-      await game.clearMatchSnapshot();
+      await game.persistence.clearAndWait();
       await tester.pump();
 
       expect(MatchStateStore(prefs).load(), isNull);
@@ -3509,7 +3509,7 @@ void main() {
 
       // The path the master "START ALL ROBOTS" now uses (playAll(false) ->
       // playOrDamageAll). The penalty branch does not zero the penalty.
-      module.playOrDamageAll();
+      module.playAll(clearPenalty: false);
       expect(module.state, ModuleState.damage);
       expect(module.penaltyTime, 30);
       game.dispose();

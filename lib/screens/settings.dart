@@ -463,7 +463,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                                       // match. Awaited so the clear lands before
                                       // a possible immediate kill (off the
                                       // robot-command path).
-                                      await widget.game.clearMatchSnapshot();
+                                      await widget.game.persistence.clearAndWait();
                                     },
                                   ),
                                 SettingStatus(
