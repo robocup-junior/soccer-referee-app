@@ -32,7 +32,9 @@ class GamePrompts {
     if (identical(game.onRequestSwitchTeamOrderDialog, _switchOrder)) {
       game.onRequestSwitchTeamOrderDialog = null;
     }
-    if (identical(game.onRequestResumeMatch, _resume)) game.onRequestResumeMatch = null;
+    if (identical(game.onRequestResumeMatch, _resume)) {
+      game.onRequestResumeMatch = null;
+    }
     if (identical(game.onRequestConfirmScoreboardMatch, _confirmLoad)) {
       game.onRequestConfirmScoreboardMatch = null;
     }
@@ -79,7 +81,8 @@ class GamePrompts {
           final discard = await showChoiceDialog(
             context,
             title: 'Discard match?',
-            body: 'This permanently deletes the saved match and cannot be undone.',
+            body:
+                'This permanently deletes the saved match and cannot be undone.',
             confirmText: 'Discard',
             confirmColor: Colors.red[600],
           );
@@ -99,14 +102,16 @@ class GamePrompts {
           final load = await showChoiceDialog(
             context,
             title: 'Load match?',
-            content: _LoadMatchDetails(config: config, replacesMatch: game.inGame),
+            content:
+                _LoadMatchDetails(config: config, replacesMatch: game.inGame),
             confirmText: 'Load',
             confirmColor: Colors.green[600],
           );
           if (load == true) {
             await game.confirmScoreboardMatch(expectedSignature: signature);
           } else {
-            game.scoreboardResultService.cancelPendingMatch(expectedSignature: signature);
+            game.scoreboardResultService
+                .cancelPendingMatch(expectedSignature: signature);
           }
         } finally {
           _confirmOpen = false;
@@ -129,7 +134,8 @@ class GamePrompts {
     final left = teams.elementAtOrNull(0);
     final right = teams.elementAtOrNull(1);
     final ageMin =
-        ((DateTime.now().millisecondsSinceEpoch - snapshot.savedAtMs) / 60000).floor();
+        ((DateTime.now().millisecondsSinceEpoch - snapshot.savedAtMs) / 60000)
+            .floor();
     final saved = ageMin <= 0 ? 'saved just now' : 'saved $ageMin min ago';
     final stage = switch (snapshot.stage) {
       'firstHalf' => '1st half',
@@ -156,7 +162,8 @@ class _LoadMatchDetails extends StatelessWidget {
   final ScoreboardMatchConfig config;
   final bool replacesMatch;
 
-  static const _heading = TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 16);
+  static const _heading =
+      TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 16);
 
   @override
   Widget build(BuildContext context) {
@@ -167,12 +174,14 @@ class _LoadMatchDetails extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('${config.homeTeamName} vs ${config.awayTeamName}', style: _heading),
+          Text('${config.homeTeamName} vs ${config.awayTeamName}',
+              style: _heading),
           _detail(config.venueShortName.isNotEmpty
               ? 'Field ${config.venueShortName} · $duration'
               : duration),
           if (kickoff != null) _detail('Kickoff $kickoff (local time)'),
-          if (replacesMatch) _detail('⚠ This replaces the match in progress.', warning: true),
+          if (replacesMatch)
+            _detail('⚠ This replaces the match in progress.', warning: true),
           const SizedBox(height: 12),
           _team(config.homeTeamName, config.homeInspectionRobots),
           const SizedBox(height: 10),
@@ -195,7 +204,8 @@ class _LoadMatchDetails extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(name, style: _heading.copyWith(decoration: TextDecoration.underline)),
+          Text(name,
+              style: _heading.copyWith(decoration: TextDecoration.underline)),
           InspectionRobotList(robots: robots),
         ],
       );

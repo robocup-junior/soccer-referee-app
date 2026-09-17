@@ -17,10 +17,13 @@ RefereeLink? parseRefereeLink(Uri uri, {required Uri defaultBase}) {
     if (token.isEmpty) return null;
     return (
       token: token,
-      baseUri: Uri(scheme: 'https', host: uri.host, port: uri.hasPort ? uri.port : null),
+      baseUri: Uri(
+          scheme: 'https', host: uri.host, port: uri.hasPort ? uri.port : null),
     );
   }
-  if (uri.scheme != 'rcjrefmate' || uri.host != 'r' || uri.pathSegments.isEmpty) {
+  if (uri.scheme != 'rcjrefmate' ||
+      uri.host != 'r' ||
+      uri.pathSegments.isEmpty) {
     return null;
   }
   final token = Uri.decodeComponent(uri.pathSegments.first).trim();

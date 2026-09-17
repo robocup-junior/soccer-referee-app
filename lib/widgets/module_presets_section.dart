@@ -34,7 +34,9 @@ class _ModulePresetsSectionState extends State<ModulePresetsSection> {
 
   Future<void> _save() async {
     final name = await showTextInputDialog(context,
-        title: 'Save Preset', label: 'Preset name', hint: 'e.g. My team robots');
+        title: 'Save Preset',
+        label: 'Preset name',
+        hint: 'e.g. My team robots');
     if (name == null || name.trim().isEmpty) return;
     final preset = widget.game.createPreset(name.trim());
     await _service.save(preset);
@@ -53,7 +55,10 @@ class _ModulePresetsSectionState extends State<ModulePresetsSection> {
     return SettingsSection(
       title: 'Module Presets',
       settings: [
-        SettingButton(title: 'Save current robot configuration', buttonText: 'Save', onPressed: _save),
+        SettingButton(
+            title: 'Save current robot configuration',
+            buttonText: 'Save',
+            onPressed: _save),
         if (presets == null)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 8),
@@ -62,7 +67,8 @@ class _ModulePresetsSectionState extends State<ModulePresetsSection> {
         else if (presets.isEmpty)
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 4),
-            child: Text('No presets saved yet.', style: TextStyle(color: Colors.grey, fontSize: 14)),
+            child: Text('No presets saved yet.',
+                style: TextStyle(color: Colors.grey, fontSize: 14)),
           )
         else
           for (final preset in presets)
@@ -70,8 +76,12 @@ class _ModulePresetsSectionState extends State<ModulePresetsSection> {
               padding: const EdgeInsets.symmetric(vertical: 4),
               child: Row(
                 children: [
-                  Expanded(child: Text(preset.name, style: const TextStyle(fontSize: 14))),
-                  TextButton(onPressed: () => _load(preset), child: const Text('Load')),
+                  Expanded(
+                      child: Text(preset.name,
+                          style: const TextStyle(fontSize: 14))),
+                  TextButton(
+                      onPressed: () => _load(preset),
+                      child: const Text('Load')),
                   IconButton(
                     icon: const Icon(Icons.delete_outline, color: Colors.red),
                     onPressed: () async {

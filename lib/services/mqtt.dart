@@ -15,7 +15,8 @@ enum MqttConnectionStateEx { disconnected, connecting, connected, error }
 
 const String _defaultPassword = 'S_p-@P2_rL7ZFv9';
 const String _legacyPasswordHint = 'S_p-@P2_rL7ZFv9XYZ';
-const String _defaultServer = 'f2ec5c0344964af6a9b036e32a4f726c.s1.eu.hivemq.cloud';
+const String _defaultServer =
+    'f2ec5c0344964af6a9b036e32a4f726c.s1.eu.hivemq.cloud';
 
 /// Publishes match state to `rcj_soccer/field_<N>/<topic>` (retained).
 class MqttService {
@@ -142,8 +143,10 @@ class MqttService {
   Future<bool> _connect() async {
     if (_server.isEmpty || _port <= 0) return false;
     // Never dial the shipped production broker from a test run (review #94).
-    if (Platform.environment.containsKey('FLUTTER_TEST') && _server == _defaultServer) {
-      debugPrint('MQTT: refusing to dial the production broker from a test run');
+    if (Platform.environment.containsKey('FLUTTER_TEST') &&
+        _server == _defaultServer) {
+      debugPrint(
+          'MQTT: refusing to dial the production broker from a test run');
       return false;
     }
     connectionStateNotifier.value = MqttConnectionStateEx.connecting;
@@ -152,7 +155,8 @@ class MqttService {
       ..logging(on: false)
       ..keepAlivePeriod = 300
       ..secure = _secureConnection
-      ..connectionMessage = MqttConnectMessage().withClientIdentifier(_clientId).startClean();
+      ..connectionMessage =
+          MqttConnectMessage().withClientIdentifier(_clientId).startClean();
     // Callbacks capture THIS client so a stale one can't touch a newer link.
     client.onDisconnected = () => _onDisconnected(client);
     client.onConnected = () {
@@ -176,9 +180,11 @@ class MqttService {
       _fail(describeError(e).message);
     }
     if (!identical(_client, client)) return false;
-    if (client.connectionStatus?.state == MqttConnectionState.connected) return true;
-    _fail(describeMqttReturnCode(
-        client.connectionStatus?.returnCode ?? MqttConnectReturnCode.noneSpecified));
+    if (client.connectionStatus?.state == MqttConnectionState.connected) {
+      return true;
+    }
+    _fail(describeMqttReturnCode(client.connectionStatus?.returnCode ??
+        MqttConnectReturnCode.noneSpecified));
     return false;
   }
 
@@ -202,7 +208,8 @@ class MqttService {
 
   void _onDisconnected(MqttServerClient client) {
     if (!identical(_client, client)) return;
-    if (client.connectionStatus?.disconnectionOrigin == MqttDisconnectionOrigin.solicited) {
+    if (client.connectionStatus?.disconnectionOrigin ==
+        MqttDisconnectionOrigin.solicited) {
       _client = null;
       connectionStateNotifier.value = MqttConnectionStateEx.disconnected;
       return;
@@ -236,7 +243,8 @@ class MqttService {
   void publishCMMessage(String message, {required String topic}) {
     final client = _client;
     if (!_isEnabled || client == null || !isConnected) return;
-    final full = _topic.isNotEmpty ? '$_mainTopic/$_topic/$topic' : '$_mainTopic/$topic';
+    final full =
+        _topic.isNotEmpty ? '$_mainTopic/$_topic/$topic' : '$_mainTopic/$topic';
     final payload = (MqttClientPayloadBuilder()..addString(message)).payload!;
     client.publishMessage(full, MqttQos.atLeastOnce, payload, retain: true);
   }

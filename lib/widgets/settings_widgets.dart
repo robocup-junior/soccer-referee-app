@@ -45,12 +45,19 @@ class SettingsSection extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                  Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  if (enabled != null && onToggle != null)
-                    Switch(value: enabled!, onChanged: onToggle, activeThumbColor: Colors.blue),
-                  if (locked) const Icon(Icons.lock, color: Colors.white),
-                ]),
+                Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(title,
+                          style: const TextStyle(
+                              fontSize: 18, fontWeight: FontWeight.bold)),
+                      if (enabled != null && onToggle != null)
+                        Switch(
+                            value: enabled!,
+                            onChanged: onToggle,
+                            activeThumbColor: Colors.blue),
+                      if (locked) const Icon(Icons.lock, color: Colors.white),
+                    ]),
                 if (enabled ?? true) ...settings,
               ],
             ),
@@ -61,7 +68,12 @@ class SettingsSection extends StatelessWidget {
 
 /// Label on the left, [trailing] on the right: the shape of every row.
 class SettingRow extends StatelessWidget {
-  const SettingRow({super.key, required this.title, required this.trailing, this.labelFlex = 3, this.trailingFlex = 2});
+  const SettingRow(
+      {super.key,
+      required this.title,
+      required this.trailing,
+      this.labelFlex = 3,
+      this.trailingFlex = 2});
   final Widget title;
   final Widget trailing;
   final int labelFlex;
@@ -102,14 +114,19 @@ class SettingDropdownButton extends StatelessWidget {
           value: value,
           onChanged: onChanged,
           items: [
-            for (final item in options) DropdownMenuItem(value: item, child: Text(item.name)),
+            for (final item in options)
+              DropdownMenuItem(value: item, child: Text(item.name)),
           ],
         ),
       );
 }
 
 class SettingButton extends StatelessWidget {
-  const SettingButton({super.key, required this.title, required this.buttonText, required this.onPressed});
+  const SettingButton(
+      {super.key,
+      required this.title,
+      required this.buttonText,
+      required this.onPressed});
   final String title;
   final String buttonText;
   final VoidCallback? onPressed;
@@ -134,12 +151,19 @@ class SettingStatus extends StatelessWidget {
   Widget build(BuildContext context) => SettingRow(
         title: Text(title),
         trailingFlex: 3,
-        trailing: Text(status, style: const TextStyle(color: Colors.white), textAlign: TextAlign.right),
+        trailing: Text(status,
+            style: const TextStyle(color: Colors.white),
+            textAlign: TextAlign.right),
       );
 }
 
 class SettingSwitch extends StatelessWidget {
-  const SettingSwitch({super.key, required this.title, required this.value, required this.onChanged, this.subtitle});
+  const SettingSwitch(
+      {super.key,
+      required this.title,
+      required this.value,
+      required this.onChanged,
+      this.subtitle});
   final String title;
   final bool value;
   final ValueChanged<bool> onChanged;
@@ -156,17 +180,24 @@ class SettingSwitch extends StatelessWidget {
             if (subtitle != null)
               Padding(
                 padding: const EdgeInsets.only(top: 4),
-                child: Text(subtitle!, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                child: Text(subtitle!,
+                    style: const TextStyle(fontSize: 12, color: Colors.grey)),
               ),
           ],
         ),
-        trailing: Switch(value: value, onChanged: onChanged, activeThumbColor: Colors.blue),
+        trailing: Switch(
+            value: value, onChanged: onChanged, activeThumbColor: Colors.blue),
       );
 }
 
 /// Multi-select chips for alert thresholds (seconds remaining).
 class SettingAlertChips extends StatelessWidget {
-  const SettingAlertChips({super.key, required this.label, required this.options, required this.selected, required this.onToggle});
+  const SettingAlertChips(
+      {super.key,
+      required this.label,
+      required this.options,
+      required this.selected,
+      required this.onToggle});
   final String label;
   final List<int> options;
   final Set<int> selected;
@@ -190,7 +221,8 @@ class SettingAlertChips extends StatelessWidget {
                     onSelected: (_) => onToggle(sec),
                     selectedColor: Colors.blue,
                     checkmarkColor: Colors.white,
-                    labelStyle: TextStyle(color: selected.contains(sec) ? Colors.white : null),
+                    labelStyle: TextStyle(
+                        color: selected.contains(sec) ? Colors.white : null),
                   ),
               ],
             ),
@@ -226,7 +258,8 @@ class SettingInputField extends StatefulWidget {
 }
 
 class _SettingInputFieldState extends State<SettingInputField> {
-  late final TextEditingController _controller = TextEditingController(text: widget.initialValue);
+  late final TextEditingController _controller =
+      TextEditingController(text: widget.initialValue);
   final FocusNode _focusNode = FocusNode();
 
   @override
@@ -238,7 +271,9 @@ class _SettingInputFieldState extends State<SettingInputField> {
   @override
   void didUpdateWidget(covariant SettingInputField old) {
     super.didUpdateWidget(old);
-    if (widget.initialValue != old.initialValue) _controller.text = widget.initialValue;
+    if (widget.initialValue != old.initialValue) {
+      _controller.text = widget.initialValue;
+    }
   }
 
   @override
@@ -259,7 +294,9 @@ class _SettingInputFieldState extends State<SettingInputField> {
           obscureText: widget.isPassword && !_focusNode.hasFocus,
           inputFormatters: widget.inputFormatters,
           maxLength: widget.maxLength,
-          buildCounter: (_, {required currentLength, required isFocused, maxLength}) => null,
+          buildCounter: (_,
+                  {required currentLength, required isFocused, maxLength}) =>
+              null,
           style: const TextStyle(color: Colors.white),
           decoration: InputDecoration(
             border: const OutlineInputBorder(),

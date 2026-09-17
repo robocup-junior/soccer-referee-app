@@ -80,7 +80,9 @@ class ScoreboardResultService with ChangeNotifier {
   /// re-opening the result review. A terminal 401/422 rejection does not
   /// block: it is correctable and re-submittable (RAVF002).
   bool hasUnresolvedResultFor(String matchCode) => _outbox.any((i) =>
-      i.matchCode == matchCode && i.token == _token && !_isTerminalRejection(i));
+      i.matchCode == matchCode &&
+      i.token == _token &&
+      !_isTerminalRejection(i));
 
   static bool _isTerminalRejection(ResultOutboxItem i) =>
       i.state == ResultSubmissionState.failed &&
@@ -89,7 +91,8 @@ class ScoreboardResultService with ChangeNotifier {
   /// Test seam: surface a committed config as a deep link / persisted load
   /// would, without the app_links channel or network I/O.
   @visibleForTesting
-  void debugApplyMatchConfig(ScoreboardMatchConfig config, {String? token, Uri? baseUri}) {
+  void debugApplyMatchConfig(ScoreboardMatchConfig config,
+      {String? token, Uri? baseUri}) {
     _matchConfig = config;
     if (token != null) _token = token;
     if (baseUri != null) _baseUri = baseUri;
@@ -113,7 +116,9 @@ class ScoreboardResultService with ChangeNotifier {
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
       final item = _outbox.where((i) => i.matchCode == matchCode).lastOrNull;
-      if (item != null && item.state != ResultSubmissionState.pending) return item.state;
+      if (item != null && item.state != ResultSubmissionState.pending) {
+        return item.state;
+      }
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
     return null;
@@ -162,7 +167,8 @@ class ScoreboardResultService with ChangeNotifier {
         try {
           items.add(ResultOutboxItem.fromJson(Map<String, dynamic>.from(e)));
         } catch (err) {
-          debugPrint('ScoreboardResultService: skipping malformed outbox item: $err');
+          debugPrint(
+              'ScoreboardResultService: skipping malformed outbox item: $err');
         }
       }
       return items;
@@ -212,7 +218,8 @@ class ScoreboardResultService with ChangeNotifier {
     _linkSub?.cancel();
     _linkSub = _appLinks.uriLinkStream.listen(
       (uri) => unawaited(_logged(handleDeepLink(uri), 'deep link handling')),
-      onError: (Object e) => debugPrint('ScoreboardResultService: link stream failed: $e'),
+      onError: (Object e) =>
+          debugPrint('ScoreboardResultService: link stream failed: $e'),
     );
   }
 
@@ -231,7 +238,8 @@ class ScoreboardResultService with ChangeNotifier {
     // A newer link or a confirm/cancel may have replaced the pending target.
     if (_pendingToken != link.token || _pendingBaseUri != link.baseUri) return;
     _pendingMatchConfig = outcome.config;
-    _statusMessage = outcome.config != null ? 'Confirm to load match' : outcome.status;
+    _statusMessage =
+        outcome.config != null ? 'Confirm to load match' : outcome.status;
     notifyListeners();
   }
 
@@ -293,7 +301,8 @@ class ScoreboardResultService with ChangeNotifier {
     return delivered ? '✓ Submitted ${config.matchCode}' : null;
   }
 
-  String _committedMatchStatus() => _submittedStatusForCommittedMatch() ??
+  String _committedMatchStatus() =>
+      _submittedStatusForCommittedMatch() ??
       (_matchConfig == null ? 'Awaiting link' : 'Match loaded');
 
   void _clearPending() {
@@ -471,7 +480,8 @@ class ScoreboardResultService with ChangeNotifier {
   }
 
   bool _isCurrentFixture(ResultOutboxItem item) =>
-      _matchConfig?.matchCode == item.matchCode && _matchConfig?.version == item.version;
+      _matchConfig?.matchCode == item.matchCode &&
+      _matchConfig?.version == item.version;
 
   Future<void> _submitItem(String id) async {
     final item = _outbox.where((i) => i.id == id).firstOrNull;
@@ -485,7 +495,8 @@ class ScoreboardResultService with ChangeNotifier {
       'idempotency_key': item.idempotencyKey,
       if (item.comment?.isNotEmpty ?? false) 'comment': item.comment,
       // Submit-time module report (#85); omitted for legacy items.
-      if (item.actualHomeModules.isNotEmpty || item.actualAwayModules.isNotEmpty)
+      if (item.actualHomeModules.isNotEmpty ||
+          item.actualAwayModules.isNotEmpty)
         'actual_modules': {
           'home': item.actualHomeModules.map((m) => m.toJson()).toList(),
           'away': item.actualAwayModules.map((m) => m.toJson()).toList(),
@@ -498,7 +509,8 @@ class ScoreboardResultService with ChangeNotifier {
     try {
       final response = await _httpClient
           .post(
-            Uri.parse(item.baseUrl).replace(path: '/api/v1/soccer/match/result/'),
+            Uri.parse(item.baseUrl)
+                .replace(path: '/api/v1/soccer/match/result/'),
             headers: {
               'Authorization': 'Bearer ${item.token}',
               'Content-Type': 'application/json',
@@ -564,11 +576,15 @@ class ScoreboardResultService with ChangeNotifier {
   }
 
   void _markRetriableFailure(int index, ResultOutboxItem item, String error,
-      {int? responseStatus, Map<String, dynamic>? responseBody, required bool updateStatus}) {
+      {int? responseStatus,
+      Map<String, dynamic>? responseBody,
+      required bool updateStatus}) {
     final retries = item.retryCount + 1;
     final exhausted = retries >= _maxSubmissionRetries;
     _outbox[index] = item.copyWith(
-      state: exhausted ? ResultSubmissionState.failed : ResultSubmissionState.pending,
+      state: exhausted
+          ? ResultSubmissionState.failed
+          : ResultSubmissionState.pending,
       retryCount: retries,
       responseStatus: responseStatus,
       responseBody: responseBody,

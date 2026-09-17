@@ -11,7 +11,8 @@ int _robotNumber(Map<String, dynamic> json) =>
 
 /// Parse a list of rows, dropping non-maps and rows with an invalid robot
 /// number, so one bad row never breaks the whole payload.
-List<T> _rows<T>(dynamic value, T Function(Map<String, dynamic>) parse, int Function(T) robotOf) {
+List<T> _rows<T>(dynamic value, T Function(Map<String, dynamic>) parse,
+    int Function(T) robotOf) {
   if (value is! List) return const [];
   return value
       .whereType<Map>()
@@ -21,7 +22,8 @@ List<T> _rows<T>(dynamic value, T Function(Map<String, dynamic>) parse, int Func
 }
 
 class InspectionRobot {
-  const InspectionRobot({required this.robot, required this.status, required this.note});
+  const InspectionRobot(
+      {required this.robot, required this.status, required this.note});
 
   final int robot;
   final InspectionStatus status;
@@ -31,17 +33,21 @@ class InspectionRobot {
     final name = json['status']?.toString().toLowerCase().trim();
     return InspectionRobot(
       robot: _robotNumber(json),
-      status: InspectionStatus.values
-          .firstWhere((s) => s.name == name, orElse: () => InspectionStatus.unknown),
+      status: InspectionStatus.values.firstWhere((s) => s.name == name,
+          orElse: () => InspectionStatus.unknown),
       note: (json['note']?.toString() ?? '').trim(),
     );
   }
 
-  Map<String, dynamic> toJson() => {'robot': robot, 'status': status.name, 'note': note};
+  Map<String, dynamic> toJson() =>
+      {'robot': robot, 'status': status.name, 'note': note};
 
   @override
   bool operator ==(Object other) =>
-      other is InspectionRobot && other.robot == robot && other.status == status && other.note == note;
+      other is InspectionRobot &&
+      other.robot == robot &&
+      other.status == status &&
+      other.note == note;
 
   @override
   int get hashCode => Object.hash(robot, status, note);
@@ -49,7 +55,8 @@ class InspectionRobot {
 
 /// One comm module as actually fielded at result-submit time (#85).
 class ActualModuleReport {
-  const ActualModuleReport({required this.robot, required this.mac, required this.connected});
+  const ActualModuleReport(
+      {required this.robot, required this.mac, required this.connected});
 
   final int robot;
   final String mac;
@@ -59,18 +66,24 @@ class ActualModuleReport {
   /// round-trip is idempotent.
   static String normalizeMac(String raw) => raw.trim().toUpperCase();
 
-  factory ActualModuleReport.fromJson(Map<String, dynamic> json) => ActualModuleReport(
+  factory ActualModuleReport.fromJson(Map<String, dynamic> json) =>
+      ActualModuleReport(
         robot: _robotNumber(json),
         mac: normalizeMac(json['mac']?.toString() ?? ''),
         // A type test, not a cast: a corrupt value must not throw away the item.
-        connected: json['connected'] is bool ? json['connected'] as bool : false,
+        connected:
+            json['connected'] is bool ? json['connected'] as bool : false,
       );
 
-  Map<String, dynamic> toJson() => {'robot': robot, 'mac': mac, 'connected': connected};
+  Map<String, dynamic> toJson() =>
+      {'robot': robot, 'mac': mac, 'connected': connected};
 
   @override
   bool operator ==(Object other) =>
-      other is ActualModuleReport && other.robot == robot && other.mac == mac && other.connected == connected;
+      other is ActualModuleReport &&
+      other.robot == robot &&
+      other.mac == mac &&
+      other.connected == connected;
 
   @override
   int get hashCode => Object.hash(robot, mac, connected);
@@ -148,10 +161,15 @@ class ScoreboardMatchConfig {
 
     List<String> macs(dynamic value) => value is! List
         ? const []
-        : value.map((e) => e.toString().trim().toUpperCase()).where((m) => m.isNotEmpty).toList();
+        : value
+            .map((e) => e.toString().trim().toUpperCase())
+            .where((m) => m.isNotEmpty)
+            .toList();
 
     final homeSide = json['home_side'] ??
-        (json['side_order'] is Map ? json['side_order']['home']?.toString().toLowerCase() : null);
+        (json['side_order'] is Map
+            ? json['side_order']['home']?.toString().toLowerCase()
+            : null);
     final homeIsLeft = switch (json['home_is_left']) {
       bool b => b,
       _ => switch (homeSide) { 'left' => true, 'right' => false, _ => true },
@@ -164,15 +182,18 @@ class ScoreboardMatchConfig {
       awayTeamName: teamName(json['away_team'], 'Away'),
       homeIsLeft: homeIsLeft,
       venueShortName: (json['venue']?.toString() ?? '').trim(),
-      scheduledStart: DateTime.tryParse(json['scheduled_start']?.toString() ?? ''),
+      scheduledStart:
+          DateTime.tryParse(json['scheduled_start']?.toString() ?? ''),
       durationSeconds: duration <= 0 ? 600 : duration,
       timezone: (json['timezone']?.toString() ?? 'UTC').trim(),
       version: (json['version'] as num?)?.toInt() ?? 0,
       status: (json['status']?.toString() ?? '').toUpperCase(),
       homeModuleMacs: macs(json['home_module_macs']),
       awayModuleMacs: macs(json['away_module_macs']),
-      homeInspectionRobots: _rows(json['home_inspection_robots'], InspectionRobot.fromJson, (r) => r.robot),
-      awayInspectionRobots: _rows(json['away_inspection_robots'], InspectionRobot.fromJson, (r) => r.robot),
+      homeInspectionRobots: _rows(json['home_inspection_robots'],
+          InspectionRobot.fromJson, (r) => r.robot),
+      awayInspectionRobots: _rows(json['away_inspection_robots'],
+          InspectionRobot.fromJson, (r) => r.robot),
     );
   }
 
@@ -204,8 +225,10 @@ class ScoreboardMatchConfig {
         'status': status,
         'home_module_macs': homeModuleMacs,
         'away_module_macs': awayModuleMacs,
-        'home_inspection_robots': homeInspectionRobots.map((r) => r.toJson()).toList(),
-        'away_inspection_robots': awayInspectionRobots.map((r) => r.toJson()).toList(),
+        'home_inspection_robots':
+            homeInspectionRobots.map((r) => r.toJson()).toList(),
+        'away_inspection_robots':
+            awayInspectionRobots.map((r) => r.toJson()).toList(),
       };
 }
 
@@ -286,8 +309,10 @@ class ResultOutboxItem {
         actualAwayModules: actualAwayModules,
         retryCount: retryCount ?? this.retryCount,
         state: state ?? this.state,
-        responseStatus: clearResponse ? null : (responseStatus ?? this.responseStatus),
-        responseBody: clearResponse ? null : (responseBody ?? this.responseBody),
+        responseStatus:
+            clearResponse ? null : (responseStatus ?? this.responseStatus),
+        responseBody:
+            clearResponse ? null : (responseBody ?? this.responseBody),
         errorMessage: clearError ? null : (errorMessage ?? this.errorMessage),
         createdAt: createdAt,
         updatedAt: DateTime.now().toUtc(),
@@ -320,10 +345,13 @@ class ResultOutboxItem {
       version: (json['version'] as num?)?.toInt() ?? 0,
       idempotencyKey: json['idempotency_key'] as String,
       comment: json['comment'] as String?,
-      actualHomeModules: _rows(json['actual_home_modules'], ActualModuleReport.fromJson, (r) => r.robot),
-      actualAwayModules: _rows(json['actual_away_modules'], ActualModuleReport.fromJson, (r) => r.robot),
+      actualHomeModules: _rows(json['actual_home_modules'],
+          ActualModuleReport.fromJson, (r) => r.robot),
+      actualAwayModules: _rows(json['actual_away_modules'],
+          ActualModuleReport.fromJson, (r) => r.robot),
       retryCount: (json['retry_count'] as num?)?.toInt() ?? 0,
-      state: ResultSubmissionState.values.firstWhere((s) => s.name == json['state'],
+      state: ResultSubmissionState.values.firstWhere(
+          (s) => s.name == json['state'],
           orElse: () => ResultSubmissionState.pending),
       responseStatus: (json['response_status'] as num?)?.toInt(),
       responseBody: body(json['response_body']),
@@ -345,8 +373,10 @@ class ResultOutboxItem {
         'version': version,
         'idempotency_key': idempotencyKey,
         'comment': comment,
-        'actual_home_modules': actualHomeModules.map((m) => m.toJson()).toList(),
-        'actual_away_modules': actualAwayModules.map((m) => m.toJson()).toList(),
+        'actual_home_modules':
+            actualHomeModules.map((m) => m.toJson()).toList(),
+        'actual_away_modules':
+            actualAwayModules.map((m) => m.toJson()).toList(),
         'retry_count': retryCount,
         'state': state.name,
         'response_status': responseStatus,

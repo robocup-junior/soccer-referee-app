@@ -9,10 +9,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// stripped ("Field 03" -> "3"); '' when there is none (or only "0", since
 /// RCJ fields start at 1). Shared by the catigoal and scoreboard paths (#50).
 String fieldNumberFromVenue(String raw) =>
-    RegExp(r'\d+').firstMatch(raw)?.group(0)?.replaceFirst(RegExp(r'^0+'), '') ?? '';
+    RegExp(r'\d+')
+        .firstMatch(raw)
+        ?.group(0)
+        ?.replaceFirst(RegExp(r'^0+'), '') ??
+    '';
 
 class Match {
-  const Match({required this.id, required this.field, required this.team1, required this.team2});
+  const Match(
+      {required this.id,
+      required this.field,
+      required this.team1,
+      required this.team2});
 
   final String id;
   final String field;
@@ -33,7 +41,8 @@ class MatchDataService {
     _loadPreferences();
   }
 
-  static const _defaultUrl = 'https://catigoal.com/rest/v1/RCJI26/matches?format=json';
+  static const _defaultUrl =
+      'https://catigoal.com/rest/v1/RCJI26/matches?format=json';
 
   final ValueNotifier<String> stateNotifier = ValueNotifier('');
   SharedPreferences? _prefs;
@@ -64,12 +73,14 @@ class MatchDataService {
       if (response.statusCode != 200) {
         throw HttpStatusException(response.statusCode, url: _url);
       }
-      final list = (json.decode(response.body) as Map<String, dynamic>)['matches'] as List;
+      final list = (json.decode(response.body)
+          as Map<String, dynamic>)['matches'] as List;
       final match = list
           .map((m) => Match.fromJson(m as Map<String, dynamic>))
           .where((m) => m.id == _matchId)
           .firstOrNull;
-      stateNotifier.value = match == null ? 'Match not found' : 'Match ID $_matchId loaded';
+      stateNotifier.value =
+          match == null ? 'Match not found' : 'Match ID $_matchId loaded';
       return match;
     } catch (e) {
       stateNotifier.value = describeError(e).message;

@@ -60,7 +60,8 @@ class _BarcodeScannerSimpleState extends State<BarcodeScannerSimple> {
       appBar: AppBar(
         iconTheme: const IconThemeData(color: Colors.white),
         backgroundColor: AppColors.primary,
-        title: const Text('Scan module QR code', style: TextStyle(color: Colors.white)),
+        title: const Text('Scan module QR code',
+            style: TextStyle(color: Colors.white)),
       ),
       body: Stack(
         children: [
@@ -77,7 +78,8 @@ class _BarcodeScannerSimpleState extends State<BarcodeScannerSimple> {
                   height: 100,
                   child: Center(
                     child: Text(caption,
-                        overflow: TextOverflow.fade, style: const TextStyle(color: Colors.white)),
+                        overflow: TextOverflow.fade,
+                        style: const TextStyle(color: Colors.white)),
                   ),
                 ),
               ),

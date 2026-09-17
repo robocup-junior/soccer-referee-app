@@ -30,12 +30,15 @@ Future<bool?> showChoiceDialog(
           Row(
             children: [
               Expanded(
-                child: _DialogButton(cancelText, AppColors.button, () => navigator.pop(false)),
+                child: _DialogButton(
+                    cancelText, AppColors.button, () => navigator.pop(false)),
               ),
               const SizedBox(width: 16),
               Expanded(
                 child: _DialogButton(
-                    confirmText, confirmColor ?? AppColors.button, () => navigator.pop(true)),
+                    confirmText,
+                    confirmColor ?? AppColors.button,
+                    () => navigator.pop(true)),
               ),
             ],
           ),
@@ -46,7 +49,8 @@ Future<bool?> showChoiceDialog(
 }
 
 /// Single-button notice.
-Future<void> showInfoDialog(BuildContext context, {required String title, required String body}) {
+Future<void> showInfoDialog(BuildContext context,
+    {required String title, required String body}) {
   final navigator = Navigator.of(context);
   return showDialog<void>(
     context: context,
@@ -82,8 +86,11 @@ Future<String?> showTextInputDialog(
         onSubmitted: navigator.pop,
       ),
       actions: [
-        TextButton(onPressed: () => navigator.pop(null), child: const Text('Cancel')),
-        TextButton(onPressed: () => navigator.pop(controller.text), child: Text(confirmText)),
+        TextButton(
+            onPressed: () => navigator.pop(null), child: const Text('Cancel')),
+        TextButton(
+            onPressed: () => navigator.pop(controller.text),
+            child: Text(confirmText)),
       ],
     ),
   );
@@ -100,7 +107,8 @@ Future<void> showDarkSheet(BuildContext context,
       child: Container(
         color: AppColors.sheet,
         // Clear the gesture bar so the last line of a scrolled sheet is reachable.
-        padding: EdgeInsets.fromLTRB(20, 20, 20, 20 + MediaQuery.viewPaddingOf(context).bottom),
+        padding: EdgeInsets.fromLTRB(
+            20, 20, 20, 20 + MediaQuery.viewPaddingOf(context).bottom),
         child: child,
       ),
     ),
@@ -123,7 +131,8 @@ class _DialogButton extends StatelessWidget {
 
 /// Grey action button with white text: the app's standard secondary button.
 class AppButton extends StatelessWidget {
-  const AppButton({super.key, required this.label, required this.onPressed, this.icon});
+  const AppButton(
+      {super.key, required this.label, required this.onPressed, this.icon});
   final String label;
   final VoidCallback? onPressed;
   final IconData? icon;
@@ -135,6 +144,9 @@ class AppButton extends StatelessWidget {
     return icon == null
         ? ElevatedButton(style: style, onPressed: onPressed, child: text)
         : ElevatedButton.icon(
-            style: style, onPressed: onPressed, icon: Icon(icon, color: Colors.white), label: text);
+            style: style,
+            onPressed: onPressed,
+            icon: Icon(icon, color: Colors.white),
+            label: text);
   }
 }

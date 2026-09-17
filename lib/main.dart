@@ -25,8 +25,10 @@ class MyApp extends StatelessWidget {
           ChangeNotifierProvider.value(value: game),
           ChangeNotifierProvider.value(value: game.bleBridgeService),
           ChangeNotifierProvider.value(value: game.bleAdapterMonitor),
-          for (final team in game.teams) ChangeNotifierProvider.value(value: team),
-          for (final module in game.modules) ChangeNotifierProvider.value(value: module),
+          for (final team in game.teams)
+            ChangeNotifierProvider.value(value: team),
+          for (final module in game.modules)
+            ChangeNotifierProvider.value(value: module),
         ],
         child: MaterialApp(
           debugShowCheckedModeBanner: false,
@@ -34,7 +36,8 @@ class MyApp extends StatelessWidget {
           theme: ThemeData(
             brightness: Brightness.dark,
             primarySwatch: Colors.blue,
-            textTheme: const TextTheme(bodyMedium: TextStyle(color: Colors.white)),
+            textTheme:
+                const TextTheme(bodyMedium: TextStyle(color: Colors.white)),
           ),
           home: const Home(),
         ),

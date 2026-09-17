@@ -14,7 +14,8 @@ class TimeSettingsWidget extends StatefulWidget {
 }
 
 class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
-  late final _controller = TextEditingController(text: formatClock(widget.game.remainingTime));
+  late final _controller =
+      TextEditingController(text: formatClock(widget.game.remainingTime));
 
   @override
   void dispose() {
@@ -38,12 +39,15 @@ class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
         );
     return Column(
       children: [
-        const Text('Edit remaining time', style: TextStyle(fontSize: 24, color: Colors.white)),
+        const Text('Edit remaining time',
+            style: TextStyle(fontSize: 24, color: Colors.white)),
         const Divider(),
         const SizedBox(height: 20),
         Row(
           children: [
-            const Expanded(flex: 2, child: Text('Time (mm:ss)', style: TextStyle(fontSize: 16))),
+            const Expanded(
+                flex: 2,
+                child: Text('Time (mm:ss)', style: TextStyle(fontSize: 16))),
             Expanded(
               flex: 3,
               child: TextField(
@@ -51,7 +55,9 @@ class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
                 keyboardType: TextInputType.datetime,
                 style: const TextStyle(color: Colors.white),
                 decoration: const InputDecoration(
-                    border: OutlineInputBorder(), filled: true, fillColor: AppColors.sheet),
+                    border: OutlineInputBorder(),
+                    filled: true,
+                    fillColor: AppColors.sheet),
                 onSubmitted: (_) => _apply(parseMmSs(_controller.text)),
               ),
             ),
@@ -66,7 +72,12 @@ class _TimeSettingsWidgetState extends State<TimeSettingsWidget> {
         const SizedBox(height: 20),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [nudge('-1:00', -60), nudge('-0:30', -30), nudge('+0:30', 30), nudge('+1:00', 60)],
+          children: [
+            nudge('-1:00', -60),
+            nudge('-0:30', -30),
+            nudge('+0:30', 30),
+            nudge('+1:00', 60)
+          ],
         ),
       ],
     );

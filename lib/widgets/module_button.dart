@@ -17,7 +17,9 @@ class ModuleButton extends StatelessWidget {
     if (game.noShowPenaltyGoalsActive) return;
     // No robots connected (#22): a tap records a penalty directly; tapping the
     // penalised module again clears it (Module.play on a damage slot).
-    if (game.noModuleConnected && game.isGameRunning && module.state != ModuleState.damage) {
+    if (game.noModuleConnected &&
+        game.isGameRunning &&
+        module.state != ModuleState.damage) {
       module.penalty(game.penaltyTime);
     } else if (module.isPlaying) {
       game.isGameRunning ? module.penalty(game.penaltyTime) : module.stop();
@@ -50,7 +52,9 @@ class ModuleButton extends StatelessWidget {
                   borderRadius: BorderRadius.circular(10),
                   border: Border(
                     bottom: BorderSide(
-                        width: 5, color: module.isPlaying ? AppColors.green : AppColors.red),
+                        width: 5,
+                        color:
+                            module.isPlaying ? AppColors.green : AppColors.red),
                   ),
                 ),
                 child: Center(
@@ -59,9 +63,11 @@ class ModuleButton extends StatelessWidget {
                     children: [
                       Text(module.name,
                           textAlign: TextAlign.center,
-                          style: const TextStyle(fontSize: 30, color: Colors.white)),
+                          style: const TextStyle(
+                              fontSize: 30, color: Colors.white)),
                       Text(module.currentPenalty,
-                          style: const TextStyle(fontSize: 18, color: Colors.white)),
+                          style: const TextStyle(
+                              fontSize: 18, color: Colors.white)),
                     ],
                   ),
                 ),

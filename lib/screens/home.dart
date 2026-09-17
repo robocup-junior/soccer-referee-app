@@ -36,7 +36,8 @@ class _HomeState extends State<Home> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     // Once: didChangeDependencies gives a context valid for showDialog.
-    _prompts ??= GamePrompts(Provider.of<Game>(context, listen: false), context)..install();
+    _prompts ??= GamePrompts(Provider.of<Game>(context, listen: false), context)
+      ..install();
   }
 
   @override
@@ -46,7 +47,8 @@ class _HomeState extends State<Home> {
   }
 
   Future<void> _openSettings(Game game) async {
-    await Navigator.push(context, MaterialPageRoute(builder: (_) => SettingsScreen(game: game)));
+    await Navigator.push(
+        context, MaterialPageRoute(builder: (_) => SettingsScreen(game: game)));
     // Apply changed durations/player count to a fresh match; otherwise just
     // re-publish the current state.
     game.inGame ? game.broadcastFullState() : game.gameInit();
@@ -55,15 +57,17 @@ class _HomeState extends State<Home> {
   /// Long-press on the clock (#21): editable only while stopped inside a half.
   void _editRemainingTime(Game game) {
     if (game.isTimerRunning) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Stop the clock to edit the time.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Stop the clock to edit the time.')));
       return;
     }
     if (!game.inGame ||
-        (game.currentStage != MatchStage.firstHalf && game.currentStage != MatchStage.secondHalf)) {
+        (game.currentStage != MatchStage.firstHalf &&
+            game.currentStage != MatchStage.secondHalf)) {
       return;
     }
-    showDarkSheet(context, heightFactor: 0.7, child: TimeSettingsWidget(game: game));
+    showDarkSheet(context,
+        heightFactor: 0.7, child: TimeSettingsWidget(game: game));
   }
 
   Future<void> _confirmExit() async {
@@ -92,7 +96,8 @@ class _HomeState extends State<Home> {
         resizeToAvoidBottomInset: false,
         appBar: AppBar(
           backgroundColor: AppColors.primary,
-          title: const Text('RCJ Soccer - RefMate', style: TextStyle(color: Colors.white)),
+          title: const Text('RCJ Soccer - RefMate',
+              style: TextStyle(color: Colors.white)),
           actions: [
             IconButton(
               icon: const Icon(Icons.settings),
@@ -120,9 +125,11 @@ class _HomeState extends State<Home> {
                   flex: 6,
                   child: Row(
                     children: [
-                      Expanded(child: TeamPanel(team: game.teams[0], game: game)),
+                      Expanded(
+                          child: TeamPanel(team: game.teams[0], game: game)),
                       Expanded(child: _clockColumn(game)),
-                      Expanded(child: TeamPanel(team: game.teams[1], game: game)),
+                      Expanded(
+                          child: TeamPanel(team: game.teams[1], game: game)),
                     ],
                   ),
                 ),
@@ -134,7 +141,8 @@ class _HomeState extends State<Home> {
                         Expanded(
                           child: Column(
                             children: [
-                              for (final m in team.modules.where((m) => m.isEnabled))
+                              for (final m
+                                  in team.modules.where((m) => m.isEnabled))
                                 ModuleButton(module: m, game: game),
                             ],
                           ),
@@ -157,13 +165,16 @@ class _HomeState extends State<Home> {
       children: [
         GestureDetector(
           onLongPress: () => _editRemainingTime(game),
-          child: Text(formatClock(game.remainingTime), style: const TextStyle(fontSize: 36)),
+          child: Text(formatClock(game.remainingTime),
+              style: const TextStyle(fontSize: 36)),
         ),
         Text(game.gameStageString),
         ScrollingStatusText(
           text: service.statusMessage,
           style: TextStyle(
-              fontSize: 12, color: service.hasConflict ? Colors.orangeAccent : Colors.white70),
+              fontSize: 12,
+              color:
+                  service.hasConflict ? Colors.orangeAccent : Colors.white70),
         ),
         SizedBox(
           width: double.infinity,
@@ -174,15 +185,19 @@ class _HomeState extends State<Home> {
                   style: _timerButtonStyle(AppColors.blue, horizontal: 8),
                   child: const FittedBox(
                     fit: BoxFit.scaleDown,
-                    child: Text('Submit result', style: TextStyle(color: Colors.white)),
+                    child: Text('Submit result',
+                        style: TextStyle(color: Colors.white)),
                   ),
                 )
               : CriticalButton(
                   singleTap: game.singleTapEnabled,
                   onAction: game.toggleTimer,
                   style: _timerButtonStyle(
-                      game.isGameRunning && game.isTimerRunning ? AppColors.red : AppColors.green),
-                  child: Text(game.timerButtonText, style: const TextStyle(color: Colors.white)),
+                      game.isGameRunning && game.isTimerRunning
+                          ? AppColors.red
+                          : AppColors.green),
+                  child: Text(game.timerButtonText,
+                      style: const TextStyle(color: Colors.white)),
                 ),
         ),
       ],

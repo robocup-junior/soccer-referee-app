@@ -31,12 +31,17 @@ const _playerCounts = [
   SetItem('8', 4),
   SetItem('10', 5),
 ];
-const _penaltyTimes = [SetItem('30 sec', 30), SetItem('60 sec', 60), SetItem('90 sec', 90)];
+const _penaltyTimes = [
+  SetItem('30 sec', 30),
+  SetItem('60 sec', 60),
+  SetItem('90 sec', 90)
+];
 
-SetItem _itemFor(List<SetItem> options, int value, int fallbackIndex) =>
-    options.firstWhere((o) => o.values == value, orElse: () => options[fallbackIndex]);
+SetItem _itemFor(List<SetItem> options, int value, int fallbackIndex) => options
+    .firstWhere((o) => o.values == value, orElse: () => options[fallbackIndex]);
 
-String bridgeConnectionButtonLabel(BridgeConnectionState state) => switch (state) {
+String bridgeConnectionButtonLabel(BridgeConnectionState state) =>
+    switch (state) {
       BridgeConnectionState.connected => 'Disconnect',
       BridgeConnectionState.connecting => 'Cancel',
       _ => 'Connect',
@@ -55,7 +60,9 @@ class SettingsScreen extends StatelessWidget {
           if (!didPop) Navigator.pop(context, game);
         },
         child: Scaffold(
-          appBar: AppBar(title: const Text('Settings'), backgroundColor: AppColors.primary),
+          appBar: AppBar(
+              title: const Text('Settings'),
+              backgroundColor: AppColors.primary),
           body: SafeArea(
             top: false,
             child: ListenableBuilder(
@@ -87,7 +94,8 @@ class SettingsScreen extends StatelessWidget {
                       ),
                       SettingDropdownButton(
                         title: 'Halftime Break Duration',
-                        value: _itemFor(_halftimeBreaks, game.halfTimeDuration, 2),
+                        value:
+                            _itemFor(_halftimeBreaks, game.halfTimeDuration, 2),
                         options: _halftimeBreaks,
                         onChanged: (v) => game.halfTimeDuration = v!.values,
                       ),
@@ -123,7 +131,8 @@ class SettingsScreen extends StatelessWidget {
                   SettingsSection(title: 'Controls', settings: [
                     SettingSwitch(
                       title: 'Single-tap actions',
-                      subtitle: 'Off by default. When on, start/stop, scoring and robot '
+                      subtitle:
+                          'Off by default. When on, start/stop, scoring and robot '
                           'controls fire on a single tap — removes the accidental-touch '
                           'protection.',
                       value: game.singleTapEnabled,
@@ -132,7 +141,8 @@ class SettingsScreen extends StatelessWidget {
                   ]),
                   const SettingsSection(title: 'About', settings: [
                     _AboutLine('Created for RoboFuze.com'),
-                    _AboutLine('Author: Martin Faltus, Fabian Weller, Marek Šuppa'),
+                    _AboutLine(
+                        'Author: Martin Faltus, Fabian Weller, Marek Šuppa'),
                     _AboutLine('Version: 0.10.6'),
                     _AboutLine('Year: 2026'),
                     _AboutLine('License: Apache 2.0'),
@@ -149,34 +159,53 @@ class SettingsScreen extends StatelessWidget {
     return SettingsSection(title: 'Match Data', settings: [
       SettingStatus(title: 'Status', status: data.stateNotifier.value),
       SettingInputField(
-          title: 'Data URL', initialValue: data.matchesUrl, onChanged: (v) => data.matchesUrl = v),
+          title: 'Data URL',
+          initialValue: data.matchesUrl,
+          onChanged: (v) => data.matchesUrl = v),
       SettingInputField(
-          title: 'Match ID', initialValue: data.matchId, onChanged: (v) => data.matchId = v),
-      SettingButton(title: 'Load match data', buttonText: 'Load', onPressed: game.loadMatchData),
+          title: 'Match ID',
+          initialValue: data.matchId,
+          onChanged: (v) => data.matchId = v),
+      SettingButton(
+          title: 'Load match data',
+          buttonText: 'Load',
+          onPressed: game.loadMatchData),
     ]);
   }
 
   Widget _scoreboardSection(BuildContext context) {
     final service = game.scoreboardResultService;
     final config = service.matchConfig;
-    String orNotLoaded(String? s) => (s?.isNotEmpty ?? false) ? s! : 'Not loaded';
+    String orNotLoaded(String? s) =>
+        (s?.isNotEmpty ?? false) ? s! : 'Not loaded';
     return SettingsSection(title: 'Scoreboard Result API', settings: [
       SettingStatus(title: 'Link status', status: service.statusMessage),
-      SettingStatus(title: 'Match code', status: orNotLoaded(config?.matchCode)),
-      SettingStatus(title: 'Venue', status: orNotLoaded(config?.venueShortName)),
+      SettingStatus(
+          title: 'Match code', status: orNotLoaded(config?.matchCode)),
+      SettingStatus(
+          title: 'Venue', status: orNotLoaded(config?.venueShortName)),
       SettingStatus(
           title: 'Outbox',
-          status: 'Pending ${service.pendingCount}, conflict ${service.conflictCount}, '
+          status:
+              'Pending ${service.pendingCount}, conflict ${service.conflictCount}, '
               'submitted ${service.submittedCount}'),
       if (game.canEndMatchEarly)
         SettingButton(
-            title: 'End match now', buttonText: 'End', onPressed: () => _confirmEndMatchEarly(context)),
+            title: 'End match now',
+            buttonText: 'End',
+            onPressed: () => _confirmEndMatchEarly(context)),
       SettingButton(
-          title: 'Refresh linked match', buttonText: 'Refresh', onPressed: service.refreshMatchConfig),
+          title: 'Refresh linked match',
+          buttonText: 'Refresh',
+          onPressed: service.refreshMatchConfig),
       SettingButton(
-          title: 'Retry pending result', buttonText: 'Retry', onPressed: service.retryPendingNow),
+          title: 'Retry pending result',
+          buttonText: 'Retry',
+          onPressed: service.retryPendingNow),
       SettingButton(
-          title: 'Clear linked match', buttonText: 'Clear', onPressed: () => _clearLinkedMatch(context)),
+          title: 'Clear linked match',
+          buttonText: 'Clear',
+          onPressed: () => _clearLinkedMatch(context)),
     ]);
   }
 
@@ -188,11 +217,13 @@ class SettingsScreen extends StatelessWidget {
       service.clearLinkedMatchData();
       return;
     }
-    final (results, have, them) = n == 1 ? ('result', 'has', 'it') : ('results', 'have', 'they');
+    final (results, have, them) =
+        n == 1 ? ('result', 'has', 'it') : ('results', 'have', 'they');
     final confirmed = await showChoiceDialog(
       context,
       title: 'Clear linked match?',
-      body: '$n $results $have not been confirmed sent to the scoreboard yet. Clearing the '
+      body:
+          '$n $results $have not been confirmed sent to the scoreboard yet. Clearing the '
           'linked match permanently discards $them — $them will not be sent.',
       confirmText: 'Clear anyway',
       confirmColor: Colors.red[600],
@@ -216,13 +247,16 @@ class SettingsScreen extends StatelessWidget {
     final confirmed = await showChoiceDialog(
       context,
       title: 'End this match now?',
-      body: 'You will be taken to the result confirmation screen. Current score: '
+      body:
+          'You will be taken to the result confirmation screen. Current score: '
           '${game.teams[0].name} ${game.teams[0].score} – ${game.teams[1].score} ${game.teams[1].name}.',
       confirmText: 'End',
       dismissible: true,
     );
     if (confirmed != true || !context.mounted) return;
-    if (!game.canEndMatchEarly || expected.$1 == null || pin() != expected) return;
+    if (!game.canEndMatchEarly || expected.$1 == null || pin() != expected) {
+      return;
+    }
     // Pop to Home first: the review route is pushed over Home after the frame.
     Navigator.of(context).pop(game);
     game.endMatchEarly();
@@ -231,7 +265,10 @@ class SettingsScreen extends StatelessWidget {
   Widget _currentGameSection(BuildContext context) {
     final noShow = game.noShowPenaltyGoalsActive;
     return SettingsSection(title: 'Current Game', settings: [
-      SettingButton(title: 'Switch team order', buttonText: 'Switch', onPressed: game.toggleTeamOrder),
+      SettingButton(
+          title: 'Switch team order',
+          buttonText: 'Switch',
+          onPressed: game.toggleTeamOrder),
       if (!noShow)
         SettingButton(
           title: 'Reset current game',
@@ -259,7 +296,8 @@ class SettingsScreen extends StatelessWidget {
               final ok = await showChoiceDialog(
                 context,
                 title: 'Start no-show penalty goals?',
-                body: '${team.name} will receive ${game.noShowPenaltyGoalIntervalLabel} while '
+                body:
+                    '${team.name} will receive ${game.noShowPenaltyGoalIntervalLabel} while '
                     'the game timer runs. The current game will be reset.',
                 confirmText: 'Start',
                 dismissible: true,
@@ -269,15 +307,21 @@ class SettingsScreen extends StatelessWidget {
           )
       else
         SettingButton(
-            title: 'Stop no-show penalty goals', buttonText: 'Stop', onPressed: game.stopNoShowPenaltyGoals),
-      SettingButton(title: 'Disconnect all robots', buttonText: 'Disconnect', onPressed: game.disconnectAll),
+            title: 'Stop no-show penalty goals',
+            buttonText: 'Stop',
+            onPressed: game.stopNoShowPenaltyGoals),
+      SettingButton(
+          title: 'Disconnect all robots',
+          buttonText: 'Disconnect',
+          onPressed: game.disconnectAll),
     ]);
   }
 
   Widget _bridgeSection(BuildContext context) {
     final bridge = game.bleBridgeService;
     final state = bridge.connectionStateNotifier.value;
-    final busy = state == BridgeConnectionState.connected || state == BridgeConnectionState.connecting;
+    final busy = state == BridgeConnectionState.connected ||
+        state == BridgeConnectionState.connecting;
     return SettingsSection(
       title: 'BLE Bridge',
       enabled: bridge.isEnabled,
@@ -322,7 +366,8 @@ class SettingsScreen extends StatelessWidget {
   Widget _mqttSection() {
     final mqtt = game.mqttService;
     final state = mqtt.connectionStateNotifier.value;
-    final busy = state == MqttConnectionStateEx.connected || state == MqttConnectionStateEx.connecting;
+    final busy = state == MqttConnectionStateEx.connected ||
+        state == MqttConnectionStateEx.connecting;
     return SettingsSection(
       title: 'MQTT',
       enabled: mqtt.isEnabled,
@@ -333,21 +378,37 @@ class SettingsScreen extends StatelessWidget {
           status: switch (state) {
             MqttConnectionStateEx.connected => 'Connected',
             MqttConnectionStateEx.connecting => 'Connecting...',
-            MqttConnectionStateEx.error =>
-              mqtt.lastErrorMessage.isNotEmpty ? mqtt.lastErrorMessage : 'Connection error',
+            MqttConnectionStateEx.error => mqtt.lastErrorMessage.isNotEmpty
+                ? mqtt.lastErrorMessage
+                : 'Connection error',
             MqttConnectionStateEx.disconnected => 'Disconnected',
           },
         ),
-        SettingInputField(title: 'Server IP', initialValue: mqtt.server, onChanged: (v) => mqtt.server = v),
         SettingInputField(
-            title: 'Port', initialValue: '${mqtt.port}', onChanged: (v) => mqtt.port = int.tryParse(v)),
-        SettingInputField(title: 'Username', initialValue: mqtt.username, onChanged: (v) => mqtt.username = v),
+            title: 'Server IP',
+            initialValue: mqtt.server,
+            onChanged: (v) => mqtt.server = v),
         SettingInputField(
-            title: 'Password', isPassword: true, initialValue: mqtt.password, onChanged: (v) => mqtt.password = v),
+            title: 'Port',
+            initialValue: '${mqtt.port}',
+            onChanged: (v) => mqtt.port = int.tryParse(v)),
+        SettingInputField(
+            title: 'Username',
+            initialValue: mqtt.username,
+            onChanged: (v) => mqtt.username = v),
+        SettingInputField(
+            title: 'Password',
+            isPassword: true,
+            initialValue: mqtt.password,
+            onChanged: (v) => mqtt.password = v),
         SettingSwitch(
-            title: 'Secure Connection', value: mqtt.secureConnection, onChanged: (v) => mqtt.secureConnection = v),
+            title: 'Secure Connection',
+            value: mqtt.secureConnection,
+            onChanged: (v) => mqtt.secureConnection = v),
         SettingInputField(
-            title: 'Field Number', initialValue: mqtt.fieldNumber, onChanged: (v) => mqtt.topicField = v),
+            title: 'Field Number',
+            initialValue: mqtt.fieldNumber,
+            onChanged: (v) => mqtt.topicField = v),
         SettingButton(
           title: 'Connect to MQTT',
           buttonText: busy ? 'Disconnect' : 'Connect',
@@ -359,11 +420,12 @@ class SettingsScreen extends StatelessWidget {
 
   Widget _alertsSection() {
     final vs = game.vibrationService;
-    Widget chips(Set<int> selected, void Function(int) onToggle) => SettingAlertChips(
-        label: 'Alert at (sec remaining)',
-        options: kVibrationAlertOptions,
-        selected: selected,
-        onToggle: onToggle);
+    Widget chips(Set<int> selected, void Function(int) onToggle) =>
+        SettingAlertChips(
+            label: 'Alert at (sec remaining)',
+            options: kVibrationAlertOptions,
+            selected: selected,
+            onToggle: onToggle);
     // Permission is requested lazily, when the user turns an alert on.
     void requestIfOn(bool on) {
       if (on) NotificationService.requestPermission();
@@ -378,7 +440,8 @@ class SettingsScreen extends StatelessWidget {
           requestIfOn(v);
         },
       ),
-      if (vs.gameTimerEnabled) chips(vs.gameTimerAlerts, vs.toggleGameTimerAlert),
+      if (vs.gameTimerEnabled)
+        chips(vs.gameTimerAlerts, vs.toggleGameTimerAlert),
       SettingSwitch(
         title: 'Damage Timer Vibration',
         value: vs.damageTimerEnabled,
@@ -387,7 +450,8 @@ class SettingsScreen extends StatelessWidget {
           requestIfOn(v);
         },
       ),
-      if (vs.damageTimerEnabled) chips(vs.damageTimerAlerts, vs.toggleDamageTimerAlert),
+      if (vs.damageTimerEnabled)
+        chips(vs.damageTimerAlerts, vs.toggleDamageTimerAlert),
     ]);
   }
 
@@ -397,7 +461,8 @@ class SettingsScreen extends StatelessWidget {
       await showInfoDialog(
         context,
         title: 'Bluetooth Warning',
-        body: 'You selected ${perTeam * 2} players. This requires ${perTeam * 2} simultaneous '
+        body:
+            'You selected ${perTeam * 2} players. This requires ${perTeam * 2} simultaneous '
             'Bluetooth connections. Some phones cannot support this many connections at once — '
             'on those devices, some robots may fail to connect.',
       );

@@ -30,12 +30,14 @@ class IosMacResolveController {
         _canScanNow = canScanNow,
         _onResolved = onResolved,
         _onGaveUp = onGaveUp,
-        _isForeignScanRunning = isForeignScanRunning ?? (() => FlutterBluePlus.isScanningNow),
+        _isForeignScanRunning =
+            isForeignScanRunning ?? (() => FlutterBluePlus.isScanningNow),
         _retryDelay = retryDelay,
         _preemptedRetryDelay = preemptedRetryDelay;
 
-  static void _defaultStopScan() => unawaited(FlutterBluePlus.stopScan()
-      .catchError((Object e) => debugPrint('IosMacResolveController stopScan error: $e')));
+  static void _defaultStopScan() =>
+      unawaited(FlutterBluePlus.stopScan().catchError((Object e) =>
+          debugPrint('IosMacResolveController stopScan error: $e')));
 
   static const _maxConsecutiveFastRetries = 3;
 
@@ -102,7 +104,10 @@ class IosMacResolveController {
 
   Future<void> _loop() async {
     try {
-      while (!_disposed && !_stoppedForMatch && _pending.isNotEmpty && _canScanNow()) {
+      while (!_disposed &&
+          !_stoppedForMatch &&
+          _pending.isNotEmpty &&
+          _canScanNow()) {
         // A referee-initiated scan owns the (single, process-wide) radio.
         if (_isForeignScanRunning()) {
           await Future.delayed(_retryDelay);

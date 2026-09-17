@@ -106,12 +106,14 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
     // Subscribe BEFORE startScan; onScanResults (not the replaying
     // scanResults) so a previous scan's cached devices never surface.
     _scanSub = FlutterBluePlus.onScanResults.listen((results) {
-      final fresh = results.map((r) => r.device).where((d) => !_devices.contains(d));
+      final fresh =
+          results.map((r) => r.device).where((d) => !_devices.contains(d));
       if (fresh.isNotEmpty && mounted) setState(() => _devices.addAll(fresh));
     });
     try {
       await FlutterBluePlus.startScan(
-          withKeywords: ['RCJ', 'soccer', 'module'], timeout: const Duration(seconds: 3));
+          withKeywords: ['RCJ', 'soccer', 'module'],
+          timeout: const Duration(seconds: 3));
       await FlutterBluePlus.isScanning.where((s) => !s).first;
     } finally {
       await _scanSub?.cancel();
@@ -135,7 +137,9 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
       // Only when the MAC provably belongs to the typed address.
       hardwareMac: isMacFormat(address)
           ? address
-          : (address.toUpperCase() == module.macAddress.toUpperCase() ? module.hardwareMac : ''),
+          : (address.toUpperCase() == module.macAddress.toUpperCase()
+              ? module.hardwareMac
+              : ''),
       label: _labelController.text.trim(),
     );
     await PresetService().saveDevice(device);
@@ -150,7 +154,8 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
       return;
     }
     final selected = await showDialog<SavedDevice>(
-        context: context, builder: (_) => _SavedDevicesDialog(devices: devices));
+        context: context,
+        builder: (_) => _SavedDevicesDialog(devices: devices));
     if (selected == null || !mounted) return;
     setState(() {
       _addressController.text = selected.macAddress;
@@ -173,8 +178,9 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
           module.macAddress.isNotEmpty ? module.macAddress : module.hardwareMac;
       _labelController.text = module.hasCustomLabel ? module.name : '';
     }
-    final status =
-        isAdapterProblem(adapter) ? describeAdapterState(adapter).message : module.bleStatus;
+    final status = isAdapterProblem(adapter)
+        ? describeAdapterState(adapter).message
+        : module.bleStatus;
     final connectLabel = module.isConnected
         ? 'Disconnect'
         : (module.isConnecting || module.isSearching)
@@ -231,7 +237,9 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  AppButton(label: 'Save', onPressed: () => module.setLabel(_labelController.text)),
+                  AppButton(
+                      label: 'Save',
+                      onPressed: () => module.setLabel(_labelController.text)),
                 ],
               ),
               const Divider(height: 30),
@@ -268,12 +276,16 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
               ),
               Container(
                 height: 50,
-                margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                margin:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                 width: double.infinity,
                 child: ElevatedButton(
                   onPressed: () => _connectOrDisconnect(module),
-                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.button),
-                  child: Text(connectLabel, style: const TextStyle(color: Colors.white, fontSize: 16)),
+                  style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.button),
+                  child: Text(connectLabel,
+                      style:
+                          const TextStyle(color: Colors.white, fontSize: 16)),
                 ),
               ),
               const SizedBox(height: 10),
@@ -287,7 +299,10 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
                   ),
                   const SizedBox(width: 4),
                   Expanded(
-                    child: AppButton(label: 'Scan QR code', icon: Icons.qr_code_2, onPressed: _scanQr),
+                    child: AppButton(
+                        label: 'Scan QR code',
+                        icon: Icons.qr_code_2,
+                        onPressed: _scanQr),
                   ),
                 ],
               ),
@@ -297,12 +312,15 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
                 child: ListView.builder(
                   itemCount: _devices.length,
                   itemBuilder: (_, index) => ListTile(
-                    tileColor: _selectedIndex == index ? AppColors.button : null,
+                    tileColor:
+                        _selectedIndex == index ? AppColors.button : null,
                     title: Text(_devices[index].platformName, style: _white),
-                    subtitle: Text(_devices[index].remoteId.toString(), style: _white),
+                    subtitle: Text(_devices[index].remoteId.toString(),
+                        style: _white),
                     onTap: () => setState(() {
                       _selectedIndex = index;
-                      _addressController.text = _devices[index].remoteId.toString();
+                      _addressController.text =
+                          _devices[index].remoteId.toString();
                     }),
                   ),
                 ),
@@ -345,7 +363,9 @@ class _SavedDevicesDialogState extends State<_SavedDevicesDialog> {
                   onPressed: () async {
                     await PresetService().deleteDevice(device.id);
                     setState(() => _devices.removeAt(index));
-                    if (_devices.isEmpty && context.mounted) Navigator.pop(context);
+                    if (_devices.isEmpty && context.mounted) {
+                      Navigator.pop(context);
+                    }
                   },
                 ),
                 onTap: () => Navigator.pop(context, device),
@@ -354,7 +374,9 @@ class _SavedDevicesDialogState extends State<_SavedDevicesDialog> {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel')),
         ],
       );
 }

@@ -1,7 +1,8 @@
 String _two(int n) => n.toString().padLeft(2, '0');
 
 /// `mm:ss` clock display of a duration in seconds.
-String formatClock(int seconds) => '${_two(seconds ~/ 60)}:${_two(seconds % 60)}';
+String formatClock(int seconds) =>
+    '${_two(seconds ~/ 60)}:${_two(seconds % 60)}';
 
 /// Parse a remaining-time entry: plain nonnegative seconds ("123") or "mm:ss"
 /// with seconds in 0..59. Null for anything else so a typo is ignored.

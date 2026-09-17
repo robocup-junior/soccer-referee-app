@@ -140,7 +140,9 @@ class Module with ChangeNotifier {
     _state = next;
     bleNotify();
     notifyListeners();
-    flush ? _game.persistence.markDirtyAndFlush() : _game.persistence.markDirty();
+    flush
+        ? _game.persistence.markDirtyAndFlush()
+        : _game.persistence.markDirty();
   }
 
   void play() {
@@ -261,7 +263,13 @@ class Module with ChangeNotifier {
   static List<int> _millisFrame(BleMsgId id, int seconds) {
     // Robots take milliseconds; +1000 so they start exactly when 0 shows.
     final ms = seconds * 1000 + 1000;
-    return [id.index, (ms >> 24) & 0xFF, (ms >> 16) & 0xFF, (ms >> 8) & 0xFF, ms & 0xFF];
+    return [
+      id.index,
+      (ms >> 24) & 0xFF,
+      (ms >> 16) & 0xFF,
+      (ms >> 8) & 0xFF,
+      ms & 0xFF
+    ];
   }
 
   List<int> _scoreFrame(BleMsgId id) => [
@@ -344,7 +352,8 @@ class Module with ChangeNotifier {
 
     _connSub?.cancel();
     final device = bleDevice!;
-    _connSub = device.connectionState.listen((s) => _onConnectionState(device, s));
+    _connSub =
+        device.connectionState.listen((s) => _onConnectionState(device, s));
     try {
       await bleDevice?.connect(autoConnect: true, mtu: null);
     } catch (e) {
@@ -366,10 +375,12 @@ class Module with ChangeNotifier {
   /// connect". Re-verify against FlutterBluePlusPlugin.m when upgrading fbp.
   static bool _isIosUnknownPeripheralError(Object e) {
     final msg = e.toString();
-    return msg.contains('Peripheral not found') || msg.contains('invalid remoteId');
+    return msg.contains('Peripheral not found') ||
+        msg.contains('invalid remoteId');
   }
 
-  void _onConnectionState(BluetoothDevice device, BluetoothConnectionState state) {
+  void _onConnectionState(
+      BluetoothDevice device, BluetoothConnectionState state) {
     debugPrint('BLE $name: $state');
     if (state == BluetoothConnectionState.disconnected) {
       _isConnected = false;
@@ -383,7 +394,9 @@ class Module with ChangeNotifier {
       // The advertised name is authoritative for the hardware MAC of THIS link.
       final parsed = _macFromDevice(device);
       if (parsed != null) hardwareMac = parsed;
-      if (hardwareMac.isNotEmpty) _game.iosPairing.record(hardwareMac, macAddress);
+      if (hardwareMac.isNotEmpty) {
+        _game.iosPairing.record(hardwareMac, macAddress);
+      }
       notifyListeners();
       _initLink();
     }
@@ -408,9 +421,13 @@ class Module with ChangeNotifier {
       return;
     }
     _tx = BluetoothCharacteristic(
-        remoteId: device.remoteId, serviceUuid: _serviceGuid, characteristicUuid: _txGuid);
+        remoteId: device.remoteId,
+        serviceUuid: _serviceGuid,
+        characteristicUuid: _txGuid);
     _rx = BluetoothCharacteristic(
-        remoteId: device.remoteId, serviceUuid: _serviceGuid, characteristicUuid: _rxGuid);
+        remoteId: device.remoteId,
+        serviceUuid: _serviceGuid,
+        characteristicUuid: _rxGuid);
     try {
       await _rx!.setNotifyValue(true);
       // Replace the listener so reconnects don't stack duplicate handlers.
@@ -506,7 +523,8 @@ class Module with ChangeNotifier {
   /// Apply a stored pairing: label (always; '' restores the default name),
   /// identity, and a connect when enabled. Idempotent for a slot already live
   /// on the same module so re-pairs never churn a working link.
-  void applyPresetConfig(String macAddress, String label, {String? hardwareMac}) {
+  void applyPresetConfig(String macAddress, String label,
+      {String? hardwareMac}) {
     setLabel(label);
     final targetMac = (hardwareMac != null && hardwareMac.isNotEmpty)
         ? hardwareMac.toUpperCase()
@@ -530,7 +548,9 @@ class Module with ChangeNotifier {
       if (targetMac.isNotEmpty) this.hardwareMac = targetMac;
       return;
     }
-    if (_isConnected && this.hardwareMac.isNotEmpty && this.hardwareMac == newId) {
+    if (_isConnected &&
+        this.hardwareMac.isNotEmpty &&
+        this.hardwareMac == newId) {
       return;
     }
     setBleDevice(BluetoothDevice.fromId(newId), hardwareMac: targetMac);
@@ -561,7 +581,8 @@ class Module with ChangeNotifier {
     _suppressNextRestoreNotify = true;
 
     if (s.isEnabled && s.macAddress.isNotEmpty) {
-      applyPresetConfig(s.macAddress, s.customLabel ?? '', hardwareMac: s.hardwareMac);
+      applyPresetConfig(s.macAddress, s.customLabel ?? '',
+          hardwareMac: s.hardwareMac);
     } else {
       macAddress = s.macAddress;
       if (s.hardwareMac.isNotEmpty) {

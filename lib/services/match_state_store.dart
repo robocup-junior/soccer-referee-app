@@ -10,7 +10,8 @@ const int kMatchSnapshotVersion = 2;
 
 @immutable
 class TeamSnapshot {
-  const TeamSnapshot({required this.id, required this.name, required this.score});
+  const TeamSnapshot(
+      {required this.id, required this.name, required this.score});
 
   final String id;
   final String name;
@@ -156,7 +157,8 @@ class MatchSnapshot {
 /// makes the ordering crash-safe (a stale save that beat a clear to disk is
 /// rejected on the next launch).
 class MatchStateStore {
-  MatchStateStore(this._prefs) : _generation = _prefs.getInt(_tombstoneKey) ?? 0;
+  MatchStateStore(this._prefs)
+      : _generation = _prefs.getInt(_tombstoneKey) ?? 0;
 
   static const _snapshotKey = 'match_state_snapshot';
   static const _tombstoneKey = 'match_state_tombstone_generation';
@@ -205,7 +207,8 @@ class MatchStateStore {
           await _write('snapshot remove', () => _prefs.remove(_snapshotKey));
         } else if (snapshot != null) {
           final map = snapshot.toJson()..['generation'] = generation;
-          await _write('snapshot save', () => _prefs.setString(_snapshotKey, jsonEncode(map)));
+          await _write('snapshot save',
+              () => _prefs.setString(_snapshotKey, jsonEncode(map)));
         }
       }
     } finally {
@@ -229,7 +232,9 @@ class MatchStateStore {
     try {
       final decoded = jsonDecode(raw);
       if (decoded is! Map<String, dynamic>) return null;
-      if ((decoded['version'] as num?)?.toInt() != kMatchSnapshotVersion) return null;
+      if ((decoded['version'] as num?)?.toInt() != kMatchSnapshotVersion) {
+        return null;
+      }
       final generation = (decoded['generation'] as num?)?.toInt() ?? 0;
       if (generation < (_prefs.getInt(_tombstoneKey) ?? 0)) return null;
       return MatchSnapshot.fromJson(decoded);

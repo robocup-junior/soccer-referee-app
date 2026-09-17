@@ -13,10 +13,12 @@ class ScoreboardResultReviewScreen extends StatefulWidget {
   final Game game;
 
   @override
-  State<ScoreboardResultReviewScreen> createState() => _ScoreboardResultReviewScreenState();
+  State<ScoreboardResultReviewScreen> createState() =>
+      _ScoreboardResultReviewScreenState();
 }
 
-class _ScoreboardResultReviewScreenState extends State<ScoreboardResultReviewScreen> {
+class _ScoreboardResultReviewScreenState
+    extends State<ScoreboardResultReviewScreen> {
   late final _review = widget.game.buildScoreboardResultReview();
   late int _homeGoals = _review.homeGoals;
   late int _awayGoals = _review.awayGoals;
@@ -52,19 +54,25 @@ class _ScoreboardResultReviewScreenState extends State<ScoreboardResultReviewScr
     if (!enqueued) {
       setState(() => _submitting = false);
       messenger.showSnackBar(const SnackBar(
-          content: Text('Could not submit — the result may already be submitted or the match changed.')));
+          content: Text(
+              'Could not submit — the result may already be submitted or the match changed.')));
       return;
     }
     // The POST runs in the background; watch the outbox briefly to report the
     // outcome. Still pending at the deadline means offline OR merely slow.
-    final state = await widget.game.scoreboardResultService.awaitOutboxOutcome(_review.matchCode);
+    final state = await widget.game.scoreboardResultService
+        .awaitOutboxOutcome(_review.matchCode);
     if (!mounted) return;
     messenger.showSnackBar(SnackBar(
       content: Text(switch (state) {
         ResultSubmissionState.submitted => 'Result sent successfully ✓',
-        ResultSubmissionState.conflict => 'Already recorded on the server — check the status to decide.',
-        ResultSubmissionState.failed => 'Submission rejected — the link may be invalid or expired.',
-        ResultSubmissionState.pending || null => 'Saved — sending in the background.',
+        ResultSubmissionState.conflict =>
+          'Already recorded on the server — check the status to decide.',
+        ResultSubmissionState.failed =>
+          'Submission rejected — the link may be invalid or expired.',
+        ResultSubmissionState.pending ||
+        null =>
+          'Saved — sending in the background.',
       }),
     ));
     navigator.pop();
@@ -80,8 +88,10 @@ class _ScoreboardResultReviewScreenState extends State<ScoreboardResultReviewScr
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('Submit result', style: TextStyle(color: Colors.white, fontSize: 18)),
-              Text(_review.matchCode, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+              const Text('Submit result',
+                  style: TextStyle(color: Colors.white, fontSize: 18)),
+              Text(_review.matchCode,
+                  style: const TextStyle(color: Colors.white70, fontSize: 12)),
             ],
           ),
         ),
@@ -91,16 +101,23 @@ class _ScoreboardResultReviewScreenState extends State<ScoreboardResultReviewScr
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _header('Final result', 'The score sent to the scoreboard. Correct it here if needed.'),
-                _scoreEditor(_review.homeName, _homeGoals, (v) => setState(() => _homeGoals = v)),
+                _header('Final result',
+                    'The score sent to the scoreboard. Correct it here if needed.'),
+                _scoreEditor(_review.homeName, _homeGoals,
+                    (v) => setState(() => _homeGoals = v)),
                 const SizedBox(height: 10),
-                _scoreEditor(_review.awayName, _awayGoals, (v) => setState(() => _awayGoals = v)),
+                _scoreEditor(_review.awayName, _awayGoals,
+                    (v) => setState(() => _awayGoals = v)),
                 const SizedBox(height: 18),
-                _header('Team confirmation', 'Tick a team that agrees with the result.'),
-                _confirmTile(_review.homeName, _homeConfirmed, (v) => setState(() => _homeConfirmed = v ?? false)),
-                _confirmTile(_review.awayName, _awayConfirmed, (v) => setState(() => _awayConfirmed = v ?? false)),
+                _header('Team confirmation',
+                    'Tick a team that agrees with the result.'),
+                _confirmTile(_review.homeName, _homeConfirmed,
+                    (v) => setState(() => _homeConfirmed = v ?? false)),
+                _confirmTile(_review.awayName, _awayConfirmed,
+                    (v) => setState(() => _awayConfirmed = v ?? false)),
                 const SizedBox(height: 18),
-                _header('Comment', 'Notes about the match (e.g. a protest or incident).'),
+                _header('Comment',
+                    'Notes about the match (e.g. a protest or incident).'),
                 TextField(
                   controller: _commentController,
                   minLines: 2,
@@ -113,8 +130,10 @@ class _ScoreboardResultReviewScreenState extends State<ScoreboardResultReviewScr
                     filled: true,
                     fillColor: Colors.grey[850],
                     border: const OutlineInputBorder(),
-                    enabledBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white24)),
-                    focusedBorder: const OutlineInputBorder(borderSide: BorderSide(color: Colors.white70)),
+                    enabledBorder: const OutlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white24)),
+                    focusedBorder: const OutlineInputBorder(
+                        borderSide: BorderSide(color: Colors.white70)),
                   ),
                 ),
                 const SizedBox(height: 18),
@@ -122,7 +141,9 @@ class _ScoreboardResultReviewScreenState extends State<ScoreboardResultReviewScr
                   children: [
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: _submitting ? null : () => Navigator.of(context).pop(),
+                        onPressed: _submitting
+                            ? null
+                            : () => Navigator.of(context).pop(),
                         icon: const Icon(Icons.arrow_back),
                         label: const Text('Cancel'),
                         style: OutlinedButton.styleFrom(
@@ -138,7 +159,8 @@ class _ScoreboardResultReviewScreenState extends State<ScoreboardResultReviewScr
                       // always single-tap.
                       child: CriticalButton(
                         singleTap: true,
-                        onAction: _submitting ? () {} : () => unawaited(_submit()),
+                        onAction:
+                            _submitting ? () {} : () => unawaited(_submit()),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: AppColors.green,
                           foregroundColor: Colors.white,
@@ -152,7 +174,9 @@ class _ScoreboardResultReviewScreenState extends State<ScoreboardResultReviewScr
                                 width: 18,
                                 height: 18,
                                 child: CircularProgressIndicator(
-                                    strokeWidth: 2, valueColor: AlwaysStoppedAnimation(Colors.white)),
+                                    strokeWidth: 2,
+                                    valueColor:
+                                        AlwaysStoppedAnimation(Colors.white)),
                               )
                             else
                               const Icon(Icons.send),
@@ -179,34 +203,43 @@ class _ScoreboardResultReviewScreenState extends State<ScoreboardResultReviewScr
             const SizedBox(height: 10),
             Text(title.toUpperCase(),
                 style: const TextStyle(
-                    color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700, letterSpacing: 1.1)),
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.1)),
             const SizedBox(height: 2),
-            Text(hint, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+            Text(hint,
+                style: const TextStyle(color: Colors.white54, fontSize: 12)),
           ],
         ),
       );
 
-  Widget _confirmTile(String name, bool value, ValueChanged<bool?> onChanged) => CheckboxListTile(
+  Widget _confirmTile(String name, bool value, ValueChanged<bool?> onChanged) =>
+      CheckboxListTile(
         value: value,
         onChanged: onChanged,
         dense: true,
         visualDensity: VisualDensity.compact,
         title: Text(name, style: _white),
-        subtitle: const Text('Confirmed by team', style: TextStyle(color: Colors.white70)),
+        subtitle: const Text('Confirmed by team',
+            style: TextStyle(color: Colors.white70)),
         activeColor: AppColors.green,
         checkColor: Colors.black,
         contentPadding: EdgeInsets.zero,
       );
 
-  Widget _scoreEditor(String label, int value, ValueChanged<int> onChanged) => Container(
+  Widget _scoreEditor(String label, int value, ValueChanged<int> onChanged) =>
+      Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
         decoration: BoxDecoration(
-            border: Border.all(color: Colors.white24), borderRadius: BorderRadius.circular(8)),
+            border: Border.all(color: Colors.white24),
+            borderRadius: BorderRadius.circular(8)),
         child: Row(
           children: [
             Expanded(
               child: Text(label,
-                  overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white, fontSize: 16)),
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 16)),
             ),
             IconButton(
                 onPressed: () => onChanged((value - 1).clamp(0, 999)),
@@ -216,7 +249,10 @@ class _ScoreboardResultReviewScreenState extends State<ScoreboardResultReviewScr
               width: 44,
               child: Text('$value',
                   textAlign: TextAlign.center,
-                  style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w600)),
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 24,
+                      fontWeight: FontWeight.w600)),
             ),
             IconButton(
                 onPressed: () => onChanged(value + 1),

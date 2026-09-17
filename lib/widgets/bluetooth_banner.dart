@@ -17,7 +17,8 @@ class BluetoothBanner extends StatelessWidget {
     if (!isAdapterProblem(state)) return const SizedBox.shrink();
     final info = describeAdapterState(state);
     final canTurnOn = onTurnOn != null &&
-        (state == BluetoothAdapterState.off || state == BluetoothAdapterState.turningOff);
+        (state == BluetoothAdapterState.off ||
+            state == BluetoothAdapterState.turningOff);
     return MaterialBanner(
       backgroundColor: Colors.red.shade900,
       leading: const Icon(Icons.bluetooth_disabled, color: Colors.white),
@@ -26,8 +27,10 @@ class BluetoothBanner extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(info.message,
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-          if (info.hint != null) Text(info.hint!, style: const TextStyle(color: Colors.white70)),
+              style: const TextStyle(
+                  color: Colors.white, fontWeight: FontWeight.bold)),
+          if (info.hint != null)
+            Text(info.hint!, style: const TextStyle(color: Colors.white70)),
         ],
       ),
       // MaterialBanner requires a non-empty actions list.

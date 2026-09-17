@@ -27,16 +27,20 @@ class TeamPanel extends StatelessWidget {
               game.notifyModulesScore();
             },
             onLongPress: () => showDarkSheet(context,
-                heightFactor: 0.85, child: TeamSettingsWidget(team: team, game: game)),
+                heightFactor: 0.85,
+                child: TeamSettingsWidget(team: team, game: game)),
             child: Container(
               decoration: BoxDecoration(
-                border: Border(top: BorderSide(color: AppColors.team(team.id), width: 5)),
+                border: Border(
+                    top: BorderSide(color: AppColors.team(team.id), width: 5)),
               ),
               margin: const EdgeInsets.fromLTRB(8, 0, 8, 6),
               child: Column(
                 children: [
                   Text(team.name,
-                      textAlign: TextAlign.center, overflow: TextOverflow.ellipsis, maxLines: 3),
+                      textAlign: TextAlign.center,
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 3),
                   const Spacer(),
                   Text('${team.score}', style: const TextStyle(fontSize: 40)),
                 ],
@@ -77,19 +81,24 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
     final robots = widget.game.inspectionRobotsForTeam(team);
     return Column(
       children: [
-        Text('Team ${team.id} Config', style: const TextStyle(fontSize: 24, color: Colors.white)),
+        Text('Team ${team.id} Config',
+            style: const TextStyle(fontSize: 24, color: Colors.white)),
         const Divider(),
         const SizedBox(height: 20),
         Row(
           children: [
-            const Expanded(flex: 2, child: Text('Team Name', style: TextStyle(fontSize: 16))),
+            const Expanded(
+                flex: 2,
+                child: Text('Team Name', style: TextStyle(fontSize: 16))),
             Expanded(
               flex: 4,
               child: TextField(
                 controller: _nameController,
                 style: const TextStyle(color: Colors.white),
                 decoration: const InputDecoration(
-                    border: OutlineInputBorder(), filled: true, fillColor: AppColors.sheet),
+                    border: OutlineInputBorder(),
+                    filled: true,
+                    fillColor: AppColors.sheet),
                 // Through Game so the edit persists into the resume snapshot.
                 onSubmitted: (value) => widget.game.setTeamName(team, value),
               ),
@@ -106,7 +115,9 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
               listenable: team,
               builder: (_, __) => Text('${team.score}',
                   style: const TextStyle(
-                      fontSize: 28, color: Colors.white, fontWeight: FontWeight.bold)),
+                      fontSize: 28,
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold)),
             ),
             _scoreButton(Icons.add, 'Add', () => _score(1)),
           ],
@@ -123,7 +134,9 @@ class _TeamSettingsWidgetState extends State<TeamSettingsWidget> {
                   const SizedBox(height: 20),
                   const Text('Inspection',
                       style: TextStyle(
-                          fontSize: 16, color: Colors.white70, fontWeight: FontWeight.w600)),
+                          fontSize: 16,
+                          color: Colors.white70,
+                          fontWeight: FontWeight.w600)),
                   const SizedBox(height: 4),
                   InspectionRobotList(robots: robots),
                 ],

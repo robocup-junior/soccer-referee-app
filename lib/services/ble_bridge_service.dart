@@ -7,7 +7,13 @@ import 'package:rcj_scoreboard/models/bridge_message.dart';
 import 'package:rcj_scoreboard/services/error_messages.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum BridgeConnectionState { disabled, disconnected, connecting, connected, error }
+enum BridgeConnectionState {
+  disabled,
+  disconnected,
+  connecting,
+  connected,
+  error
+}
 
 /// MQTT-over-BLE scoreboard bridge: a per-topic dedup queue drained with
 /// write-with-response (the ACK). Fully separate from robot control and never
@@ -41,7 +47,8 @@ class BleBridgeService extends ChangeNotifier {
   bool get isEnabled => _isEnabled;
   String get bridgeMacAddress => _bridgeMacAddress;
   bool get isConnected =>
-      connectionStateNotifier.value == BridgeConnectionState.connected && _txChar != null;
+      connectionStateNotifier.value == BridgeConnectionState.connected &&
+      _txChar != null;
 
   Future<void> loadPreferences() async {
     final prefs = _prefs = await SharedPreferences.getInstance();
@@ -77,7 +84,8 @@ class BleBridgeService extends ChangeNotifier {
     _connectIntent = true;
     connectionStateNotifier.value = BridgeConnectionState.connecting;
     try {
-      final device = _device = BluetoothDevice.fromId(_bridgeMacAddress.toUpperCase());
+      final device =
+          _device = BluetoothDevice.fromId(_bridgeMacAddress.toUpperCase());
       await _connSub?.cancel();
       if (!_connectIntent) return;
       _connSub = device.connectionState.listen((state) {
@@ -93,7 +101,9 @@ class BleBridgeService extends ChangeNotifier {
       await device.connect(autoConnect: true, mtu: null);
     } catch (e) {
       debugPrint('BleBridge: connect error: $e');
-      if (_connectIntent) await _setErrorAndDisconnect(describeError(e).message);
+      if (_connectIntent) {
+        await _setErrorAndDisconnect(describeError(e).message);
+      }
     }
   }
 
@@ -121,8 +131,9 @@ class BleBridgeService extends ChangeNotifier {
         !(shouldAbort?.call() ?? false)) {
       final remaining = deadline.difference(DateTime.now());
       if (remaining <= Duration.zero) break;
-      await Future<void>.delayed(
-          remaining < const Duration(milliseconds: 100) ? remaining : const Duration(milliseconds: 100));
+      await Future<void>.delayed(remaining < const Duration(milliseconds: 100)
+          ? remaining
+          : const Duration(milliseconds: 100));
     }
     if (shouldAbort?.call() ?? false) return;
     await disconnect();
@@ -157,7 +168,9 @@ class BleBridgeService extends ChangeNotifier {
         await _txChar!.write(bytes, withoutResponse: false, timeout: 5);
         return true;
       } catch (e) {
-        if (attempt == maxRetries) debugPrint('BleBridge: send "${msg.topic}" failed: $e');
+        if (attempt == maxRetries) {
+          debugPrint('BleBridge: send "${msg.topic}" failed: $e');
+        }
       }
     }
     return false;
@@ -178,7 +191,8 @@ class BleBridgeService extends ChangeNotifier {
         return;
       }
       if (!ready) {
-        await _setErrorAndDisconnect('Scoreboard service not found on this device');
+        await _setErrorAndDisconnect(
+            'Scoreboard service not found on this device');
         return;
       }
       _lastErrorMessage = null;
@@ -186,7 +200,9 @@ class BleBridgeService extends ChangeNotifier {
       await _processQueue();
     } catch (e) {
       debugPrint('BleBridge: initialization error: $e');
-      if (_connectIntent) await _setErrorAndDisconnect(describeError(e).message);
+      if (_connectIntent) {
+        await _setErrorAndDisconnect(describeError(e).message);
+      }
     }
   }
 
@@ -216,12 +232,15 @@ class BleBridgeService extends ChangeNotifier {
     if (device == null) return false;
     final services = await device.discoverServices();
     final service = services.where((s) => s.uuid == _serviceGuid).firstOrNull;
-    if (service == null || !service.characteristics.any((c) => c.uuid == _txGuid)) {
+    if (service == null ||
+        !service.characteristics.any((c) => c.uuid == _txGuid)) {
       debugPrint('BleBridge: bridge service/characteristic not found');
       return false;
     }
     _txChar = BluetoothCharacteristic(
-        remoteId: device.remoteId, serviceUuid: _serviceGuid, characteristicUuid: _txGuid);
+        remoteId: device.remoteId,
+        serviceUuid: _serviceGuid,
+        characteristicUuid: _txGuid);
     return true;
   }
 

@@ -16,6 +16,8 @@ class AppColors {
   static Color team(String teamId) => teamId == 'A' ? teamA : teamB;
 
   /// `RRGGBB` form of [team], as published to the scoreboard bridge.
-  static String teamHex(String teamId) =>
-      (team(teamId).toARGB32() & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase();
+  static String teamHex(String teamId) => (team(teamId).toARGB32() & 0xFFFFFF)
+      .toRadixString(16)
+      .padLeft(6, '0')
+      .toUpperCase();
 }

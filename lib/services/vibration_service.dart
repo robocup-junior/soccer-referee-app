@@ -57,8 +57,11 @@ class VibrationService with ChangeNotifier {
   }
 
   void _toggle(_AlertPref pref, int seconds) {
-    pref.alerts.contains(seconds) ? pref.alerts.remove(seconds) : pref.alerts.add(seconds);
-    _prefs?.setStringList(pref.alertsKey, pref.alerts.map((e) => '$e').toList());
+    pref.alerts.contains(seconds)
+        ? pref.alerts.remove(seconds)
+        : pref.alerts.add(seconds);
+    _prefs?.setStringList(
+        pref.alertsKey, pref.alerts.map((e) => '$e').toList());
     notifyListeners();
   }
 

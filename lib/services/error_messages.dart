@@ -25,7 +25,8 @@ class HttpStatusException implements Exception {
 /// The raw error is for debugPrint only: it can be a verbose multi-line
 /// PlatformException that overflows a status label.
 ErrorInfo describeError(Object error) => switch (error) {
-      HttpStatusException(:final statusCode) => ErrorInfo('Server returned $statusCode',
+      HttpStatusException(:final statusCode) => ErrorInfo(
+          'Server returned $statusCode',
           hint: 'Check the match-data URL in settings'),
       TimeoutException() => const ErrorInfo('Connection timed out',
           hint: 'Move closer or check the device is powered'),
@@ -33,7 +34,8 @@ ErrorInfo describeError(Object error) => switch (error) {
           hint: 'Check the network / Wi-Fi connection'),
       FormatException() => const ErrorInfo('Unexpected response format',
           hint: 'Check the match-data URL in settings'),
-      FlutterBluePlusException() => const ErrorInfo('Bluetooth connection failed',
+      FlutterBluePlusException() => const ErrorInfo(
+          'Bluetooth connection failed',
           hint: 'Move closer, re-power the robot, or re-scan'),
       _ => const ErrorInfo('Connection failed',
           hint: 'Check the address and that the device is powered'),
@@ -48,20 +50,29 @@ bool isAdapterProblem(BluetoothAdapterState state) => const {
     }.contains(state);
 
 ErrorInfo describeAdapterState(BluetoothAdapterState state) => switch (state) {
-      BluetoothAdapterState.off || BluetoothAdapterState.turningOff =>
-        const ErrorInfo('Bluetooth is off', hint: 'Turn it on to connect robots'),
-      BluetoothAdapterState.unauthorized =>
-        const ErrorInfo('Bluetooth permission denied', hint: 'Allow Bluetooth in app settings'),
-      BluetoothAdapterState.unavailable => const ErrorInfo('Bluetooth unavailable on this device'),
+      BluetoothAdapterState.off ||
+      BluetoothAdapterState.turningOff =>
+        const ErrorInfo('Bluetooth is off',
+            hint: 'Turn it on to connect robots'),
+      BluetoothAdapterState.unauthorized => const ErrorInfo(
+          'Bluetooth permission denied',
+          hint: 'Allow Bluetooth in app settings'),
+      BluetoothAdapterState.unavailable =>
+        const ErrorInfo('Bluetooth unavailable on this device'),
       _ => const ErrorInfo('Bluetooth not ready'),
     };
 
 String describeMqttReturnCode(MqttConnectReturnCode code) => switch (code) {
-      MqttConnectReturnCode.unacceptedProtocolVersion => 'Connection failed: Invalid protocol version',
-      MqttConnectReturnCode.identifierRejected => 'Connection failed: Invalid client identifier',
-      MqttConnectReturnCode.brokerUnavailable => 'Connection failed: Broker unavailable',
-      MqttConnectReturnCode.badUsernameOrPassword => 'Auth failed: Bad username/password',
+      MqttConnectReturnCode.unacceptedProtocolVersion =>
+        'Connection failed: Invalid protocol version',
+      MqttConnectReturnCode.identifierRejected =>
+        'Connection failed: Invalid client identifier',
+      MqttConnectReturnCode.brokerUnavailable =>
+        'Connection failed: Broker unavailable',
+      MqttConnectReturnCode.badUsernameOrPassword =>
+        'Auth failed: Bad username/password',
       MqttConnectReturnCode.notAuthorized => 'Auth failed: Invalid credentials',
-      MqttConnectReturnCode.noneSpecified => 'Connection failed: No return code specified',
+      MqttConnectReturnCode.noneSpecified =>
+        'Connection failed: No return code specified',
       _ => 'Connection failed: $code',
     };

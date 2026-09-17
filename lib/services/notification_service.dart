@@ -28,7 +28,8 @@ class NotificationService {
 
   /// Idempotent init (call from main). Does not request permission, so the
   /// first frame is never blocked on an OS dialog.
-  static Future<void> initialize() => _initFuture ??= _guard('initialize', () async {
+  static Future<void> initialize() =>
+      _initFuture ??= _guard('initialize', () async {
         tz_data.initializeTimeZones();
         await _plugin.initialize(const InitializationSettings(
           android: AndroidInitializationSettings('@mipmap/ic_launcher'),
@@ -40,20 +41,24 @@ class NotificationService {
         ));
       });
 
-  static Future<void> requestPermission() => _guard('requestPermission', () async {
+  static Future<void> requestPermission() =>
+      _guard('requestPermission', () async {
         await initialize();
         await _plugin
-            .resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>()
+            .resolvePlatformSpecificImplementation<
+                AndroidFlutterLocalNotificationsPlugin>()
             ?.requestNotificationsPermission();
         await _plugin
-            .resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>()
+            .resolvePlatformSpecificImplementation<
+                IOSFlutterLocalNotificationsPlugin>()
             ?.requestPermissions(alert: true, badge: false, sound: true);
       });
 
   static Future<void> cancelAll() => _guard('cancelAll', _plugin.cancelAll);
 
   /// Game-clock alerts; at 0 s the text reads match-over in the final period.
-  static Future<void> scheduleGameAlerts(int remainingSeconds, Set<int> thresholds,
+  static Future<void> scheduleGameAlerts(
+          int remainingSeconds, Set<int> thresholds,
           {bool isFinalPeriod = false}) =>
       _scheduleAll(
         base: 10000,
@@ -66,7 +71,8 @@ class NotificationService {
             : 'Time is up! Open the app to start the next timer',
       );
 
-  static Future<void> scheduleBreakAlerts(int remainingSeconds, Set<int> thresholds) =>
+  static Future<void> scheduleBreakAlerts(
+          int remainingSeconds, Set<int> thresholds) =>
       _scheduleAll(
         base: 30000,
         title: 'Break Timer',
@@ -76,8 +82,8 @@ class NotificationService {
         atZero: 'Time is up! Open the app to start the second half timer',
       );
 
-  static Future<void> scheduleDamageAlerts(
-          int moduleId, String moduleName, int penaltySeconds, Set<int> thresholds) =>
+  static Future<void> scheduleDamageAlerts(int moduleId, String moduleName,
+          int penaltySeconds, Set<int> thresholds) =>
       _scheduleAll(
         base: 20000 + moduleId * 100,
         title: 'Damage Timer – $moduleName',
@@ -100,14 +106,16 @@ class NotificationService {
     for (final threshold in thresholds) {
       final delay = remaining - threshold;
       if (delay <= 0) continue;
-      await _guard('schedule', () => _plugin.zonedSchedule(
-            base + threshold,
-            title,
-            threshold == 0 ? atZero : '$threshold seconds remaining',
-            now.add(Duration(seconds: delay)),
-            NotificationDetails(android: channel, iOS: _iosDetails),
-            androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
-          ));
+      await _guard(
+          'schedule',
+          () => _plugin.zonedSchedule(
+                base + threshold,
+                title,
+                threshold == 0 ? atZero : '$threshold seconds remaining',
+                now.add(Duration(seconds: delay)),
+                NotificationDetails(android: channel, iOS: _iosDetails),
+                androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+              ));
     }
   }
 
