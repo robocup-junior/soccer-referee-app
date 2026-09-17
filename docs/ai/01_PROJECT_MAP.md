@@ -14,22 +14,41 @@ rcj_scoreboard/
 ├── lib/                        # All Dart/Flutter source
 │   ├── main.dart               # Entry point, provider registration, orientation lock
 │   ├── models/
-│   │   ├── game.dart           # Central game state + timer + MQTT + bridge orchestration
-│   │   ├── module.dart         # BLE robot module model + all BLE send logic
-│   │   ├── bridge_message.dart # BridgeMessage framing + BridgeTopics names (BLE bridge)
-│   │   └── team.dart           # Team name + score
+│   │   ├── game.dart           # Game: clock/stage machine, robot fan-out, sinks, settings
+│   │   ├── game_scoreboard.dart# part of game.dart: fixture apply/pair, result review/submit
+│   │   ├── game_resume.dart    # part of game.dart: cold-resume snapshot build/restore
+│   │   ├── match_persistence.dart  # dirty/flush/clear of the resume snapshot
+│   │   ├── ios_mac_pairing.dart    # iOS MAC->UUID cache + resolver bookkeeping (#82)
+│   │   ├── scoreboard_binding.dart # side mapping, signatures, resumed-fixture state
+│   │   ├── module.dart         # Module: robot state machine + BLE link + frames
+│   │   ├── team.dart           # Team name + score
+│   │   ├── scoreboard_result.dart  # fixture config + result outbox item models
+│   │   └── bridge_message.dart # BridgeMessage framing + BridgeTopics (BLE bridge)
 │   ├── screens/
 │   │   ├── home.dart           # Main control UI (double-tap all actions)
-│   │   ├── settings.dart       # Game/MQTT/match-data settings screen
+│   │   ├── settings.dart       # Settings screen (sections)
 │   │   ├── module_settings.dart# Per-module BLE connection screen
-│   │   └── mac_qr_scanner.dart # QR code → MAC address scanner
+│   │   ├── scoreboard_result_review.dart # Full-time result review
+│   │   └── mac_qr_scanner.dart # QR code -> MAC scanner + iOS UUID resolve helper
 │   ├── services/
-│   │   ├── ble.dart            # BLE adapter init/enable helper only
-│   │   ├── mqtt.dart           # MQTT publish service + SharedPreferences persistence
-│   │   ├── ble_bridge_service.dart # BLE scoreboard bridge: MQTT-over-BLE, dedup queue, ACK
-│   │   └── match_data.dart     # HTTP match schedule fetch + SharedPreferences
+│   │   ├── scoreboard_result_service.dart # deep-link fixture + retrying outbox
+│   │   ├── referee_link.dart   # referee deep-link parsing
+│   │   ├── mqtt.dart           # MQTT publish service
+│   │   ├── ble_bridge_service.dart # BLE scoreboard bridge
+│   │   ├── ios_mac_resolver.dart   # iOS batch-scan resolve loop
+│   │   ├── match_state_store.dart  # snapshot schema + tombstoned prefs writes
+│   │   ├── match_data.dart     # HTTP match schedule fetch (catigoal)
+│   │   ├── ble_adapter_monitor.dart, notification_service.dart,
+│   │   │   vibration_service.dart, wakelock_service.dart, preset_service.dart,
+│   │   │   error_messages.dart
+│   ├── widgets/                # Home/Settings building blocks + shared dialogs
+│   │   ├── app_dialogs.dart, game_prompts.dart, module_button.dart, team_panel.dart,
+│   │   │   time_settings_sheet.dart, settings_widgets.dart, module_presets_section.dart,
+│   │   │   bluetooth_banner.dart, critical_gesture_detector.dart, ...
 │   └── utils/
-│       └── colors.dart         # App color constants (AppColors)
+│       ├── colors.dart         # AppColors (incl. team colours)
+│       ├── format.dart         # clock / duration / kickoff formatting
+│       └── ble_address.dart    # MAC/UUID helpers
 ├── android/
 │   ├── app/
 │   │   ├── build.gradle        # App-level Gradle (AGP 8.1.4, targetSdk 35, NDK 25.x)
@@ -63,14 +82,14 @@ rcj_scoreboard/
 
 ## Key classes and their locations
 
-### `Game` — `lib/models/game.dart:15`
+### `Game` — `lib/models/game.dart` (+ parts `game_scoreboard.dart`, `game_resume.dart`)
 - `ChangeNotifier` root state object
-- Owns: `List<Team> teams` (2 teams × 5 modules each), `MqttService`, `MatchDataService`
+- Owns: `List<Team> teams` (2 teams × 5 modules each), the services, `MatchPersistence persistence`, `IosMacPairing iosPairing`, a `ScoreboardBinding`
 - Manages: timer (`Timer`), match stage (`MatchStage` enum), score coordination
 - Key methods:
   - `gameInit()` — reset everything, re-enable/disable modules by count
   - `startTimer()` / `stopTimer()` / `toggleTimer()` — timer control
-  - `playAll(bool removeDamage)` — calls `module.playAll()` or `module.playOrDamageAll()` for all enabled modules (NOT awaited)
+  - `playAll({clearPenalties})` — calls `module.playAll(clearPenalty:)` for all enabled modules (NOT awaited)
   - `stopAll(bool removePenalty, {bool force})` — calls `module.stopAll()` for all enabled modules (NOT awaited)
   - `notifyModulesScore()` — calls `module.bleSendScore()` on all connected modules
   - `loadMatchData()` — async HTTP fetch, populates team names
@@ -78,9 +97,9 @@ rcj_scoreboard/
   - `toggleAllModules()` — smart toggle based on state
   - `halfTimeAll()` / `gameOverAll()` — stop then send special BLE commands with 1s delay
 
-### `Module` — `lib/models/module.dart:33`
+### `Module` — `lib/models/module.dart`
 - `ChangeNotifier` per-robot model
-- Owns: BLE connection state, `BluetoothDevice?`, `BluetoothCharacteristic? bleTX/bleRX`, `ModuleState`, penalty timer
+- Owns: BLE connection state, `BluetoothDevice?`, the NUS TX/RX characteristics, `ModuleState`, penalty timer; every frame goes through one `_write(frame, {timeout})`
 - BLE service UUID: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E` (Nordic UART Service)
 - BLE TX characteristic: `6E400002-B5A3-F393-E0A9-E50E24DCCA9E`
 - BLE RX characteristic: `6E400003-B5A3-F393-E0A9-E50E24DCCA9E`
@@ -95,10 +114,10 @@ rcj_scoreboard/
   - `bleSendScore()` — 3-byte score packet (includes 200ms delay before send)
   - `bleSendName()` — 3-byte name packet
 
-### `Team` — `lib/models/team.dart:4`
+### `Team` — `lib/models/team.dart`
 - `ChangeNotifier`, holds `String _name`, `String id` ('A' or 'B'), `List<Module> modules`, `int score`
 
-### `MqttService` — `lib/services/mqtt.dart:18`
+### `MqttService` — `lib/services/mqtt.dart`
 - Not a `ChangeNotifier`; uses `ValueNotifier<MqttConnectionStateEx> connectionStateNotifier`
 - Persists settings to `SharedPreferences` (keys: `mqtt_*`)
 - Key publish methods: `publishTime`, `publishScore`, `publishTeamNames`, `publishTeam`, `publishGameState`
@@ -129,8 +148,8 @@ rcj_scoreboard/
 - Fetches JSON from configurable URL, parses `Match` objects
 - Hardcoded default URL in source code (points to external competition API)
 
-### `BLEServices` — `lib/services/ble.dart:9`
-- Utility only: `initCheck()` validates BLE adapter state, `enableBLE()` turns it on (Android only)
+### BLE adapter state — `lib/services/ble_adapter_monitor.dart`
+- `BleAdapterMonitor` (ChangeNotifier, provided app-wide) drives the Home banner and the module screen's status line; `services/ble.dart` (`BLEServices`) was removed.
 
 ### UI Screens
 - `Home` (`lib/screens/home.dart:13`) — `StatelessWidget`, reads `Game` via `Provider.of`

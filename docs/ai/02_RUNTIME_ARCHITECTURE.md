@@ -14,7 +14,7 @@ MultiProvider
 
 `Consumer<Game>`, `Consumer<Team>`, and `Consumer<Module>` widgets rebuild selectively. Widgets call `notifyListeners()` to trigger UI updates.
 
-No dependency injection framework. `Game` directly instantiates `MqttService` and `MatchDataService` in its constructor. `BLEServices` is instantiated per-screen in `ModuleSettingsScreen`.
+No dependency injection framework. `Game` directly instantiates `MqttService` and `MatchDataService` in its constructor. `ModuleSettingsScreen` reads the app-wide `BleAdapterMonitor` from Provider.
 
 ## UI flow
 
@@ -58,14 +58,12 @@ BLE connection lifecycle per module:
 2. module.setBleDevice(BluetoothDevice.fromId(mac)) — creates device from MAC
 3. module.bleConnect()
    ├── 100ms delay (comment: fixes >5 simultaneous connections)
-   ├── _registerBleSubscriber(device) — subscribes to connectionState stream
+   ├── subscribes to connectionState (Module._onConnectionState)
    └── device.connect(autoConnect:true, mtu:null)
 4. On connected event:
    ├── _isConnected = true
-   └── bleInitModule()
-       ├── bleCheckServicesAndGetCharacteristics() — discovers NUS service, sets bleTX/bleRX
-       ├── enableRXNotifications() — listens for incoming data on RX characteristic
-       └── bleSendCurrentState() → bleSendName() + bleSendScore() + bleNotify()
+   └── _initLink() — discovers the NUS service, binds TX/RX, subscribes to RX
+       notifications, then bleSendName() + bleSendScore() + bleNotify()
 5. On disconnected event:
    ├── _isConnected = false
    └── bleStatus = _connectIntent ? 'Connecting...' : 'Disconnected'
