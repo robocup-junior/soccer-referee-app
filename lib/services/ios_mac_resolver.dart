@@ -5,28 +5,16 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import '../utils/ble_address.dart' as ble_address;
 
-/// iOS-only MAC→UUID resolve controller (#82).
+/// iOS-only MAC→UUID resolve loop (#82).
 ///
-/// iOS cannot connect to a module by its hardware MAC — CoreBluetooth
-/// addresses peripherals by a per-phone UUID that is only learned by seeing
-/// the module advertise (`RCJs-m_<MAC>`). This controller owns the "which
-/// MACs still need a UUID" bookkeeping and the bounded rescan that resolves
-/// them:
-///
-///  * Modules are [enroll]ed at match load (auto-pair), preset apply, or when
-///    a cached UUID turns out to be stale ("Peripheral not found").
-///  * A background loop runs ONE batch scan per round for all still-pending
-///    MACs, while — and only while — [canScanNow] allows it (no half running).
-///  * [stopForMatch] is called synchronously at kickoff: it stops scanning for
-///    the rest of the match (invariant #1 — a BLE scan competes with the radio
-///    used for robot START/STOP) and marks pending modules "not found"; the
-///    referee's manual QR/scan fallback stays available at any time.
-///  * Resolution feeds exactly ONE `connect(autoConnect:true)` per module via
-///    [onResolved]; reconnection after power-cycles stays OS-owned (invariant
-///    #5 — this controller never reacts to disconnect events).
-///
-/// Every seam (scan, stopScan, gate, callbacks, retry delay) is injectable so
-/// the state machine is fully unit-testable without BLE.
+/// CoreBluetooth addresses peripherals by a per-phone UUID learned only by
+/// seeing the module advertise (`RCJs-m_<MAC>`). Modules are [enroll]ed at
+/// match load; one batch scan per round resolves every pending MAC while
+/// [canScanNow] allows it (no half running). [stopForMatch] at kickoff ends
+/// scanning for the rest of the match (a scan competes with the radio used
+/// for START/STOP, invariant #1). Each resolution feeds exactly one connect
+/// via [onResolved]; reconnection stays OS-owned (invariant #5). Every seam
+/// is injectable so the state machine is unit-testable without BLE.
 class IosMacResolveController {
   IosMacResolveController({
     Future<Map<String, String>> Function(Set<String> macs)? scan,
@@ -42,48 +30,39 @@ class IosMacResolveController {
         _canScanNow = canScanNow,
         _onResolved = onResolved,
         _onGaveUp = onGaveUp,
-        _isForeignScanRunning =
-            isForeignScanRunning ?? _defaultIsForeignScanRunning,
+        _isForeignScanRunning = isForeignScanRunning ?? (() => FlutterBluePlus.isScanningNow),
         _retryDelay = retryDelay,
         _preemptedRetryDelay = preemptedRetryDelay;
 
-  static void _defaultStopScan() =>
-      unawaited(FlutterBluePlus.stopScan().catchError((Object e) {
-        // BLE off / unsupported platform: there is no scan to stop.
-        debugPrint('IosMacResolveController stopScan error: $e');
-      }));
+  static void _defaultStopScan() => unawaited(FlutterBluePlus.stopScan()
+      .catchError((Object e) => debugPrint('IosMacResolveController stopScan error: $e')));
+
+  static const _maxConsecutiveFastRetries = 3;
 
   final Future<Map<String, String>> Function(Set<String> macs) _scan;
   final void Function() _stopScan;
   final bool Function() _canScanNow;
   final void Function(int moduleId, String mac, String uuid) _onResolved;
-  static bool _defaultIsForeignScanRunning() => FlutterBluePlus.isScanningNow;
-
   final void Function(int moduleId) _onGaveUp;
   final bool Function() _isForeignScanRunning;
   final Duration _retryDelay;
   final Duration _preemptedRetryDelay;
-  static const int _maxConsecutiveFastRetries = 3;
-  int _consecutiveFastRetries = 0;
 
   /// moduleId → wanted hardware MAC (uppercase). Latest enroll wins per id.
   final Map<int, String> _pending = {};
+  int _consecutiveFastRetries = 0;
   bool _stoppedForMatch = false;
   bool _running = false;
-  // True ONLY while the awaited batch-scan call is in flight — the loop being
-  // active is NOT evidence we own the radio (it may be yielding to a foreign
-  // scan), and stopping a scan we don't own would kill the referee's manual
-  // scan at kickoff (#82 review round 4, both reviewers independently).
+  // Only while OUR scan call is in flight; never stop a scan we don't own
+  // (it may be the referee's manual settings scan).
   bool _ownScanInFlight = false;
   bool _disposed = false;
 
   @visibleForTesting
   int get pendingCount => _pending.length;
 
-  /// Ask the controller to resolve [mac] for module [moduleId]. If scanning is
-  /// currently impossible (match running / already stopped for this match) the
-  /// module immediately reports as given up — the referee falls back to the
-  /// manual scan/QR path; nothing is queued behind a closed gate.
+  /// Resolve [mac] for [moduleId]. If scanning is impossible right now the
+  /// module gives up immediately (manual scan/QR stays available).
   void enroll(int moduleId, String mac) {
     if (_disposed) return;
     if (_stoppedForMatch || !_canScanNow()) {
@@ -91,37 +70,25 @@ class IosMacResolveController {
       return;
     }
     _pending[moduleId] = mac.toUpperCase();
-    _kick();
+    if (_running) return;
+    _running = true;
+    unawaited(_loop());
   }
 
-  /// Drop a module from the pending set (user Cancel / re-target). An
-  /// in-flight scan hit for it is discarded at apply time.
-  void cancel(int moduleId) {
-    _pending.remove(moduleId);
-  }
+  /// Drop a module (Cancel / re-target); an in-flight hit for it is discarded.
+  void cancel(int moduleId) => _pending.remove(moduleId);
 
-  /// One-shot at kickoff: no more scanning for the rest of this match.
-  /// Synchronous and cheap (flag + unawaited stopScan) — it sits on the
-  /// START path (invariant #1). Idempotent: warm-resume tick replay can cross
-  /// stage transitions in one burst.
+  /// One-shot at kickoff; synchronous and cheap (sits on the START path).
   void stopForMatch() {
     if (_stoppedForMatch) return;
     _stoppedForMatch = true;
-    // Only stop a scan WE actually own. Neither pending work nor an active
-    // loop is evidence of that — the loop may be idle between rounds or
-    // yielding to a referee's manual scan, and the global stopScan would kill
-    // exactly that foreign scan (PR #93 review + round 4, both reviewers).
-    if (_ownScanInFlight) {
-      _stopScan();
-    }
+    if (_ownScanInFlight) _stopScan();
     final gaveUp = List<int>.from(_pending.keys);
     _pending.clear();
     gaveUp.forEach(_onGaveUp);
   }
 
-  /// Between-matches re-arm (gameInit / REPEAT / full-time teardown /
-  /// confirmed new Load): forget pending work and allow scanning again for
-  /// the next match's load.
+  /// Between-matches re-arm.
   void reset() {
     _pending.clear();
     _stoppedForMatch = false;
@@ -133,23 +100,10 @@ class IosMacResolveController {
     _pending.clear();
   }
 
-  void _kick() {
-    if (_running || _disposed) return;
-    _running = true;
-    unawaited(_loop());
-  }
-
   Future<void> _loop() async {
     try {
-      while (!_disposed &&
-          !_stoppedForMatch &&
-          _pending.isNotEmpty &&
-          _canScanNow()) {
-        // Manual, referee-initiated scans always win the (single, process-
-        // wide) radio: starting ours would silently kill a running settings
-        // list scan or QR/MAC resolve — the exact fallback the design keeps
-        // for a module the auto-resolve hasn't found (#82 review round 2).
-        // Yield the whole round and check back on the normal cadence.
+      while (!_disposed && !_stoppedForMatch && _pending.isNotEmpty && _canScanNow()) {
+        // A referee-initiated scan owns the (single, process-wide) radio.
         if (_isForeignScanRunning()) {
           await Future.delayed(_retryDelay);
           continue;
@@ -162,28 +116,17 @@ class IosMacResolveController {
         } finally {
           _ownScanInFlight = false;
         }
-        stopwatch.stop();
-        // Gates may have closed while the scan ran (kickoff, dispose, reset):
-        // a stale hit must never connect a module the match moved past.
+        // A gate may have closed while scanning: a stale hit must not connect.
         if (_disposed || _stoppedForMatch) break;
-        for (final entry
-            in List<MapEntry<int, String>>.from(_pending.entries)) {
+        for (final entry in List.of(_pending.entries)) {
           final uuid = hits[entry.value];
           if (uuid == null) continue;
           _pending.remove(entry.key);
           _onResolved(entry.key, entry.value, uuid);
         }
         if (_pending.isEmpty) break;
-        // fbp allows ONE scan process-wide: another startScan (settings list
-        // scan, a QR resolve) silently stops ours, which surfaces here as a
-        // near-instant empty round. Retry quickly in that case so a
-        // preemption can't eat a whole pre-kickoff resolve window; a
-        // full-length empty round keeps the normal cadence. Two bounds keep
-        // this from degrading into a hot loop (#82 review round 2): a scan
-        // ERROR (BLE off / permission denied) also returns near-instantly
-        // empty, so consecutive fast retries are capped; and while a foreign
-        // scan is still running the loop yields above instead of retrying
-        // into it.
+        // Another startScan silently stops ours (near-instant empty round):
+        // retry fast, but bounded, since a scan ERROR looks the same.
         final preempted = hits.isEmpty &&
             stopwatch.elapsed < const Duration(seconds: 1) &&
             _consecutiveFastRetries < _maxConsecutiveFastRetries;
@@ -193,7 +136,5 @@ class IosMacResolveController {
     } finally {
       _running = false;
     }
-    // A gate may have re-opened between the while-check and _running=false
-    // only via enroll(), which re-kicks; no self-rescheduling needed here.
   }
 }
