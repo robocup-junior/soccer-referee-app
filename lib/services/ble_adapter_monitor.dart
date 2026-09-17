@@ -19,7 +19,8 @@ class BleAdapterMonitor extends ChangeNotifier {
       // The adapter-state stream can error where the platform is unavailable
       // (e.g. unit/widget tests, or a host without BLE). Stay at `unknown`
       // (no banner) instead of letting an unhandled async error escape.
-      onError: (Object e) => debugPrint('BleAdapterMonitor: adapterState error: $e'),
+      onError: (Object e) =>
+          debugPrint('BleAdapterMonitor: adapterState error: $e'),
     );
   }
 

@@ -11,7 +11,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:rcj_scoreboard/models/game.dart';
-import 'package:rcj_scoreboard/screens/home.dart';
+import 'package:rcj_scoreboard/utils/format.dart';
 
 void main() {
   group('parseMmSs', () {

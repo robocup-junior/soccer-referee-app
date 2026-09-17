@@ -12,57 +12,66 @@ enum BridgeConnectionState {
   disconnected,
   connecting,
   connected,
-  error,
+  error
 }
 
+/// MQTT-over-BLE scoreboard bridge: a per-topic dedup queue drained with
+/// write-with-response (the ACK). Fully separate from robot control and never
+/// on its path. Like Module, the OS autoConnect owns reconnection while
+/// [_connectIntent] holds; every await re-checks the intent so a Cancel
+/// during setup can't be overwritten by a late continuation.
 class BleBridgeService extends ChangeNotifier {
-  bool _isEnabled = false;
-  String _bridgeMacAddress = '';
-  late SharedPreferences prefs;
+  BleBridgeService() {
+    loadPreferences();
+  }
 
-  BluetoothDevice? _device;
-  BluetoothCharacteristic? _txChar;
-  StreamSubscription<BluetoothConnectionState>? _connSub;
-  final Queue<BridgeMessage> _queue = Queue<BridgeMessage>();
-  bool _sendInProgress = false;
-  // True while we want to be connected (connect() called, autoConnect active).
-  // Lets a device-level disconnect read as "Connecting..." (still retrying)
-  // instead of "Disconnected", until disconnect() is called explicitly.
-  bool _connectIntent = false;
-  String? _lastErrorMessage;
-  String? get lastErrorMessage => _lastErrorMessage;
+  static final Guid _serviceGuid = Guid.fromString(kBridgeServiceUUID);
+  static final Guid _txGuid = Guid.fromString(kBridgeTxCharUUID);
 
   final ValueNotifier<BridgeConnectionState> connectionStateNotifier =
       ValueNotifier(BridgeConnectionState.disconnected);
   final ValueNotifier<int> queueDepthNotifier = ValueNotifier(0);
 
-  BleBridgeService() {
-    loadPreferences();
-  }
+  SharedPreferences? _prefs;
+  bool _isEnabled = false;
+  String _bridgeMacAddress = '';
+  BluetoothDevice? _device;
+  BluetoothCharacteristic? _txChar;
+  StreamSubscription<BluetoothConnectionState>? _connSub;
+  final Queue<BridgeMessage> _queue = Queue<BridgeMessage>();
+  bool _sendInProgress = false;
+  bool _connectIntent = false;
+  String? _lastErrorMessage;
 
-  Future<void> loadPreferences() async {
-    prefs = await SharedPreferences.getInstance();
-    _isEnabled = prefs.getBool('bridge_enabled') ?? false;
-    _bridgeMacAddress = prefs.getString('bridge_mac_address') ?? '';
-    connectionStateNotifier.notifyListeners();
-    notifyListeners();
-  }
-
+  String? get lastErrorMessage => _lastErrorMessage;
   bool get isEnabled => _isEnabled;
   String get bridgeMacAddress => _bridgeMacAddress;
   bool get isConnected =>
       connectionStateNotifier.value == BridgeConnectionState.connected &&
       _txChar != null;
 
+  Future<void> loadPreferences() async {
+    final prefs = _prefs = await SharedPreferences.getInstance();
+    _isEnabled = prefs.getBool('bridge_enabled') ?? false;
+    _bridgeMacAddress = prefs.getString('bridge_mac_address') ?? '';
+    connectionStateNotifier.notifyListeners();
+    notifyListeners();
+  }
+
   set isEnabled(bool value) {
     _isEnabled = value;
-    prefs.setBool('bridge_enabled', value);
+    _prefs?.setBool('bridge_enabled', value);
     notifyListeners();
   }
 
   set bridgeMacAddress(String value) {
     _bridgeMacAddress = value;
-    prefs.setString('bridge_mac_address', value);
+    _prefs?.setString('bridge_mac_address', value);
+    notifyListeners();
+  }
+
+  void _setState(BridgeConnectionState state) {
+    connectionStateNotifier.value = state;
     notifyListeners();
   }
 
@@ -72,105 +81,79 @@ class BleBridgeService extends ChangeNotifier {
         isConnected) {
       return;
     }
-
     _connectIntent = true;
     connectionStateNotifier.value = BridgeConnectionState.connecting;
-
     try {
-      _device = BluetoothDevice.fromId(_bridgeMacAddress.toUpperCase());
+      final device =
+          _device = BluetoothDevice.fromId(_bridgeMacAddress.toUpperCase());
       await _connSub?.cancel();
-      // A Cancel can land during the await above; starting the OS autoConnect
-      // anyway would hold/chase the bridge invisibly (it is a single-central
-      // device) while the UI reads "Disconnected". Same re-check
-      // Module.bleConnect does after its pre-connect await.
       if (!_connectIntent) return;
-      _registerBleSubscriber(_device!);
-      await _device!.connect(autoConnect: true, mtu: null);
+      _connSub = device.connectionState.listen((state) {
+        if (state == BluetoothConnectionState.disconnected) {
+          _txChar = null;
+          _setState(_connectIntent
+              ? BridgeConnectionState.connecting
+              : BridgeConnectionState.disconnected);
+        } else if (state == BluetoothConnectionState.connected) {
+          _onConnected();
+        }
+      });
+      await device.connect(autoConnect: true, mtu: null);
     } catch (e) {
       debugPrint('BleBridge: connect error: $e');
-      // Don't let a failure surfacing after a Cancel overwrite the settled
-      // "Disconnected" with an error.
-      if (!_connectIntent) return;
-      await _setErrorAndDisconnect(message: describeError(e).message);
+      if (_connectIntent) {
+        await _setErrorAndDisconnect(describeError(e).message);
+      }
     }
   }
 
+  /// Explicit disconnect / Cancel. Settles the visible state BEFORE the slow
+  /// plugin teardown.
   Future<void> disconnect() async {
-    // Explicit user disconnect — stop intending to be connected. Settle the
-    // visible state BEFORE awaiting the (slow) plugin disconnect, mirroring
-    // Module.bleDisconnect: a Cancel on a stuck "Connecting..." must read
-    // "Disconnected" immediately, not after the BLE teardown completes.
     _connectIntent = false;
     _lastErrorMessage = null;
     _txChar = null;
     connectionStateNotifier.value = BridgeConnectionState.disconnected;
-
-    // Cancel the connection-state listener before disconnecting so the
-    // teardown disconnect event can't drive any further status work.
     await _connSub?.cancel();
     _connSub = null;
-
-    try {
-      await _device?.disconnect();
-    } catch (e) {
-      debugPrint('BleBridge: disconnect error: $e');
-    }
+    await _safeDeviceDisconnect('disconnect');
   }
 
-  /// Drain-then-disconnect for the full-time teardown. [shouldAbort] is
-  /// re-checked while draining and once more before the disconnect: the drain
-  /// can hold this future for seconds, and a caller whose world moved on
-  /// meanwhile (e.g. a REPEAT started a new match) must be able to keep the
-  /// link instead of losing it to a stale teardown.
+  /// Drain the queue (bounded), then disconnect; [shouldAbort] is re-checked
+  /// throughout so a REPEAT that started a new match keeps the link.
   Future<void> disconnectAfterDrain({
     Duration timeout = const Duration(seconds: 3),
     bool Function()? shouldAbort,
   }) async {
-    try {
-      final deadline = DateTime.now().add(timeout);
-      while ((_queue.isNotEmpty || _sendInProgress) &&
-          DateTime.now().isBefore(deadline) &&
-          !(shouldAbort?.call() ?? false)) {
-        final remaining = deadline.difference(DateTime.now());
-        final delay = remaining < const Duration(milliseconds: 100)
-            ? remaining
-            : const Duration(milliseconds: 100);
-        if (delay <= Duration.zero) break;
-        await Future<void>.delayed(delay);
-      }
-    } catch (e) {
-      debugPrint('BleBridge: drain before disconnect failed: $e');
+    final deadline = DateTime.now().add(timeout);
+    while ((_queue.isNotEmpty || _sendInProgress) &&
+        DateTime.now().isBefore(deadline) &&
+        !(shouldAbort?.call() ?? false)) {
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= Duration.zero) break;
+      await Future<void>.delayed(remaining < const Duration(milliseconds: 100)
+          ? remaining
+          : const Duration(milliseconds: 100));
     }
-
     if (shouldAbort?.call() ?? false) return;
-
-    try {
-      await disconnect();
-    } catch (e) {
-      debugPrint('BleBridge: disconnectAfterDrain failed: $e');
-    }
+    await disconnect();
   }
 
+  /// Queue (topic, value); a newer value for the same topic replaces the
+  /// queued one.
   void publishTopic(String topic, String value) {
     if (!isEnabled) return;
-
-    final msg = BridgeMessage(topic, value);
     _queue.removeWhere((m) => m.topic == topic);
-    _queue.add(msg);
+    _queue.add(BridgeMessage(topic, value));
     queueDepthNotifier.value = _queue.length;
     _processQueue();
   }
 
   Future<void> _processQueue() async {
     if (_sendInProgress || _queue.isEmpty || !isConnected) return;
-
     _sendInProgress = true;
     while (_queue.isNotEmpty && isConnected) {
-      // Pop before awaiting: removing the in-flight message from the queue up
-      // front means a concurrent publishTopic() (its removeWhere/add) can never
-      // shift the queue out from under a removeFirst() and drop an unsent
-      // message. A newer value for the same topic simply enqueues for the next
-      // iteration.
+      // Pop before awaiting so a concurrent publishTopic can't drop a message.
       final msg = _queue.removeFirst();
       queueDepthNotifier.value = _queue.length;
       await _sendWithRetry(msg);
@@ -180,47 +163,20 @@ class BleBridgeService extends ChangeNotifier {
 
   Future<bool> _sendWithRetry(BridgeMessage msg, {int maxRetries = 3}) async {
     final bytes = msg.toBytes();
-    for (int attempt = 0; attempt < maxRetries; attempt++) {
+    for (var attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         await _txChar!.write(bytes, withoutResponse: false, timeout: 5);
         return true;
       } catch (e) {
-        if (attempt == maxRetries - 1) {
-          debugPrint(
-              'BleBridge: send "${msg.topic}" failed after $maxRetries: $e');
+        if (attempt == maxRetries) {
+          debugPrint('BleBridge: send "${msg.topic}" failed: $e');
         }
       }
     }
     return false;
   }
 
-  void _registerBleSubscriber(BluetoothDevice device) {
-    _connSub =
-        device.connectionState.listen((BluetoothConnectionState state) async {
-      debugPrint('BleBridge status: $state');
-
-      if (state == BluetoothConnectionState.disconnected) {
-        _txChar = null;
-        // Still intending to be connected (autoConnect retrying, or the initial
-        // disconnected event right after connect()) → show "Connecting...".
-        connectionStateNotifier.value = _connectIntent
-            ? BridgeConnectionState.connecting
-            : BridgeConnectionState.disconnected;
-        notifyListeners();
-      } else if (state == BluetoothConnectionState.connected) {
-        await _onConnected();
-      }
-    });
-  }
-
   Future<void> _onConnected() async {
-    // Re-check the connect intent after every await: the Cancel button is
-    // offered exactly while this setup phase runs (state `connecting`), and
-    // disconnect() cannot stop an already-running _onConnected — without
-    // these checks a resuming continuation would overwrite the user's settled
-    // "Disconnected" with `connected` (on a link disconnect() is tearing
-    // down) or `error`. Same reason Module.bleConnect re-checks
-    // !_connectIntent after its awaits.
     if (!_connectIntent) return;
     try {
       try {
@@ -229,83 +185,62 @@ class BleBridgeService extends ChangeNotifier {
         debugPrint('BleBridge: MTU request failed: $e');
       }
       if (!_connectIntent) return;
-
-      final ready = await _discoverBridgeCharacteristic();
+      final ready = await _discoverTxCharacteristic();
       if (!_connectIntent) {
-        // A Cancel landed during discovery; drop the characteristic the
-        // discovery just installed so the service stays fully torn down.
         _txChar = null;
         return;
       }
       if (!ready) {
         await _setErrorAndDisconnect(
-            message: 'Scoreboard service not found on this device');
+            'Scoreboard service not found on this device');
         return;
       }
-
       _lastErrorMessage = null;
-      connectionStateNotifier.value = BridgeConnectionState.connected;
-      notifyListeners();
+      _setState(BridgeConnectionState.connected);
       await _processQueue();
     } catch (e) {
       debugPrint('BleBridge: initialization error: $e');
-      if (!_connectIntent) return;
-      await _setErrorAndDisconnect(message: describeError(e).message);
+      if (_connectIntent) {
+        await _setErrorAndDisconnect(describeError(e).message);
+      }
     }
   }
 
-  Future<void> _setErrorAndDisconnect({String? message}) async {
-    _lastErrorMessage = message ?? 'Connection error';
-    // Gave up (setup/discovery error) — drop the connect intent so a stray
-    // event can't flip the status back to "Connecting...".
+  Future<void> _setErrorAndDisconnect(String message) async {
+    _lastErrorMessage = message;
     _connectIntent = false;
     await _connSub?.cancel();
     _connSub = null;
+    await _safeDeviceDisconnect('error disconnect');
+    _txChar = null;
+    // A Cancel during the teardown already settled "Disconnected"; keep it.
+    if (connectionStateNotifier.value == BridgeConnectionState.connecting) {
+      _setState(BridgeConnectionState.error);
+    }
+  }
 
+  Future<void> _safeDeviceDisconnect(String what) async {
     try {
       await _device?.disconnect();
     } catch (e) {
-      debugPrint('BleBridge: error disconnect failed: $e');
+      debugPrint('BleBridge: $what failed: $e');
     }
-
-    _txChar = null;
-    // The BLE teardown above can take seconds and the state still reads
-    // "Connecting..." meanwhile, so Settings offers Cancel. If the user took
-    // it, disconnect() already settled "Disconnected" (only it can move the
-    // state here — the listener was cancelled first); don't overwrite that
-    // with an error the user no longer cares about.
-    if (connectionStateNotifier.value != BridgeConnectionState.connecting) {
-      return;
-    }
-    connectionStateNotifier.value = BridgeConnectionState.error;
-    notifyListeners();
   }
 
-  Future<bool> _discoverBridgeCharacteristic() async {
-    if (_device == null) return false;
-
-    final services = await _device!.discoverServices();
-    final service = services.where(
-      (element) => element.uuid == Guid.fromString(kBridgeServiceUUID),
-    );
-    if (service.isEmpty) {
-      debugPrint('BleBridge: required service not found');
+  Future<bool> _discoverTxCharacteristic() async {
+    final device = _device;
+    if (device == null) return false;
+    final services = await device.discoverServices();
+    final service = services.where((s) => s.uuid == _serviceGuid).firstOrNull;
+    if (service == null ||
+        !service.characteristics.any((c) => c.uuid == _txGuid)) {
+      debugPrint('BleBridge: bridge service/characteristic not found');
       return false;
     }
-
-    final characteristic = service.first.characteristics.where(
-      (element) => element.uuid == Guid.fromString(kBridgeTxCharUUID),
-    );
-    if (characteristic.isEmpty) {
-      debugPrint('BleBridge: TX characteristic not found');
-      return false;
-    }
-
     _txChar = BluetoothCharacteristic(
-      remoteId: _device!.remoteId,
-      serviceUuid: Guid.fromString(kBridgeServiceUUID),
-      characteristicUuid: Guid.fromString(kBridgeTxCharUUID),
-    );
+        remoteId: device.remoteId,
+        serviceUuid: _serviceGuid,
+        characteristicUuid: _txGuid);
     return true;
   }
 

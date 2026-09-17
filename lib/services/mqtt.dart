@@ -1,188 +1,131 @@
-// lib/services/mqtt_service.dart
 import 'dart:async';
 import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
-import 'package:uuid/uuid.dart';
-import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/models/game.dart';
+import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/services/error_messages.dart';
+import 'package:rcj_scoreboard/utils/format.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
 
 enum MqttConnectionStateEx { disconnected, connecting, connected, error }
 
-const String _defaultMqttPassword = 'S_p-@P2_rL7ZFv9';
-const String _legacyMqttPasswordHint = 'S_p-@P2_rL7ZFv9XYZ';
-const String _defaultMqttServer =
+const String _defaultPassword = 'S_p-@P2_rL7ZFv9';
+const String _legacyPasswordHint = 'S_p-@P2_rL7ZFv9XYZ';
+const String _defaultServer =
     'f2ec5c0344964af6a9b036e32a4f726c.s1.eu.hivemq.cloud';
 
+/// Publishes match state to `rcj_soccer/field_<N>/<topic>` (retained).
 class MqttService {
-  MqttServerClient? _client;
-  // The connect attempt currently in flight, if any (see connect()).
-  Future<bool>? _pendingConnect;
-  // Bumped by disconnect(); invalidates connect() waiters parked before it.
-  int _connectEpoch = 0;
-  final String _mainTopic = 'rcj_soccer'; // To store the configured topic
-  String _topic = ''; // To store the configured topic
-  bool _isEnabled = false; // To store the enabled state
-  late int _port; // To store the configured port
-  late String _server; // To store the configured server
-  late String _username; // To store the configured username
-  late String _password; // To store the configured password
-  late bool _secureConnection; // To store the secure connection state
-  late bool _autoConnect; // To store the auto-connect state
+  MqttService() {
+    loadPreferences();
+  }
 
-  final String _clientIdentifier =
-      'client_${const Uuid().v4()}'; // Generate unique client ID
+  static const _mainTopic = 'rcj_soccer';
+  static const _maxReconnectAttempts = 10;
+
+  final String _clientId = 'client_${const Uuid().v4()}';
   final ValueNotifier<MqttConnectionStateEx> connectionStateNotifier =
       ValueNotifier(MqttConnectionStateEx.disconnected);
+
+  SharedPreferences? _prefs;
+  MqttServerClient? _client;
+  // The connect attempt in flight; disconnect() bumps the epoch to veto any
+  // caller parked behind it.
+  Future<bool>? _pendingConnect;
+  int _connectEpoch = 0;
   String _lastErrorMessage = '';
-  late SharedPreferences prefs;
 
-  final StreamController<String> _messageStreamController =
-      StreamController<String>.broadcast();
+  bool _isEnabled = true;
+  bool _secureConnection = true;
+  String _topic = '';
+  int _port = 8883;
+  String _server = _defaultServer;
+  String _username = 'RCj_soccer_2026';
+  String _password = _defaultPassword;
 
-  Stream<String> get messageStream => _messageStreamController.stream;
-
-  MqttService() {
-    loadPreferences().then((_) {}); // Load preferences on initialization
-  }
-
-  /// Loads MQTT settings from SharedPreferences
   Future<void> loadPreferences() async {
-    prefs = await SharedPreferences.getInstance();
-    // Working defaults (#88): enabled ships ON so a fresh install's deep-link
-    // match load can auto-connect with zero referee taps. An explicit disable
-    // in Settings writes false and is honored (the setter persists it).
+    final prefs = _prefs = await SharedPreferences.getInstance();
+    // Enabled by default so a fresh install auto-connects on match load (#88).
     _isEnabled = prefs.getBool('mqtt_enabled') ?? true;
     _secureConnection = prefs.getBool('mqtt_secure_connection') ?? true;
-    _autoConnect = prefs.getBool('mqtt_auto_connect') ?? false;
     _topic = prefs.getString('mqtt_topic') ?? '';
     _port = prefs.getInt('mqtt_port') ?? 8883;
-    _server = prefs.getString('mqtt_server') ?? _defaultMqttServer;
+    _server = prefs.getString('mqtt_server') ?? _defaultServer;
     _username = prefs.getString('mqtt_username') ?? 'RCj_soccer_2026';
-    final storedPassword = prefs.getString('mqtt_password');
-    if (storedPassword == _legacyMqttPasswordHint) {
-      await prefs.setString('mqtt_password', _defaultMqttPassword);
+    if (prefs.getString('mqtt_password') == _legacyPasswordHint) {
+      await prefs.setString('mqtt_password', _defaultPassword);
     }
-    _password = prefs.getString('mqtt_password') ?? _defaultMqttPassword;
+    _password = prefs.getString('mqtt_password') ?? _defaultPassword;
   }
 
-  // Getters for server, port, username, and password
-  String? get server => _server;
-  int? get port => _port;
-  String? get username => _username;
-  String? get password => _password;
+  String get server => _server;
+  int get port => _port;
+  String get username => _username;
+  String get password => _password;
   String get topic => _topic;
   String get fieldNumber => _topic.replaceFirst('field_', '');
   bool get isEnabled => _isEnabled;
   bool get secureConnection => _secureConnection;
-  bool get autoConnect => _autoConnect;
   String get lastErrorMessage => _lastErrorMessage;
+  bool get isConnected =>
+      _client?.connectionStatus?.state == MqttConnectionState.connected;
 
-  // Setters for server, port, username, and password
-  set server(String? value) {
-    if (value != null && value.isNotEmpty) {
-      _server = value;
-      // Save to preferences
-      prefs.setString('mqtt_server', value);
-    } else {
-      debugPrint('MQTT_LOGS::Error: Invalid server address.');
-    }
+  set server(String value) {
+    if (value.isEmpty) return;
+    _server = value;
+    _prefs?.setString('mqtt_server', value);
   }
 
   set port(int? value) {
-    if (value != null && value > 0) {
-      _port = value;
-      // Save to preferences
-      prefs.setInt('mqtt_port', value);
-    } else {
-      debugPrint('MQTT_LOGS::Error: Invalid port number.');
-    }
+    if (value == null || value <= 0) return;
+    _port = value;
+    _prefs?.setInt('mqtt_port', value);
   }
 
-  set username(String? value) {
-    if (value != null) {
-      _username = value;
-      // Save to preferences
-      prefs.setString('mqtt_username', value);
-    } else {
-      debugPrint('MQTT_LOGS::Error: Invalid username.');
-    }
+  set username(String value) {
+    _username = value;
+    _prefs?.setString('mqtt_username', value);
   }
 
-  set password(String? value) {
-    if (value != null) {
-      _password = value;
-      // Save to preferences
-      prefs.setString('mqtt_password', value);
-    } else {
-      debugPrint('MQTT_LOGS::Error: Invalid password.');
-    }
+  set password(String value) {
+    _password = value;
+    _prefs?.setString('mqtt_password', value);
   }
 
   set topic(String value) {
-    if (value.isNotEmpty) {
-      _topic = value;
-      // Save to preferences
-      prefs.setString('mqtt_topic', value);
-    } else {
-      debugPrint('MQTT_LOGS::Error: Invalid topic.');
-    }
+    if (value.isEmpty) return;
+    _topic = value;
+    _prefs?.setString('mqtt_topic', value);
   }
 
-  set topicField(String value) {
-    topic = 'field_$value';
-  }
+  set topicField(String value) => topic = 'field_$value';
 
   set isEnabled(bool value) {
     _isEnabled = value;
-    // Save to preferences
-    prefs.setBool('mqtt_enabled', value);
+    _prefs?.setBool('mqtt_enabled', value);
   }
 
   set secureConnection(bool value) {
     _secureConnection = value;
-    // Save to preferences
-    prefs.setBool('mqtt_secure_connection', value);
+    _prefs?.setBool('mqtt_secure_connection', value);
   }
 
-  set autoConnect(bool value) {
-    _autoConnect = value;
-    // Save to preferences
-    prefs.setBool('mqtt_auto_connect', value);
-  }
+  // ---- connection ----
 
-  bool get isConnected =>
-      _client?.connectionStatus?.state == MqttConnectionState.connected;
-
+  /// Connect, serialising concurrent callers: a caller waits for any attempt
+  /// in flight and then runs its own unless a connection now exists, or a
+  /// disconnect() landed while it waited (epoch check).
   Future<bool> connect() async {
-    // Re-entrancy handling (#88): an auto-connect and a manual tap must not
-    // stack clients, but a caller must not be silently dropped either — a
-    // match-load connect can race a connect attempt that a full-time teardown
-    // (#87) just cancelled, and a plain "return false while in flight" would
-    // leave the new match with MQTT down and no retry. So SERIALIZE: wait for
-    // any in-flight attempt to settle, then run a fresh one unless it already
-    // produced a live connection. Keyed on an internal pending future, NOT on
-    // the public connecting state — the bounded reconnect loop in
-    // _onDisconnected sets connectionStateNotifier to `connecting` before
-    // each retry, so a state-based guard would turn every retry into a no-op.
-    // The epoch lets disconnect() veto waiters parked here BEFORE it ran:
-    // without it a queued retry (e.g. a reconnect-loop tick) would wake after
-    // a user/teardown disconnect and reconnect against that explicit intent.
-    // A caller arriving AFTER the disconnect captures the new epoch and
-    // proceeds — exactly the match-load handover case.
     final epoch = _connectEpoch;
     while (_pendingConnect != null) {
       await _pendingConnect;
-      if (_connectEpoch != epoch) {
-        return false;
-      }
+      if (_connectEpoch != epoch) return false;
     }
-    if (isConnected) {
-      return true;
-    }
+    if (isConnected) return true;
     final attempt = _connect();
     _pendingConnect = attempt;
     try {
@@ -192,279 +135,147 @@ class MqttService {
     }
   }
 
+  void _fail(String message) {
+    _lastErrorMessage = message;
+    connectionStateNotifier.value = MqttConnectionStateEx.error;
+  }
+
   Future<bool> _connect() async {
-    if (_server.isEmpty || _port <= 0) {
-      debugPrint('MQTT_LOGS::Error: Server or port not set.');
-      return false;
-    }
-
-    // Live-broker backstop (review #94): the shipped defaults are a WORKING
-    // production account, so an unseeded future test driving a match-load
-    // path would otherwise open a real TLS socket from CI and publish
-    // retained reset state onto a real field's topics. Refuse only under
-    // flutter_test AND only for the shipped production server — real devices
-    // never set FLUTTER_TEST, and tests against local/custom brokers (e.g.
-    // 127.0.0.1 in mqtt_service_test) stay fully functional.
+    if (_server.isEmpty || _port <= 0) return false;
+    // Never dial the shipped production broker from a test run (review #94).
     if (Platform.environment.containsKey('FLUTTER_TEST') &&
-        _server == _defaultMqttServer) {
+        _server == _defaultServer) {
       debugPrint(
-          'MQTT_LOGS::Refusing to dial the production broker from a test run');
+          'MQTT: refusing to dial the production broker from a test run');
       return false;
     }
-
     connectionStateNotifier.value = MqttConnectionStateEx.connecting;
 
-    final client = MqttServerClient.withPort(_server, _clientIdentifier, _port);
-    _client = client;
-    client.logging(
-        on: false); // Disable logging for production, enable for debugging
-
-    client.keepAlivePeriod = 300;
-    // Capture the current connection in the callback closures so a stale
-    // callback from a previous connect() can never read a newer _client.
-    final capturedClient = client;
-    client.onDisconnected = () => _onDisconnected(capturedClient);
+    final client = MqttServerClient.withPort(_server, _clientId, _port)
+      ..logging(on: false)
+      ..keepAlivePeriod = 300
+      ..secure = _secureConnection
+      ..connectionMessage =
+          MqttConnectMessage().withClientIdentifier(_clientId).startClean();
+    // Callbacks capture THIS client so a stale one can't touch a newer link.
+    client.onDisconnected = () => _onDisconnected(client);
     client.onConnected = () {
-      if (identical(_client, capturedClient)) {
-        _onConnected();
-      }
+      if (identical(_client, client)) _onConnected();
     };
-    client.onSubscribed = _onSubscribed;
-    client.pongCallback = _pong; // Optional: for keep alive
-
-    client.secure = _secureConnection;
-
-    final connMess = MqttConnectMessage()
-        .withClientIdentifier(_clientIdentifier)
-        .withWillTopic('willtopic')
-        .withWillMessage('Last will message :)')
-        .startClean()
-        .withWillQos(MqttQos.atLeastOnce);
-
-    client.connectionMessage = connMess;
+    _client = client;
 
     try {
-      debugPrint('MQTT_LOGS::Connecting to $_server:$_port...');
-      await client.connect(_username,
-          _password); // Pass username/password again here for some brokers
+      debugPrint('MQTT: connecting to $_server:$_port');
+      await client.connect(_username, _password);
     } on NoConnectionException catch (e) {
       if (!identical(_client, client)) return false;
-      debugPrint('MQTT_LOGS::Client exception - $e');
-      _lastErrorMessage = 'Network error: Unable to connect';
-      connectionStateNotifier.value = MqttConnectionStateEx.error;
+      debugPrint('MQTT: $e');
+      _fail('Network error: Unable to connect');
     } on SocketException catch (e) {
       if (!identical(_client, client)) return false;
-      debugPrint('MQTT_LOGS::Socket exception - $e');
-      _lastErrorMessage = 'Connection failed: ${e.message}';
-      connectionStateNotifier.value = MqttConnectionStateEx.error;
+      _fail('Connection failed: ${e.message}');
     } on Exception catch (e) {
-      // mqtt_client wraps most secure-connect failures in
-      // NoConnectionException, but its socket onError paths can complete the
-      // awaited future with the raw exception (e.g. a HandshakeException).
-      // connect() is now also called unawaited from the match-load hook, so
-      // an escaped exception would surface as an uncaught async error and pin
-      // the status at "Connecting..." forever. Map anything Exception-shaped
-      // to the error state; real programming errors (Error) still propagate.
+      // e.g. a HandshakeException escaping mqtt_client's socket onError path.
       if (!identical(_client, client)) return false;
-      debugPrint('MQTT_LOGS::Unexpected connect exception - $e');
-      _lastErrorMessage = describeError(e).message;
-      connectionStateNotifier.value = MqttConnectionStateEx.error;
+      _fail(describeError(e).message);
     }
-
     if (!identical(_client, client)) return false;
-
     if (client.connectionStatus?.state == MqttConnectionState.connected) {
-      debugPrint('MQTT_LOGS::Mosquitto client connected');
       return true;
-    } else {
-      debugPrint(
-          'MQTT_LOGS::ERROR Mosquitto client connection failed - disconnecting, status is ${client.connectionStatus}');
-      final status = client.connectionStatus;
-      _lastErrorMessage = describeMqttReturnCode(
-          status?.returnCode ?? MqttConnectReturnCode.noneSpecified);
-      connectionStateNotifier.value = MqttConnectionStateEx.error;
-      return false;
     }
-  }
-
-  void publishMessage(String message, {String? specificTopic}) {
-    if (_isEnabled == true &&
-        _client != null &&
-        _client!.connectionStatus!.state == MqttConnectionState.connected) {
-      final topicToPublish = specificTopic ?? _mainTopic;
-      if (topicToPublish.isEmpty) {
-        debugPrint('MQTT_LOGS::Error: Topic not set for publishing.');
-        return;
-      }
-      final builder = MqttClientPayloadBuilder();
-      builder.addString(message);
-      _client!.publishMessage(
-          topicToPublish, MqttQos.atLeastOnce, builder.payload!,
-          retain: true // Set to true if you want the message to be retained
-          );
-      debugPrint(
-          'MQTT_LOGS::Published message: $message to topic: $topicToPublish');
-    }
-  }
-
-  /// Publishes a message to a topic specific for the communication module.
-  /// The topic will be: _mainTopic/[_topic]/[topic] if _topic is not empty, otherwise _mainTopic/[topic].
-  void publishCMMessage(String message, {required String topic}) {
-    final String fullTopic;
-    if (_topic.isNotEmpty) {
-      fullTopic = '$_mainTopic/$_topic/$topic';
-    } else {
-      fullTopic = '$_mainTopic/$topic';
-    }
-    publishMessage(message, specificTopic: fullTopic);
-  }
-
-  /// Publishes the remaining time in MM:SS format to the 'time' topic.
-  void publishTime(int remainingTime) {
-    publishCMMessage(
-        '${(remainingTime ~/ 60).toString().padLeft(2, '0')}:${(remainingTime % 60).toString().padLeft(2, '0')}',
-        topic: 'time');
-  }
-
-  /// Publishes the score of both teams to their respective topics.
-  void publishScore(List<Team> teams) {
-    publishCMMessage(teams[0].score.toString(), topic: "team1_score");
-    publishCMMessage(teams[1].score.toString(), topic: "team2_score");
-  }
-
-  /// Publishes the score of a specific team to its topic.
-  void publishTeamNames(List<Team> teams) {
-    publishCMMessage(
-        teams[0].name.substring(
-            0, teams[0].name.length > 20 ? 20 : teams[0].name.length),
-        topic: "team1_name");
-    publishCMMessage(
-        teams[1].name.substring(
-            0, teams[1].name.length > 20 ? 20 : teams[1].name.length),
-        topic: "team2_name");
-  }
-
-  void publishTeam(List<Team> teams) {
-    if (teams.length < 2) return; // Ensure there are at least two teams
-    publishCMMessage(teams[0].id, topic: "team1_id");
-    publishCMMessage(teams[1].id, topic: "team2_id");
-  }
-
-  /// Publishes the game stage string to the 'game_stage' topic.
-  void publishGameState(MatchStage state) {
-    String gameStageString;
-    switch (state) {
-      case MatchStage.firstHalf:
-        gameStageString = '1. Half';
-      case MatchStage.halfTime:
-        gameStageString = 'Half-Time';
-      case MatchStage.secondHalf:
-        gameStageString = '2. Half';
-      case MatchStage.fullTime:
-        gameStageString = 'Game Over';
-    }
-
-    publishCMMessage(gameStageString, topic: 'game_stage');
+    _fail(describeMqttReturnCode(client.connectionStatus?.returnCode ??
+        MqttConnectReturnCode.noneSpecified));
+    return false;
   }
 
   void disconnect() {
-    // Veto any connect() waiters parked before this call (see connect()) —
-    // even when there is no client yet, an attempt may be mid-prefix.
     _connectEpoch++;
     final client = _client;
-    if (client == null) {
-      return;
-    }
+    if (client == null) return;
     _client = null;
-    debugPrint('MQTT_LOGS::Disconnecting client');
     try {
       client.disconnect();
     } catch (e) {
-      debugPrint('MQTT_LOGS::Disconnect error - $e');
+      debugPrint('MQTT: disconnect error: $e');
     }
     connectionStateNotifier.value = MqttConnectionStateEx.disconnected;
   }
 
   void _onConnected() {
-    debugPrint('MQTT_LOGS::Client connection was successful');
     _lastErrorMessage = '';
     connectionStateNotifier.value = MqttConnectionStateEx.connected;
   }
 
-  // Max reconnect attempts before giving up (circuit-breaker for #37).
-  static const int _maxReconnectAttempts = 10;
-
-  void _onDisconnected(MqttServerClient disconnectedClient) {
-    debugPrint('MQTT_LOGS::Client disconnected');
-    // Ignore callbacks from a stale client. A delayed disconnect from a
-    // previous connect() must never mutate the state of a newer connection:
-    // the closure capture in connect() prevents *reading* a newer _client, and
-    // this identical() check additionally refuses to *write* _client /
-    // connection state / reconnect work unless the callback belongs to the
-    // currently active client.
-    if (!identical(_client, disconnectedClient)) {
-      debugPrint('MQTT_LOGS::Ignoring disconnect callback from a stale client');
-      return;
-    }
-    if (disconnectedClient.connectionStatus?.disconnectionOrigin ==
+  void _onDisconnected(MqttServerClient client) {
+    if (!identical(_client, client)) return;
+    if (client.connectionStatus?.disconnectionOrigin ==
         MqttDisconnectionOrigin.solicited) {
       _client = null;
-      debugPrint(
-          'MQTT_LOGS::Disconnected callback is solicited, not attempting reconnection');
       connectionStateNotifier.value = MqttConnectionStateEx.disconnected;
       return;
     }
-    // Unintentional disconnect: try to reconnect with bounded retries.
-    Future<void> attemptReconnect() async {
-      int attempts = 0;
-      while (_isEnabled == true &&
-          _client != null &&
-          !isConnected &&
-          attempts < _maxReconnectAttempts) {
-        attempts++;
-        connectionStateNotifier.value = MqttConnectionStateEx.connecting;
-        debugPrint(
-            'MQTT_LOGS::Attempting to reconnect ($attempts/$_maxReconnectAttempts)...');
-        bool success = await connect();
-        if (success) break;
-        // Don't wait after the final failed attempt: the trailing delay would
-        // otherwise open a 5s window in which a user disable/disconnect could
-        // be clobbered by the exhausted-retry error below.
-        if (attempts >= _maxReconnectAttempts) break;
-        debugPrint('MQTT_LOGS::Reconnection failed, retrying in 5 seconds...');
-        connectionStateNotifier.value = MqttConnectionStateEx.connecting;
-        await Future.delayed(const Duration(seconds: 5));
-      }
-      // Only report exhaustion if this reconnect session is still active: a
-      // user disable (_isEnabled == false) or solicited disconnect
-      // (_client == null) during the loop must not be flipped back into error.
-      if (_isEnabled == true &&
-          _client != null &&
-          !isConnected &&
-          attempts >= _maxReconnectAttempts) {
-        // Preserve the specific cause connect() recorded on the last attempt
-        // instead of hiding it behind a generic message.
-        final cause =
-            _lastErrorMessage.isNotEmpty ? ' ($_lastErrorMessage)' : '';
-        _lastErrorMessage =
-            'Reconnection failed after $_maxReconnectAttempts attempts$cause';
-        connectionStateNotifier.value = MqttConnectionStateEx.error;
-      }
+    Future.delayed(const Duration(seconds: 5), _reconnectLoop);
+  }
+
+  /// Bounded reconnect after an unsolicited drop (#37). A user disable or an
+  /// explicit disconnect during the loop ends it without reporting an error.
+  Future<void> _reconnectLoop() async {
+    bool active() => _isEnabled && _client != null && !isConnected;
+    var attempts = 0;
+    while (active() && attempts < _maxReconnectAttempts) {
+      attempts++;
+      connectionStateNotifier.value = MqttConnectionStateEx.connecting;
+      if (await connect() || attempts >= _maxReconnectAttempts) break;
+      connectionStateNotifier.value = MqttConnectionStateEx.connecting;
+      await Future.delayed(const Duration(seconds: 5));
     }
-
-    Future.delayed(const Duration(seconds: 5), attemptReconnect);
+    if (active() && attempts >= _maxReconnectAttempts) {
+      final cause = _lastErrorMessage.isNotEmpty ? ' ($_lastErrorMessage)' : '';
+      _fail('Reconnection failed after $_maxReconnectAttempts attempts$cause');
+    }
   }
 
-  void _onSubscribed(String topic) {
-    debugPrint('MQTT_LOGS::Subscribed to topic: $topic');
+  void dispose() => disconnect();
+
+  // ---- publishing ----
+
+  /// Publish (retained) to `rcj_soccer/<field topic>/<topic>`.
+  void publishCMMessage(String message, {required String topic}) {
+    final client = _client;
+    if (!_isEnabled || client == null || !isConnected) return;
+    final full =
+        _topic.isNotEmpty ? '$_mainTopic/$_topic/$topic' : '$_mainTopic/$topic';
+    final payload = (MqttClientPayloadBuilder()..addString(message)).payload!;
+    client.publishMessage(full, MqttQos.atLeastOnce, payload, retain: true);
   }
 
-  void _pong() {
-    debugPrint('MQTT_LOGS::Ping response client callback invoked');
+  void publishTime(int remainingTime) =>
+      publishCMMessage(formatClock(remainingTime), topic: 'time');
+
+  void publishScore(List<Team> teams) {
+    publishCMMessage('${teams[0].score}', topic: 'team1_score');
+    publishCMMessage('${teams[1].score}', topic: 'team2_score');
   }
 
-  void dispose() {
-    _messageStreamController.close();
-    disconnect();
+  void publishTeamNames(List<Team> teams) {
+    String clip(String s) => s.length > 20 ? s.substring(0, 20) : s;
+    publishCMMessage(clip(teams[0].name), topic: 'team1_name');
+    publishCMMessage(clip(teams[1].name), topic: 'team2_name');
   }
+
+  void publishTeam(List<Team> teams) {
+    if (teams.length < 2) return;
+    publishCMMessage(teams[0].id, topic: 'team1_id');
+    publishCMMessage(teams[1].id, topic: 'team2_id');
+  }
+
+  void publishGameState(MatchStage state) => publishCMMessage(
+        switch (state) {
+          MatchStage.firstHalf => '1. Half',
+          MatchStage.halfTime => 'Half-Time',
+          MatchStage.secondHalf => '2. Half',
+          MatchStage.fullTime => 'Game Over',
+        },
+        topic: 'game_stage',
+      );
 }

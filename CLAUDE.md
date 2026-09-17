@@ -5,10 +5,10 @@ Cross-platform **Android + iOS (iPhone)** Flutter app (portrait-only) that contr
 
 ## Critical invariants — never violate these
 1. **Robot START/STOP latency**: `bleSendPlayAll()` and `bleSendStopAll()` use `timeout:0` (fire-and-forget) and are launched without `await` so all modules fire simultaneously. Never add awaits, blocking calls, queues, or synchronization that could delay or serialize robot commands.
-2. **Double-tap/long-press safety**: All destructive UI actions (play/stop all, score, timer toggle, disconnect) default to `onDoubleTap`. The gesture is now routed through `CriticalGestureDetector`/`criticalButtonGestures` so a user-facing Settings toggle (`Game.singleTapEnabled`, **default `false`**) can opt into single-tap. Never hardcode these sites back to a bare `onTap`, and never change the default away from double-tap — only the explicit opt-in may relax it.
+2. **Double-tap/long-press safety**: All destructive UI actions (play/stop all, score, timer toggle, disconnect) default to `onDoubleTap`. The gesture is now routed through `CriticalGestureDetector`/`CriticalButton` so a user-facing Settings toggle (`Game.singleTapEnabled`, **default `false`**) can opt into single-tap. Never hardcode these sites back to a bare `onTap`, and never change the default away from double-tap — only the explicit opt-in may relax it.
 3. **Provider tree integrity**: `Game`, both `Team`s, and all 10 `Module`s are registered as `ChangeNotifierProvider` in `main.dart`. The module provider list is static. Do not restructure provider registration without understanding this.
 4. **Portrait-only**: `SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp])` is set in `main()`. Do not remove.
-5. **BLE auto-reconnect is delegated to `connect(autoConnect:true)` — no manual loop, no cap (NOT a bug)**: per-module reconnection is owned entirely by the OS. `connect(autoConnect:true)` is called **once** and the platform retries **indefinitely on the same GATT client** until `disconnect()` is called. This is intentional and required: modules are powered off *on purpose* during a match (a penalised robot ~1 min, the halftime break ~5 min) and must rejoin the instant they return, with no referee action. A module stuck on "Connecting…" mid-match is intended; a genuinely-dead one is dismissed via the manual **Cancel** button. **Do NOT add an app-level reconnect loop (re-calling `bleConnect()`/`connect()` on each disconnect event) or a per-attempt cap.** A manual 2 s loop was tried (#42) and **device-verified** (Pixel 10, 3 modules) to leak ~1 GATT client per reconnect per module — each re-`connect()` registers a fresh `clientIf` without `close()`-ing the previous `BluetoothGatt` — exhausting Android's ~30-client ceiling within minutes of penalty/halftime cycling across 10 modules, which fails the whole field mid-match. Post-match teardown (so autoConnect doesn't chase units powered down for good) is a one-shot at the `MatchStage.fullTime` transition via `Game.disconnectInactiveModules`, **not** a per-disconnect action. The disconnect handler only reflects status. See `Module._registerBleSubscriber`, `Game.disconnectInactiveModules`, and `docs/ai/02_RUNTIME_ARCHITECTURE.md` ("Auto-reconnect policy").
+5. **BLE auto-reconnect is delegated to `connect(autoConnect:true)` — no manual loop, no cap (NOT a bug)**: per-module reconnection is owned entirely by the OS. `connect(autoConnect:true)` is called **once** and the platform retries **indefinitely on the same GATT client** until `disconnect()` is called. This is intentional and required: modules are powered off *on purpose* during a match (a penalised robot ~1 min, the halftime break ~5 min) and must rejoin the instant they return, with no referee action. A module stuck on "Connecting…" mid-match is intended; a genuinely-dead one is dismissed via the manual **Cancel** button. **Do NOT add an app-level reconnect loop (re-calling `bleConnect()`/`connect()` on each disconnect event) or a per-attempt cap.** A manual 2 s loop was tried (#42) and **device-verified** (Pixel 10, 3 modules) to leak ~1 GATT client per reconnect per module — each re-`connect()` registers a fresh `clientIf` without `close()`-ing the previous `BluetoothGatt` — exhausting Android's ~30-client ceiling within minutes of penalty/halftime cycling across 10 modules, which fails the whole field mid-match. Post-match teardown (so autoConnect doesn't chase units powered down for good) is a one-shot at the `MatchStage.fullTime` transition via `Game.disconnectInactiveModules`, **not** a per-disconnect action. The disconnect handler only reflects status. See `Module._onConnectionState`, `Game.disconnectInactiveModules`, and `docs/ai/02_RUNTIME_ARCHITECTURE.md` ("Auto-reconnect policy").
 
 ## Toolchain versions (as of 2026-06-01, shipped in Play release 0.9.8)
 - Flutter: **3.44.0** / Dart 3.12 — upgraded (was 3.22.2); gives 16 kB page alignment
@@ -28,21 +28,35 @@ Cross-platform **Android + iOS (iPhone)** Flutter app (portrait-only) that contr
 | Path | Role |
 |---|---|
 | `lib/main.dart` | Entry point, provider setup |
-| `lib/models/game.dart` | Central game state, timer, MQTT orchestration |
-| `lib/models/module.dart` | BLE per-module logic, all BLE send methods |
+| `lib/models/game.dart` | `Game`: teams, match clock + stage machine, robot fan-out, MQTT/bridge sinks, settings |
+| `lib/models/game_scoreboard.dart` | part of `game.dart`: scoreboard fixture apply/pair, result review + submit |
+| `lib/models/game_resume.dart` | part of `game.dart`: cold-resume snapshot build/restore |
+| `lib/models/match_persistence.dart` | `MatchPersistence`: dirty flag / coalesced flush / clear of the resume snapshot |
+| `lib/models/ios_mac_pairing.dart` | `IosMacPairing`: iOS MAC→UUID cache + resolver bookkeeping (#82) |
+| `lib/models/scoreboard_binding.dart` | `ScoreboardBinding`: side mapping, signatures, resumed-fixture state |
+| `lib/models/module.dart` | `Module`: robot state machine + BLE link, all BLE frames (`bleSendPlayAll`/`bleSendStopAll` fire-and-forget) |
 | `lib/models/team.dart` | Team name + score |
-| `lib/services/ble.dart` | BLE adapter init/enable only |
-| `lib/services/mqtt.dart` | MQTT publish, connection management |
+| `lib/models/scoreboard_result.dart` | `ScoreboardMatchConfig`, `ResultOutboxItem`, inspection / module report rows |
+| `lib/models/bridge_message.dart` | `BridgeMessage` framing (`topic\x00value`) + `BridgeTopics` |
+| `lib/services/scoreboard_result_service.dart` | Deep-link fixture staging/commit, retrying result outbox |
+| `lib/services/referee_link.dart` | `parseRefereeLink`: https / `rcjrefmate://` link parsing |
+| `lib/services/mqtt.dart` | MQTT publish, serialized connect, bounded reconnect |
 | `lib/services/ble_bridge_service.dart` | BLE scoreboard bridge: MQTT-over-BLE publish, dedup queue, write-with-response ACK |
-| `lib/services/ios_mac_resolver.dart` | #82 iOS MAC→UUID batch-scan resolver: match-load auto-connect bookkeeping; scans only between play, stops at kickoff |
-| `lib/utils/ble_address.dart` | Platform address helpers: MAC/UUID formats, `RCJs-m_<MAC>` name parsing, batch scan resolve |
-| `lib/models/bridge_message.dart` | `BridgeMessage` framing (`topic\x00value`) + `BridgeTopics` names |
-| `lib/services/match_data.dart` | HTTP fetch of match schedule |
-| `lib/widgets/critical_gesture_detector.dart` | `CriticalGestureDetector` + `criticalButtonGestures` — single/double-tap gating for critical actions |
+| `lib/services/ios_mac_resolver.dart` | iOS batch-scan resolve loop; scans only between play, stops at kickoff |
+| `lib/services/match_state_store.dart` | Snapshot schema + tombstoned, coalesced prefs writes |
+| `lib/services/match_data.dart` | HTTP fetch of the catigoal match schedule |
+| `lib/services/ble_adapter_monitor.dart` | App-wide BLE adapter state (Home banner, module screen status) |
+| `lib/utils/ble_address.dart` | MAC/UUID formats, `RCJs-m_<MAC>` name parsing, batch scan resolve |
+| `lib/utils/format.dart` | `formatClock`, `parseMmSs`, kickoff/duration formatting |
+| `lib/widgets/critical_gesture_detector.dart` | `CriticalGestureDetector` + `CriticalButton` — single/double-tap gating |
+| `lib/widgets/app_dialogs.dart` | `showChoiceDialog` / `showInfoDialog` / `showTextInputDialog` / `showDarkSheet` |
+| `lib/widgets/game_prompts.dart` | `GamePrompts`: the four Game→Home dialogs (side switch, resume, load, review) |
+| `lib/widgets/` (module_button, team_panel, time_settings_sheet, settings_widgets, module_presets_section, bluetooth_banner) | Home/Settings building blocks |
 | `lib/screens/home.dart` | Main control UI |
-| `lib/screens/settings.dart` | All settings (MQTT, game params, match data) |
+| `lib/screens/settings.dart` | All settings (MQTT, bridge, game params, match data) |
 | `lib/screens/module_settings.dart` | Per-module BLE connect/scan/QR |
-| `lib/screens/mac_qr_scanner.dart` | QR scan to MAC address |
+| `lib/screens/scoreboard_result_review.dart` | Full-time result review + submit |
+| `lib/screens/mac_qr_scanner.dart` | QR scan to MAC address (+ iOS UUID resolve helper) |
 | `android/app/build.gradle` | Android build config |
 | `android/app/src/main/AndroidManifest.xml` | Permissions |
 

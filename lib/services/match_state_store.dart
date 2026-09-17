@@ -4,31 +4,20 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Schema version of the persisted match snapshot. A snapshot with any other
-/// version is ignored on load (treated as "no match"), so an old/incompatible
-/// snapshot can never crash startup or restore garbage. Bump this whenever the
-/// serialized shape changes incompatibly. v2 adds scoreboard binding fields.
+/// Schema version of the persisted match snapshot; any other version is
+/// ignored on load. Bump on an incompatible shape change.
 const int kMatchSnapshotVersion = 2;
 
-/// Per-team recoverable state. Order is preserved by [MatchSnapshot.teams] so a
-/// swapped team order can be restored onto the correct physical side.
 @immutable
 class TeamSnapshot {
+  const TeamSnapshot(
+      {required this.id, required this.name, required this.score});
+
   final String id;
   final String name;
   final int score;
 
-  const TeamSnapshot({
-    required this.id,
-    required this.name,
-    required this.score,
-  });
-
-  Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'score': score,
-      };
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'score': score};
 
   factory TeamSnapshot.fromJson(Map<String, dynamic> json) => TeamSnapshot(
         id: json['id'] as String,
@@ -37,32 +26,11 @@ class TeamSnapshot {
       );
 }
 
-/// Per-module recoverable state. Kept self-contained (flat fields) rather than
-/// embedding `ModuleConfig` so the recovery schema isn't coupled to the preset
-/// schema (see design doc). `macAddress` is REQUIRED for auto-reconnect after a
-/// cold kill, which constructs fresh `Module`s with no device.
+/// Per-module recoverable state. `macAddress` (the connection id) is what a
+/// cold kill reconnects with; `hardwareMac` (#82) is optional for old
+/// snapshots. `state`/`lastState` are `ModuleState.name`s.
 @immutable
 class ModuleSnapshot {
-  final int moduleId;
-  final bool isEnabled;
-  final String macAddress;
-
-  /// The module's permanent hardware MAC (#82) — '' when unknown. Additive
-  /// optional field: pre-split snapshots simply lack the key (lenient read, no
-  /// schema-version bump — a bump would discard every in-flight snapshot on
-  /// app upgrade for a compatible change).
-  final String hardwareMac;
-  final String? customLabel;
-
-  /// `ModuleState.name` of `_state` at save time.
-  final String state;
-
-  /// `ModuleState.name` of `_lastState` at save time (drives `Module.stop()`).
-  final String lastState;
-
-  /// Remaining penalty/damage seconds.
-  final int penaltyTime;
-
   const ModuleSnapshot({
     required this.moduleId,
     required this.isEnabled,
@@ -73,6 +41,15 @@ class ModuleSnapshot {
     required this.lastState,
     required this.penaltyTime,
   });
+
+  final int moduleId;
+  final bool isEnabled;
+  final String macAddress;
+  final String hardwareMac;
+  final String? customLabel;
+  final String state;
+  final String lastState;
+  final int penaltyTime;
 
   Map<String, dynamic> toJson() => {
         'moduleId': moduleId,
@@ -97,35 +74,11 @@ class ModuleSnapshot {
       );
 }
 
-/// One versioned snapshot of the whole match. Written as a single JSON value
-/// under one key (see design doc: splitting static vs dynamic saves nothing on
-/// Android because a prefs commit rewrites the whole file).
+/// One versioned snapshot of the whole match, stored as a single JSON value.
+/// `isTimeRunning` is diagnostic only: a resume always freezes the clock. The
+/// scoreboard fields (#53) are set only for a referee (deep-link) match.
 @immutable
 class MatchSnapshot {
-  final int version;
-  final String stage; // MatchStage.name
-  final int remainingTime; // the freeze point (heartbeat-maintained)
-  // Captured at save time for diagnostics/forward-compat only. The restore path
-  // (Game.resumePendingMatch) deliberately does NOT consult these: a cold resume
-  // always freezes the clock (or resumes the half-time break) and derives the
-  // button label from the stage, so honoring a persisted isTimeRunning=true
-  // would auto-run a half and violate the never-auto-PLAY invariant.
-  final bool isTimeRunning; // whether the clock was running at save time
-  final bool inGame;
-  final String timerButtonText;
-  final List<TeamSnapshot> teams; // order preserved (captures team swap)
-  final List<ModuleSnapshot> modules;
-  final int savedAtMs; // epoch ms, for staleness display
-  /// Scoreboard binding (#53). Non-null only for a referee/deep-link match.
-  /// Lets a resumed match re-arm the correct final-result POST and lets the
-  /// resume path cross-check against the separately-persisted match config
-  /// (drift guard) before treating the match as a live referee match.
-  final bool isRefereeMatch;
-  final String? scoreboardMatchCode;
-  final int? scoreboardVersion;
-  final String? scoreboardHomeTeamId; // 'A' or 'B'
-  final String? scoreboardAwayTeamId; // 'A' or 'B'
-
   const MatchSnapshot({
     this.version = kMatchSnapshotVersion,
     required this.stage,
@@ -142,6 +95,21 @@ class MatchSnapshot {
     this.scoreboardHomeTeamId,
     this.scoreboardAwayTeamId,
   });
+
+  final int version;
+  final String stage;
+  final int remainingTime;
+  final bool isTimeRunning;
+  final bool inGame;
+  final String timerButtonText;
+  final List<TeamSnapshot> teams; // display order (captures a side swap)
+  final List<ModuleSnapshot> modules;
+  final int savedAtMs;
+  final bool isRefereeMatch;
+  final String? scoreboardMatchCode;
+  final int? scoreboardVersion;
+  final String? scoreboardHomeTeamId;
+  final String? scoreboardAwayTeamId;
 
   Map<String, dynamic> toJson() => {
         'version': version,
@@ -182,42 +150,28 @@ class MatchSnapshot {
       );
 }
 
-/// Thin wrapper over [SharedPreferences] that persists exactly one
-/// [MatchSnapshot] under [_snapshotKey], with **serialized + coalesced** writes
-/// so a slow older write can never overwrite a newer one (or resurrect a
-/// discarded match).
-///
-/// Ordering model:
-/// - A single in-flight write + a "latest pending" slot (coalescing): rapid
-///   `save`/`clear` calls collapse to the most recent intent.
-/// - A monotonic [_generation], persisted as a tombstone under [_tombstoneKey].
-///   `clear()` bumps the generation and persists the tombstone; each `save`
-///   stamps the snapshot with the current generation. `load()` rejects any
-///   snapshot whose stamped generation predates the tombstone — so even a late
-///   stale `save` that physically beat a `clear` to disk is ignored on the next
-///   launch. (Honest scope: the in-memory coalescing only guarantees ordering
-///   while the process is alive; the tombstone is what makes it crash-safe.)
+/// Persists exactly one [MatchSnapshot] with serialized, coalesced writes so a
+/// slow older write can never overwrite a newer one or resurrect a discarded
+/// match: rapid save/clear calls collapse to the latest intent, and `clear()`
+/// bumps a generation persisted as a tombstone that `load()` checks, which
+/// makes the ordering crash-safe (a stale save that beat a clear to disk is
+/// rejected on the next launch).
 class MatchStateStore {
-  static const String _snapshotKey = 'match_state_snapshot';
-  static const String _tombstoneKey = 'match_state_tombstone_generation';
+  MatchStateStore(this._prefs)
+      : _generation = _prefs.getInt(_tombstoneKey) ?? 0;
+
+  static const _snapshotKey = 'match_state_snapshot';
+  static const _tombstoneKey = 'match_state_tombstone_generation';
 
   final SharedPreferences _prefs;
-
   int _generation;
-
-  // Coalescing state: at most one op is in flight; the latest requested
-  // terminal state lives in the pending slot.
+  // At most one write in flight; the latest requested state waits in the slot.
   bool _hasPending = false;
   bool _pendingIsClear = false;
   MatchSnapshot? _pendingSnapshot;
   int _pendingGeneration = 0;
-  bool _draining = false;
   Future<void>? _drainFuture;
 
-  MatchStateStore(this._prefs) : _generation = _prefs.getInt(_tombstoneKey) ?? 0;
-
-  /// Enqueue a snapshot write (coalesced). Best-effort and never throws into
-  /// the caller. Safe to call off the hot path; the actual `setString` is async.
   Future<void> save(MatchSnapshot snapshot) {
     _pendingIsClear = false;
     _pendingSnapshot = snapshot;
@@ -226,36 +180,19 @@ class MatchStateStore {
     return _drain();
   }
 
-  /// Enqueue a clear in the SAME stream (not a side API): bump the generation,
-  /// record the clear intent in the pending slot, persist the tombstone (so a
-  /// crash can't lose it), and drop any pending save.
-  ///
-  /// The intent is recorded **before** the `await`: otherwise a `save()` racing
-  /// in during the tombstone write (the app calls both unawaited) would stamp
-  /// the already-bumped generation, drain a snapshot, and then be wiped when the
-  /// resumed clear set its pending slot — losing a newer match. Recording first
-  /// makes the genuinely-last caller win (latest-intent semantics).
+  /// Record the clear intent BEFORE awaiting the tombstone write so a save
+  /// racing in meanwhile is the genuinely-last caller, then drain.
   Future<void> clear() async {
     _generation++;
     _pendingIsClear = true;
     _pendingSnapshot = null;
     _pendingGeneration = _generation;
     _hasPending = true;
-    try {
-      final ok = await _prefs.setInt(_tombstoneKey, _generation);
-      if (!ok) debugPrint('MatchStateStore: tombstone write returned false');
-    } catch (e) {
-      debugPrint('MatchStateStore.clear tombstone write failed: $e');
-    }
+    await _write('tombstone', () => _prefs.setInt(_tombstoneKey, _generation));
     return _drain();
   }
 
-  Future<void> _drain() {
-    if (_draining) return _drainFuture ?? Future<void>.value();
-    _draining = true;
-    _drainFuture = _runDrain();
-    return _drainFuture!;
-  }
+  Future<void> _drain() => _drainFuture ??= _runDrain();
 
   Future<void> _runDrain() async {
     try {
@@ -266,29 +203,29 @@ class MatchStateStore {
         _hasPending = false;
         _pendingIsClear = false;
         _pendingSnapshot = null;
-
-        try {
-          if (isClear) {
-            final ok = await _prefs.remove(_snapshotKey);
-            if (!ok) debugPrint('MatchStateStore: snapshot remove returned false');
-          } else if (snapshot != null) {
-            final map = snapshot.toJson()..['generation'] = generation;
-            final ok = await _prefs.setString(_snapshotKey, jsonEncode(map));
-            if (!ok) debugPrint('MatchStateStore: snapshot save returned false');
-          }
-        } catch (e) {
-          // Best-effort: log and keep draining any newer pending op.
-          debugPrint('MatchStateStore write failed: $e');
+        if (isClear) {
+          await _write('snapshot remove', () => _prefs.remove(_snapshotKey));
+        } else if (snapshot != null) {
+          final map = snapshot.toJson()..['generation'] = generation;
+          await _write('snapshot save',
+              () => _prefs.setString(_snapshotKey, jsonEncode(map)));
         }
       }
     } finally {
-      _draining = false;
       _drainFuture = null;
     }
   }
 
-  /// Returns the persisted snapshot, or `null` on a missing, unparseable, or
-  /// version-mismatched value, or one whose generation predates the tombstone.
+  static Future<void> _write(String what, Future<bool> Function() op) async {
+    try {
+      if (!await op()) debugPrint('MatchStateStore: $what returned false');
+    } catch (e) {
+      debugPrint('MatchStateStore: $what failed: $e');
+    }
+  }
+
+  /// The persisted snapshot, or null when missing, unparseable, of another
+  /// schema version, or older than the tombstone.
   MatchSnapshot? load() {
     final raw = _prefs.getString(_snapshotKey);
     if (raw == null) return null;
@@ -299,8 +236,7 @@ class MatchStateStore {
         return null;
       }
       final generation = (decoded['generation'] as num?)?.toInt() ?? 0;
-      final tombstone = _prefs.getInt(_tombstoneKey) ?? 0;
-      if (generation < tombstone) return null;
+      if (generation < (_prefs.getInt(_tombstoneKey) ?? 0)) return null;
       return MatchSnapshot.fromJson(decoded);
     } catch (e) {
       debugPrint('MatchStateStore.load parse failed: $e');

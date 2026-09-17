@@ -4,26 +4,32 @@ import 'package:vibration/vibration.dart';
 
 const List<int> kVibrationAlertOptions = [10, 5, 3, 0];
 
-/// Holds the timer-alert preferences. Despite the name, the
-/// [gameTimerEnabled]/[damageTimerEnabled] flags and the alert-threshold sets
-/// govern BOTH in-app vibration AND the background local notifications
-/// scheduled by `Game._scheduleBackgroundNotifications()` — there is no
-/// separate notification toggle. The settings UI surfaces this as a single
-/// "Vibration & Notifications" section.
+/// Timer-alert preferences. The enabled flags and threshold sets govern BOTH
+/// in-app vibration and the background notifications (one "Vibration &
+/// Notifications" setting).
 class VibrationService with ChangeNotifier {
-  bool _gameTimerEnabled = true;
-  bool _damageTimerEnabled = true;
-  Set<int> _gameTimerAlerts = {10, 5, 3, 0};
-  Set<int> _damageTimerAlerts = {5, 0};
-
-  late SharedPreferences _prefs;
-  bool _prefsLoaded = false;
-  bool _hasVibrator = false;
-
   VibrationService() {
     _loadPreferences();
     _initVibrator();
   }
+
+  final _game = _AlertPref('vibration_game_timer', {10, 5, 3, 0});
+  final _damage = _AlertPref('vibration_damage_timer', {5, 0});
+  SharedPreferences? _prefs;
+  bool _hasVibrator = false;
+
+  bool get gameTimerEnabled => _game.enabled;
+  bool get damageTimerEnabled => _damage.enabled;
+  Set<int> get gameTimerAlerts => _game.alerts;
+  Set<int> get damageTimerAlerts => _damage.alerts;
+
+  set gameTimerEnabled(bool value) => _setEnabled(_game, value);
+  set damageTimerEnabled(bool value) => _setEnabled(_damage, value);
+  void toggleGameTimerAlert(int seconds) => _toggle(_game, seconds);
+  void toggleDamageTimerAlert(int seconds) => _toggle(_damage, seconds);
+
+  Future<void> vibrateGameTimer() => _vibrate(_game);
+  Future<void> vibrateDamageTimer() => _vibrate(_damage);
 
   Future<void> _initVibrator() async {
     if (kIsWeb) return;
@@ -35,94 +41,45 @@ class VibrationService with ChangeNotifier {
   }
 
   Future<void> _loadPreferences() async {
-    _prefs = await SharedPreferences.getInstance();
-    _gameTimerEnabled =
-        _prefs.getBool('vibration_game_timer_enabled') ?? true;
-    _damageTimerEnabled =
-        _prefs.getBool('vibration_damage_timer_enabled') ?? true;
-
-    final gameAlerts =
-        _prefs.getStringList('vibration_game_timer_alerts');
-    if (gameAlerts != null) {
-      _gameTimerAlerts =
-          gameAlerts.map((e) => int.parse(e)).toSet();
-    }
-
-    final damageAlerts =
-        _prefs.getStringList('vibration_damage_timer_alerts');
-    if (damageAlerts != null) {
-      _damageTimerAlerts =
-          damageAlerts.map((e) => int.parse(e)).toSet();
-    }
-
-    _prefsLoaded = true;
-    notifyListeners();
-  }
-
-  bool get gameTimerEnabled => _gameTimerEnabled;
-  set gameTimerEnabled(bool value) {
-    _gameTimerEnabled = value;
-    if (_prefsLoaded) {
-      _prefs.setBool('vibration_game_timer_enabled', value);
+    final prefs = _prefs = await SharedPreferences.getInstance();
+    for (final pref in [_game, _damage]) {
+      pref.enabled = prefs.getBool(pref.enabledKey) ?? true;
+      final stored = prefs.getStringList(pref.alertsKey);
+      if (stored != null) pref.alerts = stored.map(int.parse).toSet();
     }
     notifyListeners();
   }
 
-  bool get damageTimerEnabled => _damageTimerEnabled;
-  set damageTimerEnabled(bool value) {
-    _damageTimerEnabled = value;
-    if (_prefsLoaded) {
-      _prefs.setBool('vibration_damage_timer_enabled', value);
-    }
+  void _setEnabled(_AlertPref pref, bool value) {
+    pref.enabled = value;
+    _prefs?.setBool(pref.enabledKey, value);
     notifyListeners();
   }
 
-  Set<int> get gameTimerAlerts => _gameTimerAlerts;
-  Set<int> get damageTimerAlerts => _damageTimerAlerts;
-
-  void toggleGameTimerAlert(int seconds) {
-    if (_gameTimerAlerts.contains(seconds)) {
-      _gameTimerAlerts.remove(seconds);
-    } else {
-      _gameTimerAlerts.add(seconds);
-    }
-    if (_prefsLoaded) {
-      _prefs.setStringList('vibration_game_timer_alerts',
-          _gameTimerAlerts.map((e) => e.toString()).toList());
-    }
+  void _toggle(_AlertPref pref, int seconds) {
+    pref.alerts.contains(seconds)
+        ? pref.alerts.remove(seconds)
+        : pref.alerts.add(seconds);
+    _prefs?.setStringList(
+        pref.alertsKey, pref.alerts.map((e) => '$e').toList());
     notifyListeners();
   }
 
-  void toggleDamageTimerAlert(int seconds) {
-    if (_damageTimerAlerts.contains(seconds)) {
-      _damageTimerAlerts.remove(seconds);
-    } else {
-      _damageTimerAlerts.add(seconds);
-    }
-    if (_prefsLoaded) {
-      _prefs.setStringList('vibration_damage_timer_alerts',
-          _damageTimerAlerts.map((e) => e.toString()).toList());
-    }
-    notifyListeners();
-  }
-
-  /// Triggers a vibration for the game timer alert.
-  Future<void> vibrateGameTimer() async {
-    if (!_gameTimerEnabled || kIsWeb || !_hasVibrator) return;
+  Future<void> _vibrate(_AlertPref pref) async {
+    if (!pref.enabled || kIsWeb || !_hasVibrator) return;
     try {
       await Vibration.vibrate();
     } catch (e) {
-      debugPrint('VibrationService: game-timer vibrate failed: $e');
+      debugPrint('VibrationService: vibrate failed: $e');
     }
   }
+}
 
-  /// Triggers a vibration for the damage timer alert.
-  Future<void> vibrateDamageTimer() async {
-    if (!_damageTimerEnabled || kIsWeb || !_hasVibrator) return;
-    try {
-      await Vibration.vibrate();
-    } catch (e) {
-      debugPrint('VibrationService: damage-timer vibrate failed: $e');
-    }
-  }
+class _AlertPref {
+  _AlertPref(this._key, this.alerts);
+  final String _key;
+  bool enabled = true;
+  Set<int> alerts;
+  String get enabledKey => '${_key}_enabled';
+  String get alertsKey => '${_key}_alerts';
 }

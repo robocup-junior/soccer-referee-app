@@ -1,24 +1,23 @@
 import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+/// One slot of a saved robot configuration. [hardwareMac] is the permanent
+/// MAC ('' when unknown); on iOS [macAddress] is a per-phone UUID.
 class ModuleConfig {
-  final int moduleId;
-  final String macAddress;
-
-  /// The module's permanent hardware MAC (#82) — '' when unknown. On iOS
-  /// [macAddress] is a per-phone CoreBluetooth UUID; this field lets a preset
-  /// re-resolve/report the real MAC. Lenient read: pre-split presets lack it.
-  final String hardwareMac;
-  final String label;
-
   const ModuleConfig({
     required this.moduleId,
     required this.macAddress,
     this.hardwareMac = '',
     required this.label,
   });
+
+  final int moduleId;
+  final String macAddress;
+  final String hardwareMac;
+  final String label;
 
   Map<String, dynamic> toJson() => {
         'moduleId': moduleId,
@@ -35,23 +34,16 @@ class ModuleConfig {
       );
 }
 
+/// A named set of module pairings for the whole field.
 class GamePreset {
+  GamePreset({required this.id, required this.name, required this.modules});
+
+  factory GamePreset.create(String name, List<ModuleConfig> modules) =>
+      GamePreset(id: const Uuid().v4(), name: name, modules: modules);
+
   final String id;
   String name;
   final List<ModuleConfig> modules;
-
-  GamePreset({
-    required this.id,
-    required this.name,
-    required this.modules,
-  });
-
-  factory GamePreset.create(String name, List<ModuleConfig> modules) =>
-      GamePreset(
-        id: const Uuid().v4(),
-        name: name,
-        modules: modules,
-      );
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -68,16 +60,8 @@ class GamePreset {
       );
 }
 
+/// A single bookmarked robot module.
 class SavedDevice {
-  final String id;
-  String name;
-  final String macAddress;
-
-  /// The module's permanent hardware MAC (#82) — '' when unknown (e.g. an iOS
-  /// device saved by manually-typed UUID). Lenient read for pre-split entries.
-  final String hardwareMac;
-  final String label;
-
   SavedDevice({
     required this.id,
     required this.name,
@@ -100,6 +84,12 @@ class SavedDevice {
         label: label,
       );
 
+  final String id;
+  String name;
+  final String macAddress;
+  final String hardwareMac;
+  final String label;
+
   Map<String, dynamic> toJson() => {
         'id': id,
         'name': name,
@@ -117,87 +107,58 @@ class SavedDevice {
       );
 }
 
+/// Presets and saved devices, each a JSON list under one prefs key.
 class PresetService {
-  static const _prefsKey = 'module_presets';
-  static const _devicesKey = 'saved_devices';
+  static final _presets = _JsonListStore<GamePreset>(
+      'module_presets', GamePreset.fromJson, (p) => p.toJson(), (p) => p.id);
+  static final _devices = _JsonListStore<SavedDevice>(
+      'saved_devices', SavedDevice.fromJson, (d) => d.toJson(), (d) => d.id);
 
-  Future<List<GamePreset>> loadAll() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_prefsKey);
+  Future<List<GamePreset>> loadAll() => _presets.load();
+  Future<void> save(GamePreset preset) => _presets.upsert(preset);
+  Future<void> delete(String id) => _presets.delete(id);
+
+  Future<List<SavedDevice>> loadAllDevices() => _devices.load();
+  Future<void> saveDevice(SavedDevice device) => _devices.upsert(device);
+  Future<void> deleteDevice(String id) => _devices.delete(id);
+}
+
+class _JsonListStore<T> {
+  _JsonListStore(this._key, this._fromJson, this._toJson, this._idOf);
+
+  final String _key;
+  final T Function(Map<String, dynamic>) _fromJson;
+  final Map<String, dynamic> Function(T) _toJson;
+  final String Function(T) _idOf;
+
+  Future<List<T>> load() async {
+    final raw = (await SharedPreferences.getInstance()).getString(_key);
     if (raw == null) return [];
     try {
-      final list = jsonDecode(raw) as List<dynamic>;
-      return list
-          .map((e) => GamePreset.fromJson(e as Map<String, dynamic>))
+      return (jsonDecode(raw) as List<dynamic>)
+          .map((e) => _fromJson(e as Map<String, dynamic>))
           .toList();
     } catch (e) {
-      debugPrint('Error loading presets: $e');
+      debugPrint('Error loading $_key: $e');
       return [];
     }
   }
 
-  Future<void> save(GamePreset preset) async {
-    final presets = await loadAll();
-    final index = presets.indexWhere((p) => p.id == preset.id);
-    if (index >= 0) {
-      presets[index] = preset;
-    } else {
-      presets.add(preset);
-    }
-    await _persist(presets);
+  Future<void> upsert(T item) async {
+    final items = await load();
+    final index = items.indexWhere((i) => _idOf(i) == _idOf(item));
+    index >= 0 ? items[index] = item : items.add(item);
+    await _persist(items);
   }
 
   Future<void> delete(String id) async {
-    final presets = await loadAll();
-    presets.removeWhere((p) => p.id == id);
-    await _persist(presets);
+    final items = await load();
+    items.removeWhere((i) => _idOf(i) == id);
+    await _persist(items);
   }
 
-  Future<void> _persist(List<GamePreset> presets) async {
+  Future<void> _persist(List<T> items) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      _prefsKey,
-      jsonEncode(presets.map((p) => p.toJson()).toList()),
-    );
-  }
-
-  Future<List<SavedDevice>> loadAllDevices() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString(_devicesKey);
-    if (raw == null) return [];
-    try {
-      final list = jsonDecode(raw) as List<dynamic>;
-      return list
-          .map((e) => SavedDevice.fromJson(e as Map<String, dynamic>))
-          .toList();
-    } catch (e) {
-      debugPrint('Error loading saved devices: $e');
-      return [];
-    }
-  }
-
-  Future<void> saveDevice(SavedDevice device) async {
-    final devices = await loadAllDevices();
-    final index = devices.indexWhere((d) => d.id == device.id);
-    if (index >= 0) {
-      devices[index] = device;
-    } else {
-      devices.add(device);
-    }
-    await _persistDevices(devices);
-  }
-
-  Future<void> deleteDevice(String id) async {
-    final devices = await loadAllDevices();
-    devices.removeWhere((d) => d.id == id);
-    await _persistDevices(devices);
-  }
-
-  Future<void> _persistDevices(List<SavedDevice> devices) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      _devicesKey,
-      jsonEncode(devices.map((d) => d.toJson()).toList()),
-    );
+    await prefs.setString(_key, jsonEncode(items.map(_toJson).toList()));
   }
 }

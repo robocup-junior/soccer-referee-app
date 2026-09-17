@@ -1,14 +1,13 @@
 import 'dart:convert';
 
-// Bridge protocol: "MQTT-over-BLE". Each message is a (topic, value) pair,
-// framed as UTF-8 bytes: <topic> 0x00 <value>.
+import 'package:rcj_scoreboard/models/module.dart';
 
-// Same Nordic UART Service UUIDs as robot modules. The bridge is distinguished
-// from robot modules only by its MAC address, not by service UUID.
-const String kBridgeServiceUUID = '6E400001-B5A3-F393-E0A9-E50E24DCCA9E';
-const String kBridgeTxCharUUID = '6E400002-B5A3-F393-E0A9-E50E24DCCA9E';
-const String kBridgeRxCharUUID = '6E400003-B5A3-F393-E0A9-E50E24DCCA9E';
-
+/// Bridge protocol ("MQTT-over-BLE"): each message is a (topic, value) pair
+/// framed as UTF-8 bytes `<topic> 0x00 <value>`, written to the Nordic UART
+/// TX characteristic. The bridge shares the robot modules' service UUIDs and is
+/// told apart only by its address.
+const String kBridgeServiceUUID = kNusServiceUuid;
+const String kBridgeTxCharUUID = kNusTxCharUuid;
 const int kBridgeFieldSeparator = 0x00;
 
 class BridgeTopics {
@@ -16,8 +15,10 @@ class BridgeTopics {
   static const String team2Score = 'team2_score';
   static const String team1Color = 'team1_color';
   static const String team2Color = 'team2_color';
-  // Reserved for iteration 2: team1_name, team2_name, team1_id, team2_id,
-  // game_stage, time, field, and timer sync topics.
+
+  /// Topic for the team at display position [index] (0 = left).
+  static String score(int index) => 'team${index + 1}_score';
+  static String color(int index) => 'team${index + 1}_color';
 }
 
 class BridgeMessage {
@@ -26,13 +27,8 @@ class BridgeMessage {
 
   const BridgeMessage(this.topic, this.value);
 
-  List<int> toBytes() {
-    return [
-      ...utf8.encode(topic),
-      kBridgeFieldSeparator,
-      ...utf8.encode(value),
-    ];
-  }
+  List<int> toBytes() =>
+      [...utf8.encode(topic), kBridgeFieldSeparator, ...utf8.encode(value)];
 
   @override
   bool operator ==(Object other) =>

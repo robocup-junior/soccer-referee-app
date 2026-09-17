@@ -1,149 +1,90 @@
 import 'dart:convert';
+
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:rcj_scoreboard/services/error_messages.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-
-/// Extract the field number from a raw venue/pitch string: the first run of
-/// digits, with leading zeros stripped (e.g. "Field 03" -> "3", "Pitch 12" ->
-/// "12"). Returns '' when there is no digit. Note a venue whose only digit is
-/// zero ("Field 0") also yields '' — acceptable since RCJ field numbers start
-/// at 1. Shared by the catigoal path (`Match.fromJson`) and the scoreboard
-/// referee-link path (`Game._applyScoreboardMatchConfig`) so the two stay
-/// aligned (#50).
+/// The field number in a venue string: first digit run, leading zeros
+/// stripped ("Field 03" -> "3"); '' when there is none (or only "0", since
+/// RCJ fields start at 1). Shared by the catigoal and scoreboard paths (#50).
 String fieldNumberFromVenue(String raw) =>
-    RegExp(r'\d+').firstMatch(raw)?.group(0)?.replaceFirst(RegExp(r'^0+'), '') ??
+    RegExp(r'\d+')
+        .firstMatch(raw)
+        ?.group(0)
+        ?.replaceFirst(RegExp(r'^0+'), '') ??
     '';
 
 class Match {
+  const Match(
+      {required this.id,
+      required this.field,
+      required this.team1,
+      required this.team2});
+
   final String id;
-  final String fieldRaw;
-  final String field; // Extracted field number
+  final String field;
   final String team1;
   final String team2;
 
-  Match({
-    required this.id,
-    required this.fieldRaw,
-    this.field = '',
-    required this.team1,
-    required this.team2,
-  });
-
-  factory Match.fromJson(Map<String, dynamic> json) {
-    return Match(
-      id: json['number']?.toString() ?? '', // Safely extract match number as the ID
-      fieldRaw: json['pitch'] as String? ?? '', // Safely extract pitch
-      team1: json['team1']?['name'] as String? ?? 'Unknown Team 1', // Safely extract team1 name
-      team2: json['team2']?['name'] as String? ?? 'Unknown Team 2', // Safely extract team2 name
-      field: fieldNumberFromVenue(
-          json['pitch'] as String? ?? ''), // Safely extract field number
-    );
-  }
+  factory Match.fromJson(Map<String, dynamic> json) => Match(
+        id: json['number']?.toString() ?? '',
+        field: fieldNumberFromVenue(json['pitch'] as String? ?? ''),
+        team1: json['team1']?['name'] as String? ?? 'Unknown Team 1',
+        team2: json['team2']?['name'] as String? ?? 'Unknown Team 2',
+      );
 }
 
+/// Loads a match's team names from the catigoal schedule (legacy, pre-scoreboard).
 class MatchDataService {
-  String _url = 'https://catigoal.com/rest/v1/RCJI26/matches?format=json';
-  String _matchId = '';
-  final String _state = '';
-  List<Match> _matches = [];
-  Match? _currentMatch;
-  final ValueNotifier<String> stateNotifier = ValueNotifier('');
-  late final SharedPreferences prefs;
-
   MatchDataService() {
-    loadPreferences();
+    _loadPreferences();
   }
 
+  static const _defaultUrl =
+      'https://catigoal.com/rest/v1/RCJI26/matches?format=json';
 
-  /// Loads MQTT settings from SharedPreferences
-  Future<void> loadPreferences() async {
-    prefs = await SharedPreferences.getInstance();
-    _url = prefs.getString('matches_url') ?? 'https://catigoal.com/rest/v1/RCJI26/matches?format=json';
-  }
+  final ValueNotifier<String> stateNotifier = ValueNotifier('');
+  SharedPreferences? _prefs;
+  String _url = _defaultUrl;
+  String _matchId = '';
 
-  Future<List<Match>> fetchMatches(String url) async {
-    final response = await http.get(Uri.parse(url));
-
-    if (response.statusCode == 200) {
-      debugPrint('Matches loaded successfully');
-      final Map<String, dynamic> jsonResponse = json.decode(response.body);
-      final List<dynamic> matchesList = jsonResponse['matches'];
-      debugPrint('Number of matches: ${matchesList.length}');
-      return matchesList.map((matchJson) => Match.fromJson(matchJson)).toList();
-    } else {
-      throw HttpStatusException(response.statusCode, url: url);
-    }
-  }
-
-  Match? findMatchById(List<Match> matches, String gameId) {
-    try {
-      // Iterate through matches and find the one with the matching ID
-      for (var match in matches) {
-        if (match.id == gameId) {
-          return match;
-        }
-      }
-      return null; // Return null if no match is found
-    } catch (e) {
-      return null; // Handle errors gracefully
-    }
+  Future<void> _loadPreferences() async {
+    final prefs = _prefs = await SharedPreferences.getInstance();
+    _url = prefs.getString('matches_url') ?? _defaultUrl;
   }
 
   String get matchesUrl => _url;
-
-  set matchesUrl(String? url) {
-    if (url != null && url.isNotEmpty) {
-      _url = url;
-      // Save to preferences
-      prefs.setString('matches_url', url);
-    } else {
-      debugPrint('Error: Invalid matches URL.');
-    }
+  set matchesUrl(String url) {
+    if (url.isEmpty) return;
+    _url = url;
+    _prefs?.setString('matches_url', url);
   }
 
   String get matchId => _matchId;
-  set matchId(String? id) {
-    if (id != null && id.isNotEmpty) {
-      _matchId = id;
-      // Save to preferences
-      // prefs.setString('match_id', id); // Uncomment if using shared preferences
-    } else {
-      debugPrint('Error: Invalid match ID.');
-    }
+  set matchId(String id) {
+    if (id.isNotEmpty) _matchId = id;
   }
-
-  String get state => _state;
 
   Future<Match?> loadMatch() async {
     stateNotifier.value = 'Loading matches...';
-
     try {
-      //print('Loading matches from: $_url');
-      _matches = await fetchMatches(_url);
-      debugPrint('Matches loaded: ${_matches.length}');
+      final response = await http.get(Uri.parse(_url));
+      if (response.statusCode != 200) {
+        throw HttpStatusException(response.statusCode, url: _url);
+      }
+      final list = (json.decode(response.body)
+          as Map<String, dynamic>)['matches'] as List;
+      final match = list
+          .map((m) => Match.fromJson(m as Map<String, dynamic>))
+          .where((m) => m.id == _matchId)
+          .firstOrNull;
+      stateNotifier.value =
+          match == null ? 'Match not found' : 'Match ID $_matchId loaded';
+      return match;
     } catch (e) {
       stateNotifier.value = describeError(e).message;
       debugPrint('Error loading matches: $e');
-      return null;
-    }
-
-    // Find the match by ID
-    try {
-      _currentMatch = findMatchById(_matches, _matchId);
-      if (_currentMatch != null) {
-        debugPrint('Current match found: ${_currentMatch!.id}');
-        stateNotifier.value = 'Match ID $_matchId loaded';
-        return _currentMatch;
-      } else {
-        stateNotifier.value = 'Match not found';
-        debugPrint('Match not found for ID: $_matchId');
-        return null;
-      }
-    } catch (e) {
-      stateNotifier.value = 'Error finding match';
-      debugPrint('Error finding match: $e');
       return null;
     }
   }
