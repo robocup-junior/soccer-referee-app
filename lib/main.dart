@@ -1,56 +1,42 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import 'package:rcj_scoreboard/screens/home.dart';
-import 'package:rcj_scoreboard/models/game.dart';
-import 'package:rcj_scoreboard/services/notification_service.dart';
 import 'package:flutter/services.dart';
+import 'package:provider/provider.dart';
+import 'package:rcj_scoreboard/models/game.dart';
+import 'package:rcj_scoreboard/screens/home.dart';
+import 'package:rcj_scoreboard/services/notification_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  // Initialise notifications without blocking the first frame; the permission
-  // prompt is deferred until the user enables a timer alert (see settings).
+  // Permission is requested later (first launch / settings), never here.
   unawaited(NotificationService.initialize());
   SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-
-  Game game = Game();
-
-  runApp(MyApp(game: game));
+  runApp(MyApp(game: Game()));
 }
 
 class MyApp extends StatelessWidget {
+  const MyApp({required this.game, super.key});
   final Game game;
 
-  const MyApp({required this.game, super.key});
-
   @override
-  Widget build(BuildContext context) {
-    return MultiProvider(
-      providers: [
-        ChangeNotifierProvider.value(value: game),
-        ChangeNotifierProvider.value(value: game.bleBridgeService),
-        ChangeNotifierProvider.value(value: game.bleAdapterMonitor),
-        ...game.teams.map((team) => ChangeNotifierProvider.value(value: team)),
-        ...game.teams[0].modules
-            .map((module) => ChangeNotifierProvider.value(value: module)),
-        ...game.teams[1].modules
-            .map((module) => ChangeNotifierProvider.value(value: module)),
-      ],
-      child: MaterialApp(
-        debugShowCheckedModeBanner: false,
-        title: 'RCJ Soccer - Score Board',
-        theme: ThemeData(
-          brightness: Brightness.dark,
-          primarySwatch: Colors.blue,
-          textTheme: const TextTheme(
-            //bodySmall: TextStyle(color: Colors.white),
-            bodyMedium: TextStyle(color: Colors.white),
-            //bodyLarge: TextStyle(color: Colors.white),
+  Widget build(BuildContext context) => MultiProvider(
+        providers: [
+          ChangeNotifierProvider.value(value: game),
+          ChangeNotifierProvider.value(value: game.bleBridgeService),
+          ChangeNotifierProvider.value(value: game.bleAdapterMonitor),
+          for (final team in game.teams) ChangeNotifierProvider.value(value: team),
+          for (final module in game.modules) ChangeNotifierProvider.value(value: module),
+        ],
+        child: MaterialApp(
+          debugShowCheckedModeBanner: false,
+          title: 'RCJ Soccer - Score Board',
+          theme: ThemeData(
+            brightness: Brightness.dark,
+            primarySwatch: Colors.blue,
+            textTheme: const TextTheme(bodyMedium: TextStyle(color: Colors.white)),
           ),
+          home: const Home(),
         ),
-        home: const Home(),
-      ),
-    );
-  }
+      );
 }

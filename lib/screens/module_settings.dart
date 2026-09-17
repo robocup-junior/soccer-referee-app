@@ -1,729 +1,360 @@
-import 'package:flutter/cupertino.dart';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:provider/provider.dart';
 import 'package:rcj_scoreboard/models/module.dart';
-import 'package:rcj_scoreboard/services/ble.dart';
+import 'package:rcj_scoreboard/screens/mac_qr_scanner.dart';
+import 'package:rcj_scoreboard/services/ble_adapter_monitor.dart';
 import 'package:rcj_scoreboard/services/error_messages.dart';
+import 'package:rcj_scoreboard/services/preset_service.dart';
 import 'package:rcj_scoreboard/utils/ble_address.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
+import 'package:rcj_scoreboard/widgets/app_dialogs.dart';
 
-import 'mac_qr_scanner.dart';
-import 'package:rcj_scoreboard/services/preset_service.dart';
-
+/// Per-robot BLE pairing: label, address (typed, scanned, from QR or from a
+/// saved device) and connect/disconnect. Expects a [Module] and a
+/// [BleAdapterMonitor] from Provider.
 class ModuleSettingsScreen extends StatefulWidget {
-
   const ModuleSettingsScreen({super.key});
 
   @override
-  State<ModuleSettingsScreen> createState() => _ModuleSettingsScreen();
+  State<ModuleSettingsScreen> createState() => _ModuleSettingsScreenState();
 }
 
-class _ModuleSettingsScreen extends State<ModuleSettingsScreen> {
-
-  List<BluetoothDevice> devices = [];
-
-  String deviceStatus = '';
-
-  BLEServices ble = BLEServices();
-
-  int? selectedIndex;
-
-  final TextEditingController _controller = TextEditingController();
-  final TextEditingController _labelController = TextEditingController();
-
-  bool setMacFromModule = true;
-  bool setLabelFromModule = true;
-  // #82 (iOS): the last QR resolve's (UUID, hardware MAC) pair — the MAC is
-  // only committed to the module when the user connects that exact UUID.
+class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
+  final _addressController = TextEditingController();
+  final _labelController = TextEditingController();
+  final List<BluetoothDevice> _devices = [];
+  int? _selectedIndex;
+  bool _seeded = false;
+  bool _scanning = false;
+  StreamSubscription<List<ScanResult>>? _scanSub;
+  // The last QR resolve's (UUID, MAC): the MAC is committed to the module only
+  // when the user connects that exact UUID.
   String? _qrResolvedUuid;
   String? _qrScannedMac;
 
-  bool bleIsScanning = false;
-  StreamSubscription<List<ScanResult>>? _scanSubscription;
-
-  @override
-  void initState() {
-    super.initState();
-
-    // This will schedule a callback to be executed after the first frame is built.
-    SchedulerBinding.instance.addPostFrameCallback((_) {
-      _postInitLoad();
-    });
-
-
-    // ble.initCheck().then((result){
-    //   // if (mounted) {
-    //   //   setState(() {
-    //   //     deviceStatus = result;
-    //   //   });
-    //   // }
-    // });
-
-    //startScanning();
-  }
-
-  void _postInitLoad() {
-    ble.initCheck().then((result) {
-      if (mounted) {
-        setState(() {
-          deviceStatus = result;
-        });
-      }
-      // A platform failure (BLE stack unavailable) must not surface as an
-      // unhandled async error — show it as the adapter status instead.
-    }).catchError((Object e) {
-      debugPrint('ble initCheck error: $e');
-      if (mounted) {
-        setState(() {
-          deviceStatus = describeError(e).message;
-        });
-      }
-    });
-
-    // setState(() {
-    //
-    // });
-  }
-
-
-  Future<void> _saveCurrentDevice() async {
-    final mac = _controller.text.trim();
-    if (mac.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a device address first')),
-      );
-      return;
-    }
-
-    final nameController = TextEditingController();
-    final name = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Save Device'),
-        content: TextField(
-          controller: nameController,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Device name',
-            hintText: 'e.g. Red robot #3',
-          ),
-          onSubmitted: (v) => Navigator.pop(context, v),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, null),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, nameController.text),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-
-    if (name == null || name.trim().isEmpty) return;
-
-    if (!mounted) return;
-    final module = Provider.of<Module>(context, listen: false);
-    final device = SavedDevice.create(
-      name: name.trim(),
-      macAddress: mac,
-      // #82: keep the stable hardware identity with the saved device — but
-      // only when it provably belongs to the SAVED address (the text field is
-      // free-typed and may describe a different device than the module's
-      // current pairing).
-      hardwareMac: isMacFormat(mac)
-          ? mac
-          : (mac.toUpperCase() == module.macAddress.toUpperCase()
-              ? module.hardwareMac
-              : ''),
-      label: _labelController.text.trim(),
-    );
-    await PresetService().saveDevice(device);
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('"${device.name}" saved')),
-      );
-    }
-  }
-
-  Future<void> _loadSavedDevice() async {
-    final devices = await PresetService().loadAllDevices();
-    if (!mounted) return;
-
-    if (devices.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('No saved devices yet')),
-      );
-      return;
-    }
-
-    final selected = await showDialog<SavedDevice>(
-      context: context,
-      builder: (context) => _SavedDevicesDialog(devices: devices),
-    );
-
-    if (selected == null || !mounted) return;
-
-    final module = Provider.of<Module>(context, listen: false);
-    setState(() {
-      _controller.text = selected.macAddress;
-      _labelController.text = selected.label;
-    });
-    // Single apply path shared with presets: sets the label (empty -> default)
-    // and connects only when the module is enabled. The hardware MAC rides
-    // along (#82); a stale iOS UUID falls back to the resolver via
-    // bleConnect's Peripheral-not-found handler.
-    module.applyPresetConfig(selected.macAddress, selected.label,
-        hardwareMac: selected.hardwareMac);
-    FlutterBluePlus.stopScan();
-  }
-
-  void startScanning() async {
-    setState(() {
-      bleIsScanning = true;
-    });
-    // Cancel any previous subscription before creating a new one.
-    await _scanSubscription?.cancel();
-    _scanSubscription = null;
-
-    // Subscribe BEFORE startScan so no results are missed between the scan
-    // starting and .listen() being attached (race in the old ordering). Use
-    // onScanResults, not scanResults: scanResults is a behavior stream that
-    // replays the previous scan's cached results to a new listener, so
-    // subscribing before startScan would surface stale/unfiltered devices from
-    // an earlier scan; onScanResults clears between scans.
-    _scanSubscription = FlutterBluePlus.onScanResults.listen((results) {
-      for (ScanResult result in results) {
-        if (!devices.contains(result.device)) {
-          if (mounted) {
-            setState(() {
-              devices.add(result.device);
-            });
-          }
-        }
-      }
-    });
-
-    try {
-      await FlutterBluePlus.startScan(
-        withKeywords: ['RCJ', 'soccer', 'module'],
-        timeout: const Duration(seconds: 3),
-      );
-      // Wait for scanning to stop
-      await FlutterBluePlus.isScanning.where((val) => val == false).first;
-    } finally {
-      await _scanSubscription?.cancel();
-      _scanSubscription = null;
-      if (mounted) {
-        setState(() {
-          bleIsScanning = false;
-        });
-      }
-    }
-  }
-
-  // @override
-  // Widget build(BuildContext context) {
-  //   return Scaffold(
-  //     appBar: AppBar(
-  //       title: Text('BLE Scanner'),
-  //     ),
-  //     body: ListView.builder(
-  //       itemCount: devices.length,
-  //       itemBuilder: (context, index) {
-  //         return ListTile(
-  //           title: Text(devices[index].platformName),
-  //           subtitle: Text(devices[index].remoteId.toString()),
-  //         );
-  //       },
-  //     ),
-  //   );
-  // }
+  static const _white = TextStyle(color: Colors.white);
+  static const _grey = TextStyle(color: Colors.grey);
 
   @override
   void dispose() {
-    //SystemChannels.textInput.invokeMethod('TextInput.hide');
-    _scanSubscription?.cancel();
-    _scanSubscription = null;
-    _controller.dispose();
+    _scanSub?.cancel();
+    _addressController.dispose();
     _labelController.dispose();
     FlutterBluePlus.stopScan();
     super.dispose();
   }
 
-  // The module address formatters live in utils/ble_address.dart
-  // (buildModuleAddressFormatters): iOS accepts MAC or UUID (#82), Android
-  // keeps the MAC mask shared with the bridge field.
+  void _snack(String text) =>
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+
+  Future<void> _connectOrDisconnect(Module module) async {
+    if (module.isConnected || module.isConnecting || module.isSearching) {
+      module.bleDisconnect();
+      return;
+    }
+    final address = _addressController.text.trim();
+    if (address.isEmpty) {
+      _snack('Enter a device address first');
+      return;
+    }
+    // iOS: a MAC is resolved to the device's UUID by scan first. Manual scans
+    // stay available mid-half by design; only automatic ones are gated.
+    if (useIosBleUuid && isMacFormat(address)) {
+      final uuid = await resolveIosDeviceUuid(address);
+      if (!mounted) return;
+      if (uuid == null) {
+        _snack('No device found for that MAC — is the module on?');
+        return;
+      }
+      _addressController.text = uuid;
+      module.setBleDevice(BluetoothDevice.fromId(uuid), hardwareMac: address);
+      module.bleConnect();
+      return;
+    }
+    final fromQr = _qrResolvedUuid != null &&
+        address.toUpperCase() == _qrResolvedUuid!.toUpperCase();
+    module.setBleDevice(BluetoothDevice.fromId(address.toUpperCase()),
+        hardwareMac: fromQr ? _qrScannedMac : null);
+    module.bleConnect();
+    FlutterBluePlus.stopScan();
+  }
+
+  Future<void> _scanQr() async {
+    final mac = await scanMacQr(context);
+    if (mac == null || !mounted) return;
+    final address = await resolveScannedAddress(context, mac);
+    if (address == null || !mounted) return;
+    setState(() {
+      _addressController.text = address;
+      if (useIosBleUuid) {
+        _qrResolvedUuid = address;
+        _qrScannedMac = mac;
+      }
+    });
+  }
+
+  Future<void> _toggleScan() async {
+    if (_scanning) {
+      FlutterBluePlus.stopScan();
+      return;
+    }
+    setState(() => _scanning = true);
+    await _scanSub?.cancel();
+    // Subscribe BEFORE startScan; onScanResults (not the replaying
+    // scanResults) so a previous scan's cached devices never surface.
+    _scanSub = FlutterBluePlus.onScanResults.listen((results) {
+      final fresh = results.map((r) => r.device).where((d) => !_devices.contains(d));
+      if (fresh.isNotEmpty && mounted) setState(() => _devices.addAll(fresh));
+    });
+    try {
+      await FlutterBluePlus.startScan(
+          withKeywords: ['RCJ', 'soccer', 'module'], timeout: const Duration(seconds: 3));
+      await FlutterBluePlus.isScanning.where((s) => !s).first;
+    } finally {
+      await _scanSub?.cancel();
+      _scanSub = null;
+      if (mounted) setState(() => _scanning = false);
+    }
+  }
+
+  Future<void> _saveDevice(Module module) async {
+    final address = _addressController.text.trim();
+    if (address.isEmpty) {
+      _snack('Enter a device address first');
+      return;
+    }
+    final name = await showTextInputDialog(context,
+        title: 'Save Device', label: 'Device name', hint: 'e.g. Red robot #3');
+    if (name == null || name.trim().isEmpty || !mounted) return;
+    final device = SavedDevice.create(
+      name: name.trim(),
+      macAddress: address,
+      // Only when the MAC provably belongs to the typed address.
+      hardwareMac: isMacFormat(address)
+          ? address
+          : (address.toUpperCase() == module.macAddress.toUpperCase() ? module.hardwareMac : ''),
+      label: _labelController.text.trim(),
+    );
+    await PresetService().saveDevice(device);
+    if (mounted) _snack('"${device.name}" saved');
+  }
+
+  Future<void> _loadDevice(Module module) async {
+    final devices = await PresetService().loadAllDevices();
+    if (!mounted) return;
+    if (devices.isEmpty) {
+      _snack('No saved devices yet');
+      return;
+    }
+    final selected = await showDialog<SavedDevice>(
+        context: context, builder: (_) => _SavedDevicesDialog(devices: devices));
+    if (selected == null || !mounted) return;
+    setState(() {
+      _addressController.text = selected.macAddress;
+      _labelController.text = selected.label;
+    });
+    module.applyPresetConfig(selected.macAddress, selected.label,
+        hardwareMac: selected.hardwareMac);
+    FlutterBluePlus.stopScan();
+  }
 
   @override
   Widget build(BuildContext context) {
-
-    final module = Provider.of<Module>(context);
-
-    if (setMacFromModule) {
-      setMacFromModule = false;
-      // Seed with the connection id; when there is none, fall back to the
-      // known hardware MAC (#82) — an iOS slot whose UUID was never resolved
-      // ("Not found": module was off at load, arrived mid-match) then shows
-      // its MAC, and the Connect button's MAC branch resolves + connects it
-      // in one tap instead of complaining about an empty field.
-      _controller.text = module.macAddress.isNotEmpty
-          ? module.macAddress
-          : module.hardwareMac;
-    }
-
-    if (setLabelFromModule) {
-      setLabelFromModule = false;
+    final module = context.watch<Module>();
+    final adapter = context.watch<BleAdapterMonitor>().state;
+    if (!_seeded) {
+      _seeded = true;
+      // Fall back to the hardware MAC for an iOS slot whose UUID was never
+      // resolved, so Connect can resolve + connect it in one tap.
+      _addressController.text =
+          module.macAddress.isNotEmpty ? module.macAddress : module.hardwareMac;
       _labelController.text = module.hasCustomLabel ? module.name : '';
     }
-
+    final status =
+        isAdapterProblem(adapter) ? describeAdapterState(adapter).message : module.bleStatus;
+    final connectLabel = module.isConnected
+        ? 'Disconnect'
+        : (module.isConnecting || module.isSearching)
+            ? 'Cancel'
+            : 'Connect';
 
     return Scaffold(
       backgroundColor: Colors.black,
-      // The body has an Expanded devices list, so it can't go in a scroll view.
-      // Don't shrink the viewport for the keyboard (which overflowed the fixed
-      // rows by a few px); the bot-label field is near the top and stays visible
-      // while the keyboard overlays the lower (scrollable) part.
+      // The keyboard overlays the (scrollable) list instead of squeezing the
+      // fixed rows.
       resizeToAvoidBottomInset: false,
       appBar: AppBar(
-        iconTheme: const IconThemeData(
-          color: Colors.white,
-        ),
+        iconTheme: const IconThemeData(color: Colors.white),
         backgroundColor: AppColors.primary,
-        title: Text('Settings module ${module.name}',
-            style: const TextStyle(color: Colors.white)),
+        title: Text('Settings module ${module.name}', style: _white),
       ),
-
       body: SafeArea(
         top: false,
         child: Padding(
-          padding: const EdgeInsets.all(10.0),
+          padding: const EdgeInsets.all(10),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-            //SizedBox(height: 10),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  'Module status:',
-                  style: TextStyle(fontSize: 18),
-                ),
-                // Flexible + ellipsis so a long status string can never overflow
-                // the Row and bork the screen (BLE errors can be verbose).
-                Flexible(
-                  child: Text(
-                    deviceStatus == 'OK' ? module.bleStatus : deviceStatus,
-                    style: const TextStyle(fontSize: 18),
-                    textAlign: TextAlign.right,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Module status:', style: TextStyle(fontSize: 18)),
+                  Flexible(
+                    child: Text(status,
+                        style: const TextStyle(fontSize: 18),
+                        textAlign: TextAlign.right,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis),
                   ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 10),
-            const Divider(),
-            const SizedBox(height: 10),
-
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _labelController,
-                    decoration: InputDecoration(
-                      labelText: 'Bot label (default: ${module.defaultName})',
-                      labelStyle: const TextStyle(color: Colors.grey),
-                      hintText: module.defaultName,
-                      hintStyle: const TextStyle(color: Colors.grey),
-                      helperText: 'First 2 characters shown on robot display',
-                      helperStyle: const TextStyle(color: Colors.grey),
-                      border: const OutlineInputBorder(),
-                    ),
-                    style: const TextStyle(color: Colors.white),
-                    maxLength: 10,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.grey[700],
-                  ),
-                  onPressed: () {
-                    module.setLabel(_labelController.text);
-                  },
-                  child: const Text('Save', style: TextStyle(color: Colors.white)),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 10),
-            const Divider(),
-            const SizedBox(height: 10),
-
-            TextField(
-
-              controller: _controller,
-              // #82: iOS accepts a MAC too (resolved by scan on Connect), so
-              // the module field can't use the fixed UUID mask there.
-              inputFormatters: buildModuleAddressFormatters(),
-              decoration: InputDecoration(
-                labelText: moduleAddressLabel,
-                labelStyle: const TextStyle(color: Colors.grey),
-                hintText: moduleAddressHint,
-                hintStyle: const TextStyle(color: Colors.grey),
-                border: const OutlineInputBorder(),
-
+                ],
               ),
-              style: const TextStyle(color: Colors.white),
-              maxLength: bleAddressMaxLength,
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.grey[700],
+              const Divider(height: 30),
+              Row(
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _labelController,
+                      decoration: InputDecoration(
+                        labelText: 'Bot label (default: ${module.defaultName})',
+                        labelStyle: _grey,
+                        hintText: module.defaultName,
+                        hintStyle: _grey,
+                        helperText: 'First 2 characters shown on robot display',
+                        helperStyle: _grey,
+                        border: const OutlineInputBorder(),
+                      ),
+                      style: _white,
+                      maxLength: 10,
                     ),
-                    icon: const Icon(Icons.bookmark_add_outlined, color: Colors.white),
-                    label: const Text('Save device', style: TextStyle(color: Colors.white)),
-                    onPressed: _saveCurrentDevice,
                   ),
-                ),
-                const SizedBox(width: 4),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.grey[700],
-                    ),
-                    icon: const Icon(Icons.bookmark_outlined, color: Colors.white),
-                    label: const Text('Load device', style: TextStyle(color: Colors.white)),
-                    onPressed: _loadSavedDevice,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 5),
-            Container(
-              height: 50,
-              margin: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 5.0),
-              width: double.infinity,
-              child: ElevatedButton(
-
-                onPressed: () async {
-                  // Connected OR mid-connect OR Searching (#82, iOS resolver)
-                  // → the button cancels/disconnects, so a stuck
-                  // "Connecting..."/"Searching..." can always be broken.
-                  if (module.isConnected ||
-                      module.isConnecting ||
-                      module.isSearching) {
-                    module.bleDisconnect();
-                  } else {
-                    final address = _controller.text.trim();
-                    if (address.isEmpty) {
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                            content: Text('Enter a device address first')),
-                      );
-                      return;
-                    }
-                    // #82: iOS can't connect by MAC — a MAC-shaped entry is
-                    // resolved to the device's CoreBluetooth UUID by scan
-                    // first (same flow as the QR path), and the MAC is kept
-                    // as the module's stable hardware identity.
-                    // DELIBERATE (design §3a): manual, referee-initiated
-                    // scans stay available even mid-half — pairing a spare on
-                    // iOS is only possible via a scan, and the referee
-                    // controls the moment. Only AUTOMATIC scanning is gated
-                    // off running halves (IosMacResolveController).
-                    if (useIosBleUuid && isMacFormat(address)) {
-                      final resolvedUuid =
-                          await resolveIosDeviceUuid(address);
-                      if (!context.mounted) return;
-                      if (resolvedUuid == null) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                              content: Text(
-                                  'No device found for that MAC — is the module on?')),
-                        );
-                        return;
-                      }
-                      _controller.text = resolvedUuid;
-                      module.setBleDevice(BluetoothDevice.fromId(resolvedUuid),
-                          hardwareMac: address);
-                      module.bleConnect();
-                      return;
-                    }
-                    // #82: if this UUID came from the QR flow, carry the
-                    // scanned hardware MAC with the connect (see the stash in
-                    // handleIosResult); otherwise setBleDevice derives or
-                    // clears it.
-                    final qrMac = (_qrResolvedUuid != null &&
-                            address.toUpperCase() ==
-                                _qrResolvedUuid!.toUpperCase())
-                        ? _qrScannedMac
-                        : null;
-                    module.setBleDevice(
-                        BluetoothDevice.fromId(address.toUpperCase()),
-                        hardwareMac: qrMac);
-                    module.bleConnect();
-                    FlutterBluePlus.stopScan();
-                  }
-                },
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.grey[700],
-                ),
-                child: Text(module.isConnected ? 'Disconnect' : (module.isConnecting || module.isSearching) ? 'Cancel' : 'Connect', style: const TextStyle(color: Colors.white, fontSize: 16, ),),
+                  const SizedBox(width: 8),
+                  AppButton(label: 'Save', onPressed: () => module.setLabel(_labelController.text)),
+                ],
               ),
-            ),
-
-            const SizedBox(height: 20),
-            Row(
-              //mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                Expanded(
-                  flex: 1,
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.grey[700],
-                    ),
-                    icon: const Icon(Icons.bluetooth, color: Colors.white),
-                    label: Text(bleIsScanning ? 'Stop scanning' : 'Scan Bluetooth', style: const TextStyle(color: Colors.white),overflow: TextOverflow.fade,),
-                    onPressed: () {
-                      bleIsScanning ? FlutterBluePlus.stopScan() : startScanning();
-                    },
+              const Divider(height: 30),
+              TextField(
+                controller: _addressController,
+                inputFormatters: buildModuleAddressFormatters(),
+                decoration: InputDecoration(
+                  labelText: moduleAddressLabel,
+                  labelStyle: _grey,
+                  hintText: moduleAddressHint,
+                  hintStyle: _grey,
+                  border: const OutlineInputBorder(),
+                ),
+                style: _white,
+                maxLength: bleAddressMaxLength,
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: AppButton(
+                        label: 'Save device',
+                        icon: Icons.bookmark_add_outlined,
+                        onPressed: () => _saveDevice(module)),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: AppButton(
+                        label: 'Load device',
+                        icon: Icons.bookmark_outlined,
+                        onPressed: () => _loadDevice(module)),
+                  ),
+                ],
+              ),
+              Container(
+                height: 50,
+                margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: () => _connectOrDisconnect(module),
+                  style: ElevatedButton.styleFrom(backgroundColor: AppColors.button),
+                  child: Text(connectLabel, style: const TextStyle(color: Colors.white, fontSize: 16)),
+                ),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: AppButton(
+                        label: _scanning ? 'Stop scanning' : 'Scan Bluetooth',
+                        icon: Icons.bluetooth,
+                        onPressed: _toggleScan),
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: AppButton(label: 'Scan QR code', icon: Icons.qr_code_2, onPressed: _scanQr),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              const Text('Devices list:', style: TextStyle(fontSize: 16)),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: _devices.length,
+                  itemBuilder: (_, index) => ListTile(
+                    tileColor: _selectedIndex == index ? AppColors.button : null,
+                    title: Text(_devices[index].platformName, style: _white),
+                    subtitle: Text(_devices[index].remoteId.toString(), style: _white),
+                    onTap: () => setState(() {
+                      _selectedIndex = index;
+                      _addressController.text = _devices[index].remoteId.toString();
+                    }),
                   ),
                 ),
-                const SizedBox(width: 4,),
-                Expanded(
-                  flex: 1,
-                  child: buildQRButton(),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'Devices list:',
-              style: TextStyle(fontSize: 16),
-            ),
-            Expanded(
-              child: ListView.builder(
-                itemCount: devices.length,
-
-                itemBuilder: (context, index) {
-                  return ListTile(
-                    tileColor: selectedIndex == index ? Colors.grey[700] : null,
-                    title: Text(devices[index].platformName, style: const TextStyle(color: Colors.white)),
-                    subtitle: Text(devices[index].remoteId.toString(), style: const TextStyle(color: Colors.white)),
-                    onTap: () {
-                      if (mounted) {
-                        setState(() {
-                        selectedIndex = index;
-                        _controller.text = devices[index].remoteId.toString();
-                        });
-                      }
-                    },
-                  );
-                },
               ),
-            ),
             ],
           ),
         ),
       ),
     );
-    }
-
-
-    Widget buildQRButton() {
-      return ElevatedButton.icon(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: Colors.grey[700],
-        ),
-        icon: const Icon(Icons.qr_code_2, color: Colors.white),
-        label: const Text('Scan QR code', style: TextStyle(color: Colors.white)),
-        onPressed: () async {
-          final result = await Navigator.push(context,
-            MaterialPageRoute(builder: (context) => const BarcodeScannerSimple()),
-          );
-          if (!context.mounted) return;
-          if (result != null) {
-            // result is the module's hardware MAC ('AA:BB:..'; the firmware
-            // QR encodes the same MAC its advertised name 'RCJs-m_<MAC>'
-            // carries). On iOS map it to the CoreBluetooth UUID by scan.
-            if (useIosBleUuid) {
-              handleIosResult(result);
-            } else {
-              _controller.text = result;
-            }
-          }
-        },
-      );
-    }
-
-    // QR codes encode a MAC, but iOS connects by CoreBluetooth UUID — resolve it
-    // via the shared BLE scan (utils/ble_address.dart), which uses the validated
-    // onScanResults lifecycle (NOT the replay-prone scanResults this used to call)
-    // and tears the scan down in finally.
-    Future<void> handleIosResult(dynamic pResult) async {
-      final resolvedUuid = await resolveIosDeviceUuid('$pResult');
-
-      if (resolvedUuid != null) {
-        if (mounted) {
-          _controller.text = resolvedUuid;
-          // #82: the QR carried the module's hardware MAC. Do NOT write it to
-          // the module yet — an abandoned/mistaken scan must not retarget the
-          // slot's reported identity (least of all over a live link). Stash
-          // it; the Connect button passes it along when the user actually
-          // connects this UUID.
-          _qrResolvedUuid = resolvedUuid;
-          _qrScannedMac = '$pResult'.trim().toUpperCase();
-        }
-        return;
-      }
-
-      //Error handling if no device to mac was found
-      if (mounted) {
-        await showCupertinoDialog(
-          context: context,
-          builder: (BuildContext context) {
-            return CupertinoAlertDialog(
-              title: const Text('No device found'),
-              content: const Text('No device was found matching the MAC address you scanned'),
-              actions: [
-                CupertinoDialogAction(
-                  isDefaultAction: true,
-                  onPressed: () {
-                    Navigator.of(context).pop(); // 👈 closes the dialog
-                  },
-                  child: const Text('OK'),
-                ),
-              ],
-            );
-          },
-        );
-      }
-    }
-
-
-
-
-
-
-
-  //     body: Padding(
-  //       padding: const EdgeInsets.all(16.0),
-  //       child: Column(
-  //         children: [
-  //           Column(
-  //             children: [
-  //               Row(
-  //                 children: [
-  //                   Text('Device status:'),
-  //
-  //                   Text(deviceStatus == 'OK' ? widget.module.bleStatus : deviceStatus),
-  //                 ],
-  //               ),
-  //               //MacAddressInputField(),
-  //               TextField(
-  //                 controller: _controller,
-  //                 inputFormatters: [maskFormatter],
-  //                 decoration: InputDecoration(
-  //                   labelText: 'Enter MAC Address',
-  //                   hintText: 'xx:xx:xx:xx:xx:xx',
-  //                   border: OutlineInputBorder(),
-  //                 ),
-  //                 maxLength: 17,
-  //               ),
-  //
-  //               ElevatedButton(
-  //                   onPressed: () {
-  //                     debugPrint(_controller.text);
-  //                     widget.module.setDevice(BluetoothDevice.fromId(_controller.text.toUpperCase()));
-  //                   },
-  //                   child: Text('Connect')
-  //               ),
-  //
-  //
-  //             ],
-  //           )
-  //
-  //         ],
-  //       ),
-  //     ),
-  //   );
-  // }
- }
+  }
+}
 
 class _SavedDevicesDialog extends StatefulWidget {
-  final List<SavedDevice> devices;
-
   const _SavedDevicesDialog({required this.devices});
+  final List<SavedDevice> devices;
 
   @override
   State<_SavedDevicesDialog> createState() => _SavedDevicesDialogState();
 }
 
 class _SavedDevicesDialogState extends State<_SavedDevicesDialog> {
-  late List<SavedDevice> _devices;
+  late final List<SavedDevice> _devices = List.of(widget.devices);
 
   @override
-  void initState() {
-    super.initState();
-    _devices = List.from(widget.devices);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Load Saved Device'),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: ListView.builder(
-          shrinkWrap: true,
-          itemCount: _devices.length,
-          itemBuilder: (context, index) {
-            final device = _devices[index];
-            return ListTile(
-              title: Text(device.name),
-              subtitle: Text(
-                device.macAddress,
-                style: const TextStyle(fontSize: 12, color: Colors.grey),
-              ),
-              trailing: IconButton(
-                icon: const Icon(Icons.delete_outline, color: Colors.red),
-                onPressed: () async {
-                  await PresetService().deleteDevice(device.id);
-                  setState(() => _devices.removeAt(index));
-                  if (_devices.isEmpty && context.mounted) {
-                    Navigator.pop(context, null);
-                  }
-                },
-              ),
-              onTap: () => Navigator.pop(context, device),
-            );
-          },
+  Widget build(BuildContext context) => AlertDialog(
+        title: const Text('Load Saved Device'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: _devices.length,
+            itemBuilder: (context, index) {
+              final device = _devices[index];
+              return ListTile(
+                title: Text(device.name),
+                subtitle: Text(device.macAddress,
+                    style: const TextStyle(fontSize: 12, color: Colors.grey)),
+                trailing: IconButton(
+                  icon: const Icon(Icons.delete_outline, color: Colors.red),
+                  onPressed: () async {
+                    await PresetService().deleteDevice(device.id);
+                    setState(() => _devices.removeAt(index));
+                    if (_devices.isEmpty && context.mounted) Navigator.pop(context);
+                  },
+                ),
+                onTap: () => Navigator.pop(context, device),
+              );
+            },
+          ),
         ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context, null),
-          child: const Text('Cancel'),
-        ),
-      ],
-    );
-  }
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        ],
+      );
 }
-
-
-

@@ -21,7 +21,7 @@ import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'package:rcj_scoreboard/models/team.dart';
-import 'package:rcj_scoreboard/screens/home.dart';
+import 'package:rcj_scoreboard/widgets/team_panel.dart';
 import 'package:rcj_scoreboard/services/ble_bridge_service.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
 import 'package:rcj_scoreboard/services/mqtt.dart';

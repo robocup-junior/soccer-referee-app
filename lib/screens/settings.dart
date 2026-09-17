@@ -1,1586 +1,417 @@
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import '../models/game.dart';
-import '../services/ble_bridge_service.dart';
-import '../services/mqtt.dart';
-import '../services/notification_service.dart';
-import '../services/preset_service.dart';
-import '../services/vibration_service.dart';
-import '../utils/ble_address.dart';
-import '../utils/colors.dart';
-import 'mac_qr_scanner.dart';
+import 'package:rcj_scoreboard/models/game.dart';
+import 'package:rcj_scoreboard/screens/mac_qr_scanner.dart';
+import 'package:rcj_scoreboard/services/ble_bridge_service.dart';
+import 'package:rcj_scoreboard/services/mqtt.dart';
+import 'package:rcj_scoreboard/services/notification_service.dart';
+import 'package:rcj_scoreboard/services/vibration_service.dart';
+import 'package:rcj_scoreboard/utils/ble_address.dart';
+import 'package:rcj_scoreboard/utils/colors.dart';
+import 'package:rcj_scoreboard/widgets/app_dialogs.dart';
+import 'package:rcj_scoreboard/widgets/module_presets_section.dart';
+import 'package:rcj_scoreboard/widgets/settings_widgets.dart';
 
-String bridgeConnectionButtonLabel(BridgeConnectionState state) {
-  switch (state) {
-    case BridgeConnectionState.connected:
-      return 'Disconnect';
-    case BridgeConnectionState.connecting:
-      return 'Cancel';
-    default:
-      return 'Connect';
-  }
-}
+const _gameDurations = [
+  SetItem('2 mins', 60),
+  SetItem('4 mins', 120),
+  SetItem('8 mins', 240),
+  SetItem('10 mins', 300),
+  SetItem('20 mins', 600),
+];
+const _halftimeBreaks = [
+  SetItem('1 min', 60),
+  SetItem('2 mins', 120),
+  SetItem('5 mins', 300),
+  SetItem('10 mins', 600),
+];
+const _playerCounts = [
+  SetItem('2', 1),
+  SetItem('4', 2),
+  SetItem('6', 3),
+  SetItem('8', 4),
+  SetItem('10', 5),
+];
+const _penaltyTimes = [SetItem('30 sec', 30), SetItem('60 sec', 60), SetItem('90 sec', 90)];
 
-class SettingsScreen extends StatefulWidget {
+SetItem _itemFor(List<SetItem> options, int value, int fallbackIndex) =>
+    options.firstWhere((o) => o.values == value, orElse: () => options[fallbackIndex]);
+
+String bridgeConnectionButtonLabel(BridgeConnectionState state) => switch (state) {
+      BridgeConnectionState.connected => 'Disconnect',
+      BridgeConnectionState.connecting => 'Cancel',
+      _ => 'Connect',
+    };
+
+/// All operator settings. The whole list rebuilds on any change of the game or
+/// the services it shows, which is cheap and keeps every row in sync.
+class SettingsScreen extends StatelessWidget {
+  const SettingsScreen({super.key, required this.game});
   final Game game;
 
-  const SettingsScreen({super.key, required this.game});
-
   @override
-  State<SettingsScreen> createState() => _SettingsScreenState();
-}
-
-class _SettingsScreenState extends State<SettingsScreen> {
-  late SetItem _selectedGameDuration;
-  late SetItem _selectedHalftimeBreak;
-  late SetItem _selectedNumberOfPlayers;
-  late SetItem _selectedPenaltyTime;
-
-  final List<SetItem> _gameDurations = [
-    SetItem('2 mins', 60),
-    SetItem('4 mins', 120),
-    SetItem('8 mins', 240),
-    SetItem('10 mins', 300),
-    SetItem('20 mins', 600),
-  ];
-
-  final List<SetItem> _halftimeBreaks = [
-    SetItem('1 min', 60),
-    SetItem('2 mins', 120),
-    SetItem('5 mins', 300),
-    SetItem('10 mins', 600),
-  ];
-
-  final List<SetItem> _numberOfPlayersList = [
-    SetItem('2', 1),
-    SetItem('4', 2),
-    SetItem('6', 3),
-    SetItem('8', 4),
-    SetItem('10', 5),
-  ];
-
-  final List<SetItem> _penaltyTimes = [
-    SetItem('30 sec', 30),
-    SetItem('60 sec', 60),
-    SetItem('90 sec', 90),
-  ];
-
-  // iOS addresses a BLE device by a CoreBluetooth UUID, not a MAC; the mask,
-  // length and hint differ by platform. Shared with the per-module address field
-  // via utils/ble_address.dart so both screens stay in sync.
-  final _bridgeAddressMask = buildBleAddressMask();
-
-  @override
-  void initState() {
-    super.initState();
-    _selectedGameDuration = _gameDurations.firstWhere(
-        (item) => item.values == widget.game.periodTime,
-        orElse: () => _gameDurations[4]);
-    _selectedHalftimeBreak = _halftimeBreaks.firstWhere(
-        (item) => item.values == widget.game.halfTimeDuration,
-        orElse: () => _halftimeBreaks[2]);
-    _selectedNumberOfPlayers = _numberOfPlayersList.firstWhere(
-        (item) => item.values == widget.game.numberOfPlayers,
-        orElse: () => _numberOfPlayersList[1]);
-    _selectedPenaltyTime = _penaltyTimes.firstWhere(
-        (item) => item.values == widget.game.penaltyTime,
-        orElse: () => _penaltyTimes[1]);
-  }
-
-  @override
-  void dispose() {
-    super.dispose();
-  }
-
-  // Apply a scanned bridge QR result to the bridge address. QR codes always
-  // encode a MAC (mac_qr_scanner only accepts a 17-char MAC), but iOS cannot
-  // connect by MAC — it needs the device's CoreBluetooth UUID, so resolve it via
-  // the shared BLE scan (utils/ble_address.dart). On Android the scanned MAC is
-  // the address, so it is applied directly.
-  Future<void> _applyBridgeQrResult(String macResult) async {
-    if (!useIosBleUuid) {
-      setState(() {
-        widget.game.bleBridgeService.bridgeMacAddress = macResult;
-      });
-      return;
-    }
-
-    final resolvedUuid = await resolveIosDeviceUuid(macResult);
-
-    if (resolvedUuid != null) {
-      if (mounted) {
-        setState(() {
-          widget.game.bleBridgeService.bridgeMacAddress = resolvedUuid;
-        });
-      }
-      return;
-    }
-
-    if (mounted) {
-      await showCupertinoDialog(
-        context: context,
-        builder: (BuildContext context) {
-          return CupertinoAlertDialog(
-            title: const Text('No device found'),
-            content: const Text(
-                'No device was found matching the MAC address you scanned'),
-            actions: [
-              CupertinoDialogAction(
-                isDefaultAction: true,
-                onPressed: () {
-                  Navigator.of(context).pop();
-                },
-                child: const Text('OK'),
-              ),
-            ],
-          );
-        },
-      );
-    }
-  }
-
-  Future<void> _confirmStartNoShowPenaltyGoals(int scoringTeamIndex) async {
-    final scoringTeam = widget.game.teams[scoringTeamIndex];
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Start no-show penalty goals?'),
-        content: Text(
-          '${scoringTeam.name} will receive ${widget.game.noShowPenaltyGoalIntervalLabel} '
-          'while the game timer runs. The current game will be reset.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Start'),
-          ),
-        ],
-      ),
-    );
-
-    if (!mounted || confirmed != true) return;
-    setState(() {
-      widget.game.startNoShowPenaltyGoals(scoringTeam);
-    });
-  }
-
-  Future<void> _confirmEndMatchEarly() async {
-    final game = widget.game;
-    // Pin the fixture AND the match state the referee is confirming. A deep
-    // link can be Loaded while this dialog sits open (Home's "Load match?"
-    // dialog renders in the same root overlay, above us): a different fixture
-    // swaps matchConfig (caught by the signature, the same stale-dialog class
-    // the load/review paths guard with expectedSignature), while a confirmed
-    // re-Load of the SAME fixture keeps the signature but RESETS the live
-    // match via gameInit() (#69) — caught by the stage/inGame/score pin. A
-    // stage flip or score change while the dialog is open (half expiring,
-    // no-show goal landing) is likewise no longer the state this dialog
-    // displayed. The conservative no-op just makes the referee re-tap.
-    final expectedSignature =
-        game.scoreboardResultService.matchConfig?.signature;
-    final expectedMatchState = (
-      game.currentStage,
-      game.inGame,
-      game.teams[0].score,
-      game.teams[1].score,
-    );
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('End this match now?'),
-        content: Text(
-          'You will be taken to the result confirmation screen. '
-          'Current score: ${game.teams[0].name} ${game.teams[0].score} '
-          '– ${game.teams[1].score} ${game.teams[1].name}.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('End'),
-          ),
-        ],
-      ),
-    );
-    if (!mounted || confirmed != true) return;
-    // The fixture or match can change while the dialog sits open; re-check
-    // the gate AND that both still match what this dialog showed, so a stale
-    // confirm can't end a different fixture or a reset/advanced match.
-    if (!game.canEndMatchEarly) return;
-    if (expectedSignature == null ||
-        game.scoreboardResultService.matchConfig?.signature !=
-            expectedSignature) {
-      return;
-    }
-    final currentMatchState = (
-      game.currentStage,
-      game.inGame,
-      game.teams[0].score,
-      game.teams[1].score,
-    );
-    if (currentMatchState != expectedMatchState) return;
-    // Pop Settings back to Home FIRST (returning the game so Home's
-    // _navigateToSettings continuation runs gameRefresh(), not gameInit() —
-    // endMatchEarly sets inGame synchronously below, before that continuation's
-    // microtask runs). Home's onRequestReviewScoreboardResult callback is
-    // deferred to a post-frame callback, so the review route is pushed over
-    // Home, never over the disappearing Settings route.
-    Navigator.of(context).pop(game);
-    game.endMatchEarly();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return PopScope(
-      canPop: true,
-      onPopInvokedWithResult: (didPop, result) {},
-      child: PopScope(
+  Widget build(BuildContext context) => PopScope(
         canPop: false,
-        onPopInvokedWithResult: (didPop, result) {
-          if (didPop) {
-            return;
-          }
-          Navigator.pop(context, widget.game);
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) Navigator.pop(context, game);
         },
         child: Scaffold(
-          appBar: AppBar(
-            title: const Text('Settings'),
-            backgroundColor: AppColors.primary,
-          ),
+          appBar: AppBar(title: const Text('Settings'), backgroundColor: AppColors.primary),
           body: SafeArea(
             top: false,
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: Column(
+            child: ListenableBuilder(
+              listenable: Listenable.merge([
+                game,
+                game.vibrationService,
+                game.wakelockService,
+                game.matchDataService.stateNotifier,
+                game.bleBridgeService.connectionStateNotifier,
+                game.mqttService.connectionStateNotifier,
+              ]),
+              builder: (context, _) => ListView(
+                padding: const EdgeInsets.all(16),
                 children: [
-                  Expanded(
-                    child: ListView(
-                      children: [
-                        ValueListenableBuilder<String>(
-                            valueListenable:
-                                widget.game.matchDataService.stateNotifier,
-                            builder: (context, matchStatus, child) {
-                              return SettingsSection(
-                                title: 'Match Data',
-                                locked: false,
-                                settings: [
-                                  SettingStatus(
-                                    title: 'Status',
-                                    status: matchStatus,
-                                  ),
-                                  SettingInputField(
-                                    title: 'Data URL',
-                                    initialValue:
-                                        widget.game.matchDataService.matchesUrl,
-                                    onChanged: (value) {
-                                      widget.game.matchDataService.matchesUrl =
-                                          value;
-                                    },
-                                  ),
-                                  SettingInputField(
-                                    title: 'Match ID',
-                                    initialValue:
-                                        widget.game.matchDataService.matchId,
-                                    onChanged: (value) {
-                                      widget.game.matchDataService.matchId =
-                                          value;
-                                    },
-                                  ),
-                                  SettingButton(
-                                    title: 'Load match data',
-                                    buttonText: 'Load',
-                                    onPressed: () async {
-                                      widget.game.loadMatchData();
-                                    },
-                                  ),
-                                ],
-                              );
-                            }),
-                        AnimatedBuilder(
-                          animation: widget.game.scoreboardResultService,
-                          builder: (context, child) {
-                            final service = widget.game.scoreboardResultService;
-                            final config = service.matchConfig;
-                            return SettingsSection(
-                              title: 'Scoreboard Result API',
-                              locked: false,
-                              settings: [
-                                SettingStatus(
-                                  title: 'Link status',
-                                  status: service.statusMessage,
-                                ),
-                                SettingStatus(
-                                  title: 'Match code',
-                                  status: config?.matchCode.isNotEmpty == true
-                                      ? config!.matchCode
-                                      : 'Not loaded',
-                                ),
-                                SettingStatus(
-                                  title: 'Venue',
-                                  status:
-                                      config?.venueShortName.isNotEmpty == true
-                                          ? config!.venueShortName
-                                          : 'Not loaded',
-                                ),
-                                SettingStatus(
-                                  title: 'Outbox',
-                                  status:
-                                      'Pending ${service.pendingCount}, conflict ${service.conflictCount}, submitted ${service.submittedCount}',
-                                ),
-                                // "End match now" is a deep-link-only action
-                                // (it lives here, not in Current Game, because
-                                // it only applies to a linked scoreboard
-                                // fixture). This section's AnimatedBuilder
-                                // listens to the service, so it does not rebuild
-                                // on match-stage changes (e.g. the clock hitting
-                                // full time while Settings is open); wrap the
-                                // gated button in its own builder on widget.game
-                                // — Game forwards service notifications too, so
-                                // this tracks both the fixture and the stage.
-                                AnimatedBuilder(
-                                  animation: widget.game,
-                                  builder: (context, child) {
-                                    if (!widget.game.canEndMatchEarly) {
-                                      return const SizedBox.shrink();
-                                    }
-                                    return SettingButton(
-                                      title: 'End match now',
-                                      buttonText: 'End',
-                                      onPressed: _confirmEndMatchEarly,
-                                    );
-                                  },
-                                ),
-                                SettingButton(
-                                  title: 'Refresh linked match',
-                                  buttonText: 'Refresh',
-                                  onPressed: () {
-                                    service.refreshMatchConfig();
-                                  },
-                                ),
-                                SettingButton(
-                                  title: 'Retry pending result',
-                                  buttonText: 'Retry',
-                                  onPressed: () {
-                                    service.retryPendingNow();
-                                  },
-                                ),
-                                SettingButton(
-                                  title: 'Clear linked match',
-                                  buttonText: 'Clear',
-                                  onPressed: () {
-                                    // Clearing wipes the whole outbox. Confirm
-                                    // first if any results haven't been
-                                    // confirmed sent, so a stray tap can't
-                                    // silently discard undelivered results
-                                    // (RAVF003). Nothing undelivered → clear
-                                    // straight away (no friction).
-                                    final undelivered =
-                                        service.undeliveredCount;
-                                    if (undelivered == 0) {
-                                      service.clearLinkedMatchData();
-                                      return;
-                                    }
-                                    final plural = undelivered == 1 ? '' : 's';
-                                    showDialog(
-                                      context: context,
-                                      builder: (ctx) => AlertDialog(
-                                        title:
-                                            const Text('Clear linked match?'),
-                                        content: Text(
-                                          '$undelivered result$plural '
-                                          '${undelivered == 1 ? 'has' : 'have'} '
-                                          'not been confirmed sent to the '
-                                          'scoreboard yet. Clearing the linked '
-                                          'match permanently discards '
-                                          '${undelivered == 1 ? 'it' : 'them'} '
-                                          '— ${undelivered == 1 ? 'it' : 'they'} '
-                                          'will not be sent.',
-                                        ),
-                                        actions: [
-                                          TextButton(
-                                            onPressed: () =>
-                                                Navigator.of(ctx).pop(),
-                                            child: const Text('Cancel'),
-                                          ),
-                                          TextButton(
-                                            style: TextButton.styleFrom(
-                                              foregroundColor: Colors.red,
-                                            ),
-                                            onPressed: () {
-                                              Navigator.of(ctx).pop();
-                                              service.clearLinkedMatchData();
-                                            },
-                                            child: const Text('Clear anyway'),
-                                          ),
-                                        ],
-                                      ),
-                                    );
-                                  },
-                                ),
-                              ],
-                            );
-                          },
-                        ),
-                        AnimatedBuilder(
-                          animation: widget.game,
-                          builder: (context, child) {
-                            final noShowActive =
-                                widget.game.noShowPenaltyGoalsActive;
-                            return SettingsSection(
-                              title: 'Current Game',
-                              locked: false,
-                              settings: [
-                                SettingButton(
-                                  title: 'Switch team order',
-                                  buttonText: 'Switch',
-                                  onPressed: () {
-                                    setState(() {
-                                      widget.game.toggleTeamOrder();
-                                    });
-                                  },
-                                ),
-                                if (!noShowActive)
-                                  SettingButton(
-                                    title: 'Reset current game',
-                                    buttonText: 'Reset',
-                                    onPressed: () async {
-                                      setState(() {
-                                        widget.game.setTeamToDefaultOrder();
-                                        widget.game.gameInit();
-                                        widget.game.resetModuleNames();
-                                      });
-                                      // gameInit() deliberately does not clear
-                                      // the cold-resume snapshot; an intentional
-                                      // reset must, or a kill would re-offer this
-                                      // match. Awaited so the clear lands before
-                                      // a possible immediate kill (off the
-                                      // robot-command path).
-                                      await widget.game.persistence.clearAndWait();
-                                    },
-                                  ),
-                                SettingStatus(
-                                  title: 'No-show penalty goals',
-                                  status: noShowActive
-                                      ? '${widget.game.noShowPenaltyScoringTeamName}: ${widget.game.noShowPenaltyGoalIntervalLabel}'
-                                      : 'Off',
-                                ),
-                                if (!noShowActive) ...[
-                                  SettingButton(
-                                    title:
-                                        '${widget.game.teams[0].name} scores no-show goals',
-                                    buttonText: 'Start',
-                                    onPressed: () =>
-                                        _confirmStartNoShowPenaltyGoals(0),
-                                  ),
-                                  SettingButton(
-                                    title:
-                                        '${widget.game.teams[1].name} scores no-show goals',
-                                    buttonText: 'Start',
-                                    onPressed: () =>
-                                        _confirmStartNoShowPenaltyGoals(1),
-                                  ),
-                                ],
-                                if (noShowActive)
-                                  SettingButton(
-                                    title: 'Stop no-show penalty goals',
-                                    buttonText: 'Stop',
-                                    onPressed: () {
-                                      setState(() {
-                                        widget.game.stopNoShowPenaltyGoals();
-                                      });
-                                    },
-                                  ),
-                                SettingButton(
-                                  title: 'Disconnect all robots',
-                                  buttonText: 'Disconnect',
-                                  onPressed: () {
-                                    widget.game.disconnectAll();
-                                  },
-                                ),
-                              ],
-                            );
-                          },
-                        ),
-                        ValueListenableBuilder<BridgeConnectionState>(
-                            valueListenable: widget
-                                .game.bleBridgeService.connectionStateNotifier,
-                            builder: (context, bridgeState, child) {
-                              return SettingsSection(
-                                title: 'BLE Bridge',
-                                locked: false,
-                                enabled: widget.game.bleBridgeService.isEnabled,
-                                onToggle: (value) {
-                                  setState(() {
-                                    widget.game.bleBridgeService.isEnabled =
-                                        value;
-                                  });
-                                },
-                                settings: [
-                                  SettingStatus(
-                                    title: 'Bridge status',
-                                    status: bridgeState ==
-                                            BridgeConnectionState.connected
-                                        ? 'Connected'
-                                        : bridgeState ==
-                                                BridgeConnectionState.connecting
-                                            ? 'Connecting...'
-                                            : bridgeState ==
-                                                    BridgeConnectionState.error
-                                                ? (widget.game.bleBridgeService
-                                                        .lastErrorMessage ??
-                                                    'Error')
-                                                : 'Disconnected',
-                                  ),
-                                  SettingInputField(
-                                    title: useIosBleUuid
-                                        ? 'Bridge UUID'
-                                        : 'Bridge MAC',
-                                    initialValue: widget
-                                        .game.bleBridgeService.bridgeMacAddress,
-                                    inputFormatters: [_bridgeAddressMask],
-                                    maxLength: bleAddressMaxLength,
-                                    hintText: bleAddressHint,
-                                    onChanged: (value) {
-                                      widget.game.bleBridgeService
-                                          .bridgeMacAddress = value;
-                                    },
-                                  ),
-                                  SettingButton(
-                                    title: 'Scan QR code',
-                                    buttonText: 'Scan QR',
-                                    onPressed: () async {
-                                      final result = await Navigator.push(
-                                        context,
-                                        MaterialPageRoute(
-                                          builder: (context) =>
-                                              const BarcodeScannerSimple(),
-                                        ),
-                                      );
-                                      if (!context.mounted) return;
-                                      if (result is String) {
-                                        await _applyBridgeQrResult(result);
-                                      }
-                                    },
-                                  ),
-                                  SettingButton(
-                                    title: 'Bridge connection',
-                                    buttonText: bridgeConnectionButtonLabel(
-                                        bridgeState),
-                                    onPressed: () async {
-                                      if (bridgeState ==
-                                              BridgeConnectionState.connected ||
-                                          bridgeState ==
-                                              BridgeConnectionState
-                                                  .connecting) {
-                                        await widget.game.bleBridgeService
-                                            .disconnect();
-                                      } else {
-                                        await widget.game.bleBridgeService
-                                            .connect();
-                                      }
-                                      setState(() {});
-                                    },
-                                  ),
-                                ],
-                              );
-                            }),
-                        ValueListenableBuilder<MqttConnectionStateEx>(
-                            valueListenable:
-                                widget.game.mqttService.connectionStateNotifier,
-                            builder: (context, connectionState, child) {
-                              return SettingsSection(
-                                title: 'MQTT',
-                                locked: false,
-                                enabled: widget.game.mqttService.isEnabled,
-                                onToggle: (value) {
-                                  setState(() {
-                                    widget.game.mqttService.isEnabled = value;
-                                  });
-                                },
-                                settings: [
-                                  SettingStatus(
-                                    title: 'MQTT status',
-                                    status: connectionState ==
-                                            MqttConnectionStateEx.connected
-                                        ? 'Connected'
-                                        : connectionState ==
-                                                MqttConnectionStateEx.connecting
-                                            ? 'Connecting...'
-                                            : connectionState ==
-                                                    MqttConnectionStateEx.error
-                                                ? (widget
-                                                        .game
-                                                        .mqttService
-                                                        .lastErrorMessage
-                                                        .isNotEmpty
-                                                    ? widget.game.mqttService
-                                                        .lastErrorMessage
-                                                    : 'Connection error')
-                                                : 'Disconnected',
-                                  ),
-                                  // SettingSwitch(
-                                  //   title: 'Auto connect',
-                                  //   value: widget.game.mqttService.autoConnect,
-                                  //   onChanged: (value) {
-                                  //     setState(() {
-                                  //       widget.game.mqttService.autoConnect = value;
-                                  //     });
-                                  //   },
-                                  // ),
-
-                                  SettingInputField(
-                                      title: 'Server IP',
-                                      initialValue:
-                                          widget.game.mqttService.server ?? '',
-                                      onChanged: (value) {
-                                        widget.game.mqttService.server = value;
-                                      }),
-                                  SettingInputField(
-                                      title: 'Port',
-                                      initialValue: widget.game.mqttService.port
-                                              ?.toString() ??
-                                          '',
-                                      onChanged: (value) {
-                                        widget.game.mqttService.port =
-                                            int.tryParse(value);
-                                      }),
-                                  SettingInputField(
-                                      title: 'Username',
-                                      initialValue:
-                                          widget.game.mqttService.username ??
-                                              '',
-                                      onChanged: (value) {
-                                        widget.game.mqttService.username =
-                                            value;
-                                      }),
-                                  SettingInputField(
-                                      title: 'Password',
-                                      isPassword: true,
-                                      initialValue:
-                                          widget.game.mqttService.password ??
-                                              '',
-                                      onChanged: (value) {
-                                        widget.game.mqttService.password =
-                                            value;
-                                      }),
-                                  SettingSwitch(
-                                    title: 'Secure Connection',
-                                    value: widget
-                                        .game.mqttService.secureConnection,
-                                    onChanged: (value) {
-                                      setState(() {
-                                        widget.game.mqttService
-                                            .secureConnection = value;
-                                      });
-                                    },
-                                  ),
-                                  SettingInputField(
-                                      title: 'Field Number',
-                                      initialValue:
-                                          widget.game.mqttService.fieldNumber,
-                                      onChanged: (value) {
-                                        widget.game.mqttService.topicField =
-                                            value;
-                                      }),
-                                  SettingButton(
-                                    title: 'Connect to MQTT',
-                                    buttonText: (connectionState ==
-                                                MqttConnectionStateEx
-                                                    .connected ||
-                                            connectionState ==
-                                                MqttConnectionStateEx
-                                                    .connecting)
-                                        ? 'Disconnect'
-                                        : 'Connect',
-                                    onPressed: () async {
-                                      if (connectionState ==
-                                              MqttConnectionStateEx.connected ||
-                                          connectionState ==
-                                              MqttConnectionStateEx
-                                                  .connecting) {
-                                        widget.game.mqttService.disconnect();
-                                      } else {
-                                        await widget.game.mqttService.connect();
-                                      }
-                                      setState(() {});
-                                    },
-                                  ),
-                                ],
-                              );
-                            }),
-                        SettingsSection(
-                          title: 'Game',
-                          locked: widget.game.inGame,
-                          settings: [
-                            SettingDropdownButton(
-                              title: 'Game Duration',
-                              value: _selectedGameDuration,
-                              options: _gameDurations,
-                              onChanged: (value) {
-                                setState(() {
-                                  _selectedGameDuration = value!;
-                                  widget.game.periodTime = value.values;
-                                });
-                              },
-                            ),
-                            SettingDropdownButton(
-                              title: 'Halftime Break Duration',
-                              value: _selectedHalftimeBreak,
-                              options: _halftimeBreaks,
-                              onChanged: (value) {
-                                setState(() {
-                                  _selectedHalftimeBreak = value!;
-                                  widget.game.halfTimeDuration = value.values;
-                                });
-                              },
-                            ),
-                          ],
-                        ),
-                        SettingsSection(
-                          title: 'Player',
-                          locked: widget.game.inGame,
-                          settings: [
-                            SettingDropdownButton(
-                              title: 'Number of Players',
-                              value: _selectedNumberOfPlayers,
-                              options: _numberOfPlayersList,
-                              onChanged: (value) {
-                                setState(() {
-                                  _selectedNumberOfPlayers = value!;
-                                  widget.game.numberOfPlayers = value.values;
-                                });
-                                if (value!.values >= 4) {
-                                  showDialog(
-                                    context: context,
-                                    builder: (ctx) => AlertDialog(
-                                      title: const Text('Bluetooth Warning'),
-                                      content: Text(
-                                        'You selected ${value.values * 2} players. '
-                                        'This requires ${value.values * 2} simultaneous Bluetooth connections. '
-                                        'Some phones cannot support this many connections at once — '
-                                        'on those devices, some robots may fail to connect.',
-                                      ),
-                                      actions: [
-                                        TextButton(
-                                          onPressed: () =>
-                                              Navigator.of(ctx).pop(),
-                                          child: const Text('OK'),
-                                        ),
-                                      ],
-                                    ),
-                                  );
-                                }
-                              },
-                            ),
-                            SettingDropdownButton(
-                              title: 'Penalty Time',
-                              value: _selectedPenaltyTime,
-                              options: _penaltyTimes,
-                              onChanged: (value) {
-                                setState(() {
-                                  _selectedPenaltyTime = value!;
-                                  widget.game.penaltyTime = value.values;
-                                });
-                              },
-                            ),
-                          ],
-                        ),
-                        ModulePresetsSection(game: widget.game),
-                        AnimatedBuilder(
-                          animation: widget.game.vibrationService,
-                          builder: (context, child) {
-                            final vs = widget.game.vibrationService;
-                            return SettingsSection(
-                              title: 'Vibration & Notifications',
-                              locked: false,
-                              settings: [
-                                SettingSwitch(
-                                  title: 'Game Timer Vibration',
-                                  value: vs.gameTimerEnabled,
-                                  onChanged: (value) {
-                                    vs.gameTimerEnabled = value;
-                                    // Ask for notification permission only now,
-                                    // when the user opts into timer alerts.
-                                    if (value) {
-                                      NotificationService.requestPermission();
-                                    }
-                                  },
-                                ),
-                                if (vs.gameTimerEnabled)
-                                  SettingAlertChips(
-                                    label: 'Alert at (sec remaining)',
-                                    options: kVibrationAlertOptions,
-                                    selected: vs.gameTimerAlerts,
-                                    onToggle: (sec) {
-                                      vs.toggleGameTimerAlert(sec);
-                                    },
-                                  ),
-                                SettingSwitch(
-                                  title: 'Damage Timer Vibration',
-                                  value: vs.damageTimerEnabled,
-                                  onChanged: (value) {
-                                    vs.damageTimerEnabled = value;
-                                    if (value) {
-                                      NotificationService.requestPermission();
-                                    }
-                                  },
-                                ),
-                                if (vs.damageTimerEnabled)
-                                  SettingAlertChips(
-                                    label: 'Alert at (sec remaining)',
-                                    options: kVibrationAlertOptions,
-                                    selected: vs.damageTimerAlerts,
-                                    onToggle: (sec) {
-                                      vs.toggleDamageTimerAlert(sec);
-                                    },
-                                  ),
-                              ],
-                            );
-                          },
-                        ),
-                        AnimatedBuilder(
-                          animation: widget.game.wakelockService,
-                          builder: (context, child) {
-                            final ws = widget.game.wakelockService;
-                            return SettingsSection(
-                              title: 'Display',
-                              locked: false,
-                              settings: [
-                                SettingSwitch(
-                                  title: 'Keep Screen Awake',
-                                  value: ws.enabled,
-                                  onChanged: (value) {
-                                    ws.enabled = value;
-                                  },
-                                ),
-                              ],
-                            );
-                          },
-                        ),
-                        AnimatedBuilder(
-                          animation: widget.game,
-                          builder: (context, child) {
-                            return SettingsSection(
-                              title: 'Controls',
-                              locked: false,
-                              settings: [
-                                SettingSwitch(
-                                  title: 'Single-tap actions',
-                                  subtitle:
-                                      'Off by default. When on, start/stop, '
-                                      'scoring and robot controls fire on a '
-                                      'single tap — removes the accidental-touch '
-                                      'protection.',
-                                  value: widget.game.singleTapEnabled,
-                                  onChanged: (value) {
-                                    widget.game.singleTapEnabled = value;
-                                  },
-                                ),
-                              ],
-                            );
-                          },
-                        ),
-                        const SettingsSection(
-                          title: 'About',
-                          locked: false,
-                          settings: [
-                            Padding(
-                              padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('Created for RoboFuze.com',
-                                  style: TextStyle(fontSize: 14)),
-                            ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text(
-                                  'Author: Martin Faltus, Fabian Weller, Marek Šuppa',
-                                  style: TextStyle(fontSize: 14)),
-                            ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('Version: 0.10.6',
-                                  style: TextStyle(fontSize: 14)),
-                            ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('Year: 2026',
-                                  style: TextStyle(fontSize: 14)),
-                            ),
-                            Padding(
-                              padding: EdgeInsets.symmetric(vertical: 4.0),
-                              child: Text('License: Apache 2.0',
-                                  style: TextStyle(fontSize: 14)),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
+                  _matchDataSection(),
+                  _scoreboardSection(context),
+                  _currentGameSection(context),
+                  _bridgeSection(context),
+                  _mqttSection(),
+                  SettingsSection(
+                    title: 'Game',
+                    locked: game.inGame,
+                    settings: [
+                      SettingDropdownButton(
+                        title: 'Game Duration',
+                        value: _itemFor(_gameDurations, game.periodTime, 4),
+                        options: _gameDurations,
+                        onChanged: (v) => game.periodTime = v!.values,
+                      ),
+                      SettingDropdownButton(
+                        title: 'Halftime Break Duration',
+                        value: _itemFor(_halftimeBreaks, game.halfTimeDuration, 2),
+                        options: _halftimeBreaks,
+                        onChanged: (v) => game.halfTimeDuration = v!.values,
+                      ),
+                    ],
                   ),
-                  // const Row(
-                  //   mainAxisAlignment: MainAxisAlignment.center,
-                  //   children: [
-                  //     Text(
-                  //         'Created for RoboFuze.com by Martin Faltus 2025 \nVersion 0.9.2',
-                  //         textAlign: TextAlign.center,
-                  //         style: TextStyle(fontSize: 12)),
-                  //   ],
-                  // ),
+                  SettingsSection(
+                    title: 'Player',
+                    locked: game.inGame,
+                    settings: [
+                      SettingDropdownButton(
+                        title: 'Number of Players',
+                        value: _itemFor(_playerCounts, game.numberOfPlayers, 1),
+                        options: _playerCounts,
+                        onChanged: (v) => _setPlayers(context, v!.values),
+                      ),
+                      SettingDropdownButton(
+                        title: 'Penalty Time',
+                        value: _itemFor(_penaltyTimes, game.penaltyTime, 1),
+                        options: _penaltyTimes,
+                        onChanged: (v) => game.penaltyTime = v!.values,
+                      ),
+                    ],
+                  ),
+                  ModulePresetsSection(game: game),
+                  _alertsSection(),
+                  SettingsSection(title: 'Display', settings: [
+                    SettingSwitch(
+                      title: 'Keep Screen Awake',
+                      value: game.wakelockService.enabled,
+                      onChanged: (v) => game.wakelockService.enabled = v,
+                    ),
+                  ]),
+                  SettingsSection(title: 'Controls', settings: [
+                    SettingSwitch(
+                      title: 'Single-tap actions',
+                      subtitle: 'Off by default. When on, start/stop, scoring and robot '
+                          'controls fire on a single tap — removes the accidental-touch '
+                          'protection.',
+                      value: game.singleTapEnabled,
+                      onChanged: (v) => game.singleTapEnabled = v,
+                    ),
+                  ]),
+                  const SettingsSection(title: 'About', settings: [
+                    _AboutLine('Created for RoboFuze.com'),
+                    _AboutLine('Author: Martin Faltus, Fabian Weller, Marek Šuppa'),
+                    _AboutLine('Version: 0.10.6'),
+                    _AboutLine('Year: 2026'),
+                    _AboutLine('License: Apache 2.0'),
+                  ]),
                 ],
               ),
             ),
           ),
         ),
-      ),
-    );
-  }
-}
-
-// SettingsSection widget to group settings
-class SettingsSection extends StatelessWidget {
-  final String title;
-  final List<Widget> settings;
-  final bool locked;
-  final bool? enabled;
-  final ValueChanged<bool>? onToggle;
-
-  const SettingsSection(
-      {super.key,
-      required this.title,
-      required this.settings,
-      this.locked = false,
-      this.enabled,
-      this.onToggle});
-
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      ignoring: locked,
-      child: Card(
-        margin: const EdgeInsets.symmetric(vertical: 10),
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.bold),
-                ),
-                if (enabled != null && onToggle != null)
-                  Switch(
-                    value: enabled!,
-                    onChanged: onToggle,
-                    activeThumbColor: Colors.blue,
-                  ),
-                if (locked) const Icon(Icons.lock, color: Colors.white),
-              ]),
-              if (enabled == null || enabled == true) ...settings,
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// SettingDropdownButton widget for dropdown selections
-class SettingDropdownButton extends StatelessWidget {
-  final String title;
-  final SetItem value;
-  final List<SetItem> options;
-  final ValueChanged<SetItem?> onChanged;
-
-  const SettingDropdownButton({
-    super.key,
-    required this.title,
-    required this.value,
-    required this.options,
-    required this.onChanged,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Expanded(flex: 5, child: Text(title)),
-          Expanded(
-            flex: 2,
-            child: DropdownButton<SetItem>(
-              value: value,
-              onChanged: onChanged,
-              items: options.map<DropdownMenuItem<SetItem>>((SetItem item) {
-                return DropdownMenuItem<SetItem>(
-                  value: item,
-                  child: Text(item.name),
-                );
-              }).toList(),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// SettingButton widget for action buttons
-class SettingButton extends StatelessWidget {
-  final String title;
-  final String buttonText;
-  final Function()? onPressed;
-
-  const SettingButton({
-    super.key,
-    required this.title,
-    required this.buttonText,
-    required this.onPressed,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Expanded(flex: 3, child: Text(title)),
-          Expanded(
-            flex: 2,
-            child: ElevatedButton(
-              onPressed: onPressed,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.grey[700],
-              ),
-              child:
-                  Text(buttonText, style: const TextStyle(color: Colors.white)),
-            ),
-          )
-        ],
-      ),
-    );
-  }
-}
-
-// // SettingInputField widget for text input fields
-// class SettingInputField extends StatelessWidget {
-//   final String title;
-//   final String initialValue;
-//   final ValueChanged<String> onChanged;
-//   final bool isPassword;
-//
-//   SettingInputField({
-//     required this.title,
-//     required this.initialValue,
-//     required this.onChanged,
-//     this.isPassword = false,
-//   });
-//
-//   @override
-//   Widget build(BuildContext context) {
-//     return Padding(
-//       padding: const EdgeInsets.symmetric(vertical: 8.0),
-//       child: Row(
-//         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-//         children: [
-//           Expanded(flex: 3, child: Text(title)),
-//           Expanded(
-//             flex: 4,
-//             child: TextField(
-//               controller: TextEditingController(text: initialValue),
-//               onChanged: onChanged,
-//               obscureText: isPassword,
-//               style: const TextStyle(color: Colors.white),
-//               decoration: InputDecoration(
-//                 border: OutlineInputBorder(),
-//                 filled: true,
-//                 fillColor: Colors.grey[800],
-//               ),
-//             ),
-//           ),
-//         ],
-//       ),
-//     );
-//   }
-// }
-
-class SettingInputField extends StatefulWidget {
-  final String title;
-  final String initialValue;
-  final ValueChanged<String> onChanged;
-  final bool isPassword;
-  final List<TextInputFormatter>? inputFormatters;
-  final int? maxLength;
-  final String? hintText;
-
-  const SettingInputField({
-    super.key,
-    required this.title,
-    required this.initialValue,
-    required this.onChanged,
-    this.isPassword = false,
-    this.inputFormatters,
-    this.maxLength,
-    this.hintText,
-  });
-
-  @override
-  State<SettingInputField> createState() => _SettingInputFieldState();
-}
-
-class _SettingInputFieldState extends State<SettingInputField> {
-  late TextEditingController _controller;
-  late FocusNode _focusNode;
-  bool _obscure = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = TextEditingController(text: widget.initialValue);
-    _focusNode = FocusNode();
-    if (!widget.isPassword) _obscure = false;
-    _focusNode.addListener(() {
-      if (widget.isPassword) {
-        setState(() {
-          _obscure = !_focusNode.hasFocus;
-        });
-      }
-    });
-  }
-
-  @override
-  void didUpdateWidget(covariant SettingInputField oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.initialValue != oldWidget.initialValue) {
-      _controller.text = widget.initialValue;
-    }
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Expanded(flex: 3, child: Text(widget.title)),
-          Expanded(
-            flex: 4,
-            child: TextField(
-              controller: _controller,
-              focusNode: _focusNode,
-              onChanged: widget.onChanged,
-              obscureText: _obscure,
-              inputFormatters: widget.inputFormatters,
-              maxLength: widget.maxLength,
-              // Suppress the character counter so the longer UUID limit doesn't
-              // grow the compact settings row.
-              buildCounter: (context,
-                      {required currentLength,
-                      required isFocused,
-                      maxLength}) =>
-                  null,
-              style: const TextStyle(color: Colors.white),
-              decoration: InputDecoration(
-                border: const OutlineInputBorder(),
-                filled: true,
-                fillColor: Colors.grey[800],
-                hintText: widget.hintText,
-                hintStyle: const TextStyle(color: Colors.grey),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// SettingStatus widget to display the status of a setting
-class SettingStatus extends StatefulWidget {
-  final String title;
-  final String status;
-
-  const SettingStatus({super.key, required this.title, required this.status});
-
-  @override
-  State<SettingStatus> createState() => _SettingStatusState();
-}
-
-class _SettingStatusState extends State<SettingStatus> {
-  late String _status;
-
-  @override
-  void initState() {
-    super.initState();
-    _status = widget.status;
-  }
-
-  @override
-  void didUpdateWidget(covariant SettingStatus oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.status != widget.status) {
-      setState(() {
-        _status = widget.status;
-      });
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Expanded(flex: 3, child: Text(widget.title)),
-          Expanded(
-            flex: 3,
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: Text(
-                _status,
-                style: const TextStyle(color: Colors.white),
-                textAlign: TextAlign.right,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// SettingSwitch widget for toggle settings
-class SettingSwitch extends StatelessWidget {
-  final String title;
-  final bool value;
-  final ValueChanged<bool> onChanged;
-  final String? subtitle;
-
-  const SettingSwitch({
-    required this.title,
-    required this.value,
-    required this.onChanged,
-    this.subtitle,
-    super.key,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Expanded(
-            flex: 5,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title),
-                if (subtitle != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4.0),
-                    child: Text(
-                      subtitle!,
-                      style: const TextStyle(fontSize: 12, color: Colors.grey),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          Expanded(
-            flex: 2,
-            child: Switch(
-              value: value,
-              onChanged: onChanged,
-              activeThumbColor: Colors.blue,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// SettingAlertChips widget for multi-select vibration alert thresholds
-class SettingAlertChips extends StatelessWidget {
-  final String label;
-  final List<int> options;
-  final Set<int> selected;
-  final void Function(int) onToggle;
-
-  const SettingAlertChips({
-    required this.label,
-    required this.options,
-    required this.selected,
-    required this.onToggle,
-    super.key,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label, style: const TextStyle(fontSize: 14)),
-          const SizedBox(height: 6),
-          Wrap(
-            spacing: 8,
-            children: options.map((sec) {
-              final isSelected = selected.contains(sec);
-              return FilterChip(
-                label: Text(sec == 0 ? '0 (end)' : '${sec}s'),
-                selected: isSelected,
-                onSelected: (_) => onToggle(sec),
-                selectedColor: Colors.blue,
-                checkmarkColor: Colors.white,
-                labelStyle: TextStyle(
-                  color: isSelected ? Colors.white : null,
-                ),
-              );
-            }).toList(),
-          ),
-        ],
-      ),
-    );
-  }
-}
-// class SettingStatus extends StatelessWidget {
-//   final String title;
-//   final String status;
-//
-//   SettingStatus({required this.title, required this.status});
-//
-//   @override
-//   Widget build(BuildContext context) {
-//     return Padding(
-//       padding: const EdgeInsets.symmetric(vertical: 8.0),
-//       child: Row(
-//         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-//         children: [
-//           Expanded(
-//             flex: 3,
-//             child: Text(title)
-//           ),
-//           Expanded(
-//             flex: 2,
-//             child: Align(
-//               alignment: Alignment.centerRight,
-//               child: Text(
-//                 status,
-//                 style: const TextStyle(color: Colors.white),
-//                 textAlign: TextAlign.right,
-//               ),
-//             ),
-//           ),
-//         ],
-//       ),
-//     );
-//   }
-// }
-
-class SetItem {
-  final int values;
-  final String name;
-
-  SetItem(this.name, this.values);
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is SetItem &&
-          runtimeType == other.runtimeType &&
-          values == other.values &&
-          name == other.name;
-
-  @override
-  int get hashCode => values.hashCode ^ name.hashCode;
-}
-
-class ModulePresetsSection extends StatefulWidget {
-  final Game game;
-
-  const ModulePresetsSection({super.key, required this.game});
-
-  @override
-  State<ModulePresetsSection> createState() => _ModulePresetsSectionState();
-}
-
-class _ModulePresetsSectionState extends State<ModulePresetsSection> {
-  final PresetService _presetService = PresetService();
-  List<GamePreset>? _presets;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadPresets();
-  }
-
-  Future<void> _loadPresets() async {
-    final presets = await _presetService.loadAll();
-    if (mounted) {
-      setState(() {
-        _presets = presets;
-      });
-    }
-  }
-
-  Future<void> _saveCurrentPreset() async {
-    final name = await _showNameDialog();
-    if (name == null || name.trim().isEmpty) return;
-
-    final preset = widget.game.createPreset(name.trim());
-    await _presetService.save(preset);
-    await _loadPresets();
-
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Preset "${preset.name}" saved')),
       );
-    }
+
+  Widget _matchDataSection() {
+    final data = game.matchDataService;
+    return SettingsSection(title: 'Match Data', settings: [
+      SettingStatus(title: 'Status', status: data.stateNotifier.value),
+      SettingInputField(
+          title: 'Data URL', initialValue: data.matchesUrl, onChanged: (v) => data.matchesUrl = v),
+      SettingInputField(
+          title: 'Match ID', initialValue: data.matchId, onChanged: (v) => data.matchId = v),
+      SettingButton(title: 'Load match data', buttonText: 'Load', onPressed: game.loadMatchData),
+    ]);
   }
 
-  Future<String?> _showNameDialog() async {
-    final controller = TextEditingController();
-    return showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Save Preset'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Preset name',
-            hintText: 'e.g. My team robots',
-          ),
-          onSubmitted: (v) => Navigator.pop(context, v),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, null),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _loadPreset(GamePreset preset) async {
-    widget.game.applyPreset(preset);
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('Loaded "${preset.name}" – connecting robots...')),
-      );
-    }
-  }
-
-  Future<void> _deletePreset(GamePreset preset) async {
-    await _presetService.delete(preset.id);
-    await _loadPresets();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final presets = _presets;
-
-    final settingItems = <Widget>[
+  Widget _scoreboardSection(BuildContext context) {
+    final service = game.scoreboardResultService;
+    final config = service.matchConfig;
+    String orNotLoaded(String? s) => (s?.isNotEmpty ?? false) ? s! : 'Not loaded';
+    return SettingsSection(title: 'Scoreboard Result API', settings: [
+      SettingStatus(title: 'Link status', status: service.statusMessage),
+      SettingStatus(title: 'Match code', status: orNotLoaded(config?.matchCode)),
+      SettingStatus(title: 'Venue', status: orNotLoaded(config?.venueShortName)),
+      SettingStatus(
+          title: 'Outbox',
+          status: 'Pending ${service.pendingCount}, conflict ${service.conflictCount}, '
+              'submitted ${service.submittedCount}'),
+      if (game.canEndMatchEarly)
+        SettingButton(
+            title: 'End match now', buttonText: 'End', onPressed: () => _confirmEndMatchEarly(context)),
       SettingButton(
-        title: 'Save current robot configuration',
-        buttonText: 'Save',
-        onPressed: _saveCurrentPreset,
-      ),
-      if (presets == null)
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 8.0),
-          child: Center(child: CircularProgressIndicator()),
-        )
-      else if (presets.isEmpty)
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 4.0),
-          child: Text(
-            'No presets saved yet.',
-            style: TextStyle(color: Colors.grey, fontSize: 14),
-          ),
-        )
-      else
-        ...presets.map((preset) => _PresetTile(
-              preset: preset,
-              onLoad: () => _loadPreset(preset),
-              onDelete: () => _deletePreset(preset),
-            )),
-    ];
+          title: 'Refresh linked match', buttonText: 'Refresh', onPressed: service.refreshMatchConfig),
+      SettingButton(
+          title: 'Retry pending result', buttonText: 'Retry', onPressed: service.retryPendingNow),
+      SettingButton(
+          title: 'Clear linked match', buttonText: 'Clear', onPressed: () => _clearLinkedMatch(context)),
+    ]);
+  }
 
-    return SettingsSection(
-      title: 'Module Presets',
-      locked: false,
-      settings: settingItems,
+  /// Clearing wipes the outbox; confirm when results are still undelivered.
+  Future<void> _clearLinkedMatch(BuildContext context) async {
+    final service = game.scoreboardResultService;
+    final n = service.undeliveredCount;
+    if (n == 0) {
+      service.clearLinkedMatchData();
+      return;
+    }
+    final (results, have, them) = n == 1 ? ('result', 'has', 'it') : ('results', 'have', 'they');
+    final confirmed = await showChoiceDialog(
+      context,
+      title: 'Clear linked match?',
+      body: '$n $results $have not been confirmed sent to the scoreboard yet. Clearing the '
+          'linked match permanently discards $them — $them will not be sent.',
+      confirmText: 'Clear anyway',
+      confirmColor: Colors.red[600],
+      dismissible: true,
     );
+    if (confirmed == true) service.clearLinkedMatchData();
+  }
+
+  /// "End match now" (#84). The dialog pins the fixture AND the match state it
+  /// displayed; a Load or a stage/score change while it sits open makes the
+  /// confirm a no-op so a stale confirm can't end the wrong match.
+  Future<void> _confirmEndMatchEarly(BuildContext context) async {
+    (String?, MatchStage, bool, int, int) pin() => (
+          game.scoreboardResultService.matchConfig?.signature,
+          game.currentStage,
+          game.inGame,
+          game.teams[0].score,
+          game.teams[1].score,
+        );
+    final expected = pin();
+    final confirmed = await showChoiceDialog(
+      context,
+      title: 'End this match now?',
+      body: 'You will be taken to the result confirmation screen. Current score: '
+          '${game.teams[0].name} ${game.teams[0].score} – ${game.teams[1].score} ${game.teams[1].name}.',
+      confirmText: 'End',
+      dismissible: true,
+    );
+    if (confirmed != true || !context.mounted) return;
+    if (!game.canEndMatchEarly || expected.$1 == null || pin() != expected) return;
+    // Pop to Home first: the review route is pushed over Home after the frame.
+    Navigator.of(context).pop(game);
+    game.endMatchEarly();
+  }
+
+  Widget _currentGameSection(BuildContext context) {
+    final noShow = game.noShowPenaltyGoalsActive;
+    return SettingsSection(title: 'Current Game', settings: [
+      SettingButton(title: 'Switch team order', buttonText: 'Switch', onPressed: game.toggleTeamOrder),
+      if (!noShow)
+        SettingButton(
+          title: 'Reset current game',
+          buttonText: 'Reset',
+          onPressed: () async {
+            game.setTeamToDefaultOrder();
+            game.gameInit();
+            game.resetModuleNames();
+            // gameInit keeps the resume snapshot; an intentional reset must not.
+            await game.persistence.clearAndWait();
+          },
+        ),
+      SettingStatus(
+        title: 'No-show penalty goals',
+        status: noShow
+            ? '${game.noShowPenaltyScoringTeamName}: ${game.noShowPenaltyGoalIntervalLabel}'
+            : 'Off',
+      ),
+      if (!noShow)
+        for (final team in game.teams)
+          SettingButton(
+            title: '${team.name} scores no-show goals',
+            buttonText: 'Start',
+            onPressed: () async {
+              final ok = await showChoiceDialog(
+                context,
+                title: 'Start no-show penalty goals?',
+                body: '${team.name} will receive ${game.noShowPenaltyGoalIntervalLabel} while '
+                    'the game timer runs. The current game will be reset.',
+                confirmText: 'Start',
+                dismissible: true,
+              );
+              if (ok == true) game.startNoShowPenaltyGoals(team);
+            },
+          )
+      else
+        SettingButton(
+            title: 'Stop no-show penalty goals', buttonText: 'Stop', onPressed: game.stopNoShowPenaltyGoals),
+      SettingButton(title: 'Disconnect all robots', buttonText: 'Disconnect', onPressed: game.disconnectAll),
+    ]);
+  }
+
+  Widget _bridgeSection(BuildContext context) {
+    final bridge = game.bleBridgeService;
+    final state = bridge.connectionStateNotifier.value;
+    final busy = state == BridgeConnectionState.connected || state == BridgeConnectionState.connecting;
+    return SettingsSection(
+      title: 'BLE Bridge',
+      enabled: bridge.isEnabled,
+      onToggle: (v) => bridge.isEnabled = v,
+      settings: [
+        SettingStatus(
+          title: 'Bridge status',
+          status: switch (state) {
+            BridgeConnectionState.connected => 'Connected',
+            BridgeConnectionState.connecting => 'Connecting...',
+            BridgeConnectionState.error => bridge.lastErrorMessage ?? 'Error',
+            _ => 'Disconnected',
+          },
+        ),
+        SettingInputField(
+          title: useIosBleUuid ? 'Bridge UUID' : 'Bridge MAC',
+          initialValue: bridge.bridgeMacAddress,
+          inputFormatters: [buildBleAddressMask()],
+          maxLength: bleAddressMaxLength,
+          hintText: bleAddressHint,
+          onChanged: (v) => bridge.bridgeMacAddress = v,
+        ),
+        SettingButton(
+          title: 'Scan QR code',
+          buttonText: 'Scan QR',
+          onPressed: () async {
+            final mac = await scanMacQr(context);
+            if (mac == null || !context.mounted) return;
+            final address = await resolveScannedAddress(context, mac);
+            if (address != null) bridge.bridgeMacAddress = address;
+          },
+        ),
+        SettingButton(
+          title: 'Bridge connection',
+          buttonText: bridgeConnectionButtonLabel(state),
+          onPressed: busy ? bridge.disconnect : bridge.connect,
+        ),
+      ],
+    );
+  }
+
+  Widget _mqttSection() {
+    final mqtt = game.mqttService;
+    final state = mqtt.connectionStateNotifier.value;
+    final busy = state == MqttConnectionStateEx.connected || state == MqttConnectionStateEx.connecting;
+    return SettingsSection(
+      title: 'MQTT',
+      enabled: mqtt.isEnabled,
+      onToggle: (v) => mqtt.isEnabled = v,
+      settings: [
+        SettingStatus(
+          title: 'MQTT status',
+          status: switch (state) {
+            MqttConnectionStateEx.connected => 'Connected',
+            MqttConnectionStateEx.connecting => 'Connecting...',
+            MqttConnectionStateEx.error =>
+              mqtt.lastErrorMessage.isNotEmpty ? mqtt.lastErrorMessage : 'Connection error',
+            MqttConnectionStateEx.disconnected => 'Disconnected',
+          },
+        ),
+        SettingInputField(title: 'Server IP', initialValue: mqtt.server, onChanged: (v) => mqtt.server = v),
+        SettingInputField(
+            title: 'Port', initialValue: '${mqtt.port}', onChanged: (v) => mqtt.port = int.tryParse(v)),
+        SettingInputField(title: 'Username', initialValue: mqtt.username, onChanged: (v) => mqtt.username = v),
+        SettingInputField(
+            title: 'Password', isPassword: true, initialValue: mqtt.password, onChanged: (v) => mqtt.password = v),
+        SettingSwitch(
+            title: 'Secure Connection', value: mqtt.secureConnection, onChanged: (v) => mqtt.secureConnection = v),
+        SettingInputField(
+            title: 'Field Number', initialValue: mqtt.fieldNumber, onChanged: (v) => mqtt.topicField = v),
+        SettingButton(
+          title: 'Connect to MQTT',
+          buttonText: busy ? 'Disconnect' : 'Connect',
+          onPressed: busy ? mqtt.disconnect : mqtt.connect,
+        ),
+      ],
+    );
+  }
+
+  Widget _alertsSection() {
+    final vs = game.vibrationService;
+    Widget chips(Set<int> selected, void Function(int) onToggle) => SettingAlertChips(
+        label: 'Alert at (sec remaining)',
+        options: kVibrationAlertOptions,
+        selected: selected,
+        onToggle: onToggle);
+    // Permission is requested lazily, when the user turns an alert on.
+    void requestIfOn(bool on) {
+      if (on) NotificationService.requestPermission();
+    }
+
+    return SettingsSection(title: 'Vibration & Notifications', settings: [
+      SettingSwitch(
+        title: 'Game Timer Vibration',
+        value: vs.gameTimerEnabled,
+        onChanged: (v) {
+          vs.gameTimerEnabled = v;
+          requestIfOn(v);
+        },
+      ),
+      if (vs.gameTimerEnabled) chips(vs.gameTimerAlerts, vs.toggleGameTimerAlert),
+      SettingSwitch(
+        title: 'Damage Timer Vibration',
+        value: vs.damageTimerEnabled,
+        onChanged: (v) {
+          vs.damageTimerEnabled = v;
+          requestIfOn(v);
+        },
+      ),
+      if (vs.damageTimerEnabled) chips(vs.damageTimerAlerts, vs.toggleDamageTimerAlert),
+    ]);
+  }
+
+  Future<void> _setPlayers(BuildContext context, int perTeam) async {
+    game.numberOfPlayers = perTeam;
+    if (perTeam >= 4) {
+      await showInfoDialog(
+        context,
+        title: 'Bluetooth Warning',
+        body: 'You selected ${perTeam * 2} players. This requires ${perTeam * 2} simultaneous '
+            'Bluetooth connections. Some phones cannot support this many connections at once — '
+            'on those devices, some robots may fail to connect.',
+      );
+    }
   }
 }
 
-class _PresetTile extends StatelessWidget {
-  final GamePreset preset;
-  final VoidCallback onLoad;
-  final VoidCallback onDelete;
-
-  const _PresetTile({
-    required this.preset,
-    required this.onLoad,
-    required this.onDelete,
-  });
+class _AboutLine extends StatelessWidget {
+  const _AboutLine(this.text);
+  final String text;
 
   @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4.0),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              preset.name,
-              style: const TextStyle(fontSize: 14),
-            ),
-          ),
-          TextButton(
-            onPressed: onLoad,
-            child: const Text('Load'),
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline, color: Colors.red),
-            onPressed: onDelete,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Text(text, style: const TextStyle(fontSize: 14)),
+      );
 }

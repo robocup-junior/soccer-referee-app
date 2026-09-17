@@ -16,7 +16,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:rcj_scoreboard/main.dart';
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/screens/home.dart';
-import 'package:rcj_scoreboard/screens/widgets/bluetooth_banner.dart';
+import 'package:rcj_scoreboard/widgets/bluetooth_banner.dart';
 import 'package:rcj_scoreboard/widgets/critical_gesture_detector.dart';
 
 void main() {
