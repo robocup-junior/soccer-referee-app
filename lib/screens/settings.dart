@@ -923,15 +923,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ],
                     ),
                   ),
-                  // const Row(
-                  //   mainAxisAlignment: MainAxisAlignment.center,
-                  //   children: [
-                  //     Text(
-                  //         'Created for RoboFuze.com by Martin Faltus 2025 \nVersion 0.9.2',
-                  //         textAlign: TextAlign.center,
-                  //         style: TextStyle(fontSize: 12)),
-                  //   ],
-                  // ),
                 ],
               ),
             ),
@@ -1071,48 +1062,6 @@ class SettingButton extends StatelessWidget {
     );
   }
 }
-
-// // SettingInputField widget for text input fields
-// class SettingInputField extends StatelessWidget {
-//   final String title;
-//   final String initialValue;
-//   final ValueChanged<String> onChanged;
-//   final bool isPassword;
-//
-//   SettingInputField({
-//     required this.title,
-//     required this.initialValue,
-//     required this.onChanged,
-//     this.isPassword = false,
-//   });
-//
-//   @override
-//   Widget build(BuildContext context) {
-//     return Padding(
-//       padding: const EdgeInsets.symmetric(vertical: 8.0),
-//       child: Row(
-//         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-//         children: [
-//           Expanded(flex: 3, child: Text(title)),
-//           Expanded(
-//             flex: 4,
-//             child: TextField(
-//               controller: TextEditingController(text: initialValue),
-//               onChanged: onChanged,
-//               obscureText: isPassword,
-//               style: const TextStyle(color: Colors.white),
-//               decoration: InputDecoration(
-//                 border: OutlineInputBorder(),
-//                 filled: true,
-//                 fillColor: Colors.grey[800],
-//               ),
-//             ),
-//           ),
-//         ],
-//       ),
-//     );
-//   }
-// }
 
 class SettingInputField extends StatefulWidget {
   final String title;
@@ -1368,39 +1317,6 @@ class SettingAlertChips extends StatelessWidget {
     );
   }
 }
-// class SettingStatus extends StatelessWidget {
-//   final String title;
-//   final String status;
-//
-//   SettingStatus({required this.title, required this.status});
-//
-//   @override
-//   Widget build(BuildContext context) {
-//     return Padding(
-//       padding: const EdgeInsets.symmetric(vertical: 8.0),
-//       child: Row(
-//         mainAxisAlignment: MainAxisAlignment.spaceBetween,
-//         children: [
-//           Expanded(
-//             flex: 3,
-//             child: Text(title)
-//           ),
-//           Expanded(
-//             flex: 2,
-//             child: Align(
-//               alignment: Alignment.centerRight,
-//               child: Text(
-//                 status,
-//                 style: const TextStyle(color: Colors.white),
-//                 textAlign: TextAlign.right,
-//               ),
-//             ),
-//           ),
-//         ],
-//       ),
-//     );
-//   }
-// }
 
 class SetItem {
   final int values;

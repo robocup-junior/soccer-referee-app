@@ -458,26 +458,6 @@ class Module with ChangeNotifier {
     play ? _game.changeNumberOfPlaying(1) : _game.changeNumberOfPlaying(-1);
   }
 
-  void playOrDamage() {
-    _clearRestoreSuppress();
-    _lastState = _state;
-    if (_penaltyTime > 0) {
-      _playStatus(false);
-      _state = ModuleState.damage;
-    } else {
-      _playStatus(true);
-      _penaltyTime = 0;
-      _state = ModuleState.play;
-    }
-
-    bleNotify();
-    notifyListeners();
-    // Single-module action (not the simultaneous START/STOP fan-out), so a
-    // scheduled flush is latency-safe and persists it even when the clock is
-    // stopped (e.g. a robot toggled while the cold-resumed clock is frozen).
-    _game.markMatchStateDirtyAndFlush();
-  }
-
   void play() async {
     _clearRestoreSuppress();
     // Clearing or expiring a penalty for a module that was not playing before
@@ -972,49 +952,3 @@ class Module with ChangeNotifier {
   }
 
 }
-
-
-// class BleDeviceHandler {
-//
-//   BluetoothDevice device;
-//   var subscription;
-//
-//
-//   BleDeviceHandler(this.device) {
-//
-//   }
-//
-//   void _registerSubscriber() {
-//     subscription = device.connectionState.listen((BluetoothConnectionState state) async {
-//       debugPrint('BLE device status: $state');
-//       if (state == BluetoothConnectionState.disconnected) {
-//         // 1. typically, start a periodic timer that tries to
-//         //    reconnect, or just call connect() again right now
-//         // 2. you must always re-discover services after disconnection!
-//         String bleStatus = 'Disconnected';
-//         notifyListeners();
-//         debugPrint("disconnect");
-//       } else if (state == BluetoothConnectionState.connected) {
-//         String bleStatus = 'Connect';
-//       }
-//     });
-//     device.cancelWhenDisconnected(subscription, delayed:true, next:true);
-//   }
-//
-//   Future connect() async {
-//     _registerSubscriber();
-//
-//     // Connect to the device
-//     try {
-//       await device.connect();
-//     } catch (e) {
-//       debugPrint('BLE connect error');
-//     }
-//
-//
-//   }
-//
-//
-//
-//
-// }

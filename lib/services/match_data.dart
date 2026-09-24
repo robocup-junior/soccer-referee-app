@@ -18,14 +18,12 @@ String fieldNumberFromVenue(String raw) =>
 
 class Match {
   final String id;
-  final String fieldRaw;
   final String field; // Extracted field number
   final String team1;
   final String team2;
 
   Match({
     required this.id,
-    required this.fieldRaw,
     this.field = '',
     required this.team1,
     required this.team2,
@@ -34,7 +32,6 @@ class Match {
   factory Match.fromJson(Map<String, dynamic> json) {
     return Match(
       id: json['number']?.toString() ?? '', // Safely extract match number as the ID
-      fieldRaw: json['pitch'] as String? ?? '', // Safely extract pitch
       team1: json['team1']?['name'] as String? ?? 'Unknown Team 1', // Safely extract team1 name
       team2: json['team2']?['name'] as String? ?? 'Unknown Team 2', // Safely extract team2 name
       field: fieldNumberFromVenue(
@@ -46,7 +43,6 @@ class Match {
 class MatchDataService {
   String _url = 'https://catigoal.com/rest/v1/RCJI26/matches?format=json';
   String _matchId = '';
-  final String _state = '';
   List<Match> _matches = [];
   Match? _currentMatch;
   final ValueNotifier<String> stateNotifier = ValueNotifier('');
@@ -114,7 +110,6 @@ class MatchDataService {
     }
   }
 
-  String get state => _state;
 
   Future<Match?> loadMatch() async {
     stateNotifier.value = 'Loading matches...';
