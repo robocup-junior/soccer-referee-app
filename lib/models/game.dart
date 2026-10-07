@@ -55,10 +55,10 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   MqttService mqttService = MqttService();
   BleBridgeService bleBridgeService = BleBridgeService();
   final BleAdapterMonitor bleAdapterMonitor = BleAdapterMonitor();
-  MatchDataService matchDataService = MatchDataService();
-  VibrationService vibrationService = VibrationService();
-  WakelockService wakelockService = WakelockService();
-  ScoreboardResultService scoreboardResultService = ScoreboardResultService();
+  final MatchDataService matchDataService = MatchDataService();
+  final VibrationService vibrationService = VibrationService();
+  final WakelockService wakelockService = WakelockService();
+  final ScoreboardResultService scoreboardResultService = ScoreboardResultService();
   late final MatchPersistence persistence = MatchPersistence(_buildSnapshot);
   late final IosMacPairing iosPairing = IosMacPairing(
     moduleById: _moduleById,
@@ -73,7 +73,6 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   bool inGame = false;
   bool isTimeRunning = false;
   int _remainingTime = 0;
-  int _numberOfPlaying = 0;
   Timer? _timer;
   // Wall-clock anchor for the background catch-up in didChangeAppLifecycleState.
   DateTime? _runClockStartedAt;
@@ -452,7 +451,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (_noShowActive) return;
     if (currentStage == MatchStage.fullTime) {
       disconnectAll();
-    } else if (_numberOfPlaying > 0) {
+    } else if (isSomeonePlaying) {
       stopAll(true);
       persistence.markDirtyAndFlush();
     } else {
@@ -699,9 +698,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
   }
 
-  void changeNumberOfPlaying(int delta) {
-    _numberOfPlaying = (_numberOfPlaying + delta).clamp(0, numberOfPlayers * 2);
-    if (_numberOfPlaying < 2) notifyListeners();
+  /// Home only redraws on the none/some-playing edges.
+  void onPlayingChanged() {
+    if (modules.where((m) => m.isPlaying).length < 2) notifyListeners();
   }
 
   // ---- sinks: MQTT + BLE bridge, always published together ----
@@ -777,7 +776,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   int get remainingTime => _remainingTime;
-  bool get isSomeonePlaying => _numberOfPlaying > 0;
+  bool get isSomeonePlaying => modules.any((m) => m.isPlaying);
 
   /// The match clock is running in a half (not the break).
   bool get isGameRunning => isTimeRunning && _inPlayHalf;

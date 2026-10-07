@@ -129,7 +129,7 @@ class Module with ChangeNotifier {
   void _setPlaying(bool playing) {
     if (playing == _isPlaying) return;
     _isPlaying = playing;
-    _game.changeNumberOfPlaying(playing ? 1 : -1);
+    _game.onPlayingChanged();
   }
 
   /// Move to [next], push it to the robot and persist. [flush] schedules a

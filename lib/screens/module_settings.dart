@@ -97,13 +97,11 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
     if (mac == null || !mounted) return;
     final address = await resolveScannedAddress(context, mac);
     if (address == null || !mounted) return;
-    setState(() {
-      _addressController.text = address;
-      if (useIosBleUuid) {
-        _qrResolvedUuid = address;
-        _qrScannedMac = mac;
-      }
-    });
+    _addressController.text = address;
+    if (useIosBleUuid) {
+      _qrResolvedUuid = address;
+      _qrScannedMac = mac;
+    }
   }
 
   Future<void> _toggleScan() async {
@@ -167,10 +165,8 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
         context: context,
         builder: (_) => _SavedDevicesDialog(devices: devices));
     if (selected == null || !mounted) return;
-    setState(() {
-      _addressController.text = selected.macAddress;
-      _labelController.text = selected.label;
-    });
+    _addressController.text = selected.macAddress;
+    _labelController.text = selected.label;
     module.applyPresetConfig(selected.macAddress, selected.label,
         hardwareMac: selected.hardwareMac);
     FlutterBluePlus.stopScan();
