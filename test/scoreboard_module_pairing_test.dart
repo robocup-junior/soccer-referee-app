@@ -216,7 +216,7 @@ void main() {
       expect(module.macAddress, '12345678-1234-1234-1234-1234567890AB');
       expect(module.hardwareMac, 'A1:B2:C3:D4:E5:F6');
       // Cache hit → nothing pending with the resolver.
-      expect(game.iosMacResolver.pendingCount, 0);
+      expect(game.iosPairing.resolver.pendingCount, 0);
 
       game.dispose();
     });
@@ -233,12 +233,12 @@ void main() {
       // fallback enrollment (e.g. a stale cached UUID failing mid-match)
       // must settle to Not found without any scan.
       game.startTimer();
-      game.enrollIosMacResolve(module);
+      game.iosPairing.enroll(module);
       await tester.pump();
 
       expect(module.macAddress, '');
       expect(module.bleStatus, 'Not found');
-      expect(game.iosMacResolver.pendingCount, 0);
+      expect(game.iosPairing.resolver.pendingCount, 0);
 
       game.stopTimer();
       game.dispose();
@@ -257,13 +257,13 @@ void main() {
       expect(module.macAddress, '');
       expect(module.hardwareMac, 'A1:B2:C3:D4:E5:F6');
       expect(module.bleStatus, 'Searching...');
-      expect(game.iosMacResolver.pendingCount, 1);
+      expect(game.iosPairing.resolver.pendingCount, 1);
 
       // Kickoff stops the resolve scanning for the rest of the match and
       // settles the pending slot to Not found (invariant #1).
       game.startTimer();
       expect(module.bleStatus, 'Not found');
-      expect(game.iosMacResolver.pendingCount, 0);
+      expect(game.iosPairing.resolver.pendingCount, 0);
 
       game.stopTimer();
       game.dispose();
@@ -351,7 +351,7 @@ void main() {
       // CoreBluetooth commonly re-issues the SAME identifier after the scan
       // re-observes the module — the resolve must still (re)build the device
       // and connect, not early-return on id equality.
-      game.debugOnIosMacResolved(
+      game.iosPairing.debugOnResolved(
           0, 'AA:AA:AA:AA:AA:01', '12345678-1234-1234-1234-1234567890AB');
 
       expect(module.bleDevice, isNotNull);
@@ -372,14 +372,14 @@ void main() {
 
       final module = teamById(game, 'A').modules[0];
       expect(module.isSearching, isTrue);
-      expect(game.iosMacResolver.pendingCount, 1);
+      expect(game.iosPairing.resolver.pendingCount, 1);
 
       module.bleDisconnect();
       await tester.pump();
 
       expect(module.isSearching, isFalse);
       expect(module.bleStatus, 'Disconnected');
-      expect(game.iosMacResolver.pendingCount, 0);
+      expect(game.iosPairing.resolver.pendingCount, 0);
 
       game.dispose();
       await tester.pump(const Duration(seconds: 10));

@@ -5,7 +5,9 @@
 //   flutter test integration_test/app_smoke_test.dart -d <device-id>
 //
 // These cover what desk widget tests can't fully exercise: the real gesture
-// arena on a real surface, and the Settings → toggle → Home wiring end to end.
+// arena on a real surface, and the single-tap preference → Home wiring (the
+// preference is set on Game directly, as the Settings toggle does; the
+// Settings screen itself is not driven here).
 // (BLE/MQTT hardware paths are intentionally NOT asserted here — those still
 // need a real device + module/broker.)
 
@@ -16,7 +18,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:rcj_scoreboard/main.dart';
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/screens/home.dart';
-import 'package:rcj_scoreboard/screens/widgets/bluetooth_banner.dart';
+import 'package:rcj_scoreboard/widgets/bluetooth_banner.dart';
 import 'package:rcj_scoreboard/widgets/critical_gesture_detector.dart';
 
 void main() {

@@ -21,7 +21,7 @@ import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 import 'package:rcj_scoreboard/models/team.dart';
-import 'package:rcj_scoreboard/screens/home.dart';
+import 'package:rcj_scoreboard/widgets/team_panel.dart';
 import 'package:rcj_scoreboard/services/ble_bridge_service.dart';
 import 'package:rcj_scoreboard/services/match_state_store.dart';
 import 'package:rcj_scoreboard/services/mqtt.dart';
@@ -101,6 +101,11 @@ class _RecordingBleBridgeService extends BleBridgeService {
   final List<String> log;
   int connectCalls = 0;
   int disconnectAfterDrainCalls = 0;
+  bool throwOnDrain = false;
+
+  @override
+  void publishTopic(String topic, String value) =>
+      log.add('bridge:publish:$topic');
 
   @override
   Future<void> connect() async {
@@ -120,6 +125,7 @@ class _RecordingBleBridgeService extends BleBridgeService {
   }) async {
     disconnectAfterDrainCalls++;
     log.add('bridge:disconnectAfterDrain');
+    if (throwOnDrain) throw Exception('bridge teardown exploded');
     final gate = drainGate;
     if (gate != null) {
       await gate.future;
@@ -745,7 +751,7 @@ void main() {
       // A referee START path must cancel the suppression synchronously, so a
       // LATE reconnect after START reflects the real (playing) state instead of
       // sending a stale STOP.
-      m0.playOrDamageAll();
+      m0.playAll(clearPenalty: false);
       expect(m0.suppressNextRestoreNotify, isFalse);
 
       await tester.pump(const Duration(milliseconds: 400)); // drain fan-out
@@ -2562,6 +2568,44 @@ void main() {
       await tester.pump();
     }
 
+    testWidgets('a failing bridge teardown still disconnects MQTT',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      final mqtt = _RecordingMqttService(log);
+      final bridge = _RecordingBleBridgeService(log)..throwOnDrain = true;
+      bridge.connectionStateNotifier.value = BridgeConnectionState.connected;
+      game.mqttService = mqtt;
+      game.bleBridgeService = bridge;
+
+      game.endMatchEarly();
+      await pumpPastTransportTeardownDelay(tester);
+
+      expect(bridge.disconnectAfterDrainCalls, 1);
+      expect(mqtt.disconnectCalls, 1,
+          reason: 'a bridge failure must not leave the field MQTT claimed');
+      await tester.pump(const Duration(seconds: 2));
+      game.dispose();
+    });
+
+    testWidgets('the bridge gets both scores before both colours',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      game.bleBridgeService = _RecordingBleBridgeService(log);
+      await tester.pump(); // let the fake's preference load settle
+
+      game.toggleTeamOrder();
+
+      expect(log.where((e) => e.startsWith('bridge:publish:')).toList(), [
+        'bridge:publish:team1_score',
+        'bridge:publish:team2_score',
+        'bridge:publish:team1_color',
+        'bridge:publish:team2_color',
+      ]);
+      game.dispose();
+    });
+
     testWidgets(
         'tears down connected bridge and MQTT after the final full-time publish',
         (tester) async {
@@ -3488,7 +3532,7 @@ void main() {
       final game = Game();
       await settleLoad(tester);
 
-      await game.clearMatchSnapshot();
+      await game.persistence.clearAndWait();
       await tester.pump();
 
       expect(MatchStateStore(prefs).load(), isNull);
@@ -3509,7 +3553,7 @@ void main() {
 
       // The path the master "START ALL ROBOTS" now uses (playAll(false) ->
       // playOrDamageAll). The penalty branch does not zero the penalty.
-      module.playOrDamageAll();
+      module.playAll(clearPenalty: false);
       expect(module.state, ModuleState.damage);
       expect(module.penaltyTime, 30);
       game.dispose();

@@ -1,6 +1,6 @@
 // test/format_local_kickoff_test.dart
 import 'package:flutter_test/flutter_test.dart';
-import 'package:rcj_scoreboard/screens/home.dart';
+import 'package:rcj_scoreboard/utils/format.dart';
 
 void main() {
   test('null scheduledStart -> null (line omitted)', () {

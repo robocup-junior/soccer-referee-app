@@ -214,9 +214,14 @@ void main() {
     // Every scan returns {} instantly — indistinguishable from an immediate
     // scan failure (BLE off), the hot-loop hazard.
     h.controller.enroll(1, 'AA:BB:CC:DD:EE:FF');
+    // 1 initial round + 3 fast retries. Poll rather than sleep a fixed 20 ms:
+    // under a loaded test runner the 1 ms retry timers can land late.
+    final deadline = DateTime.now().add(const Duration(milliseconds: 500));
+    while (h.scannedBatches.length < 4 && DateTime.now().isBefore(deadline)) {
+      await Future.delayed(const Duration(milliseconds: 5));
+    }
+    // The next round waits out the normal 200 ms cadence, beyond this window.
     await _settle();
-    // 1 initial round + 3 fast retries; the next round waits out the normal
-    // 200 ms cadence, far beyond this window.
     expect(h.scannedBatches.length, 4);
     expect(h.controller.pendingCount, 1);
     h.controller.dispose();

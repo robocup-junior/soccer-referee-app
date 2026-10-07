@@ -2,7 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:rcj_scoreboard/screens/widgets/bluetooth_banner.dart';
+import 'package:rcj_scoreboard/widgets/bluetooth_banner.dart';
 
 void main() {
   Widget wrap(Widget child) => MaterialApp(home: Scaffold(body: child));

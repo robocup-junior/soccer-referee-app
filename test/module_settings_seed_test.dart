@@ -15,6 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/screens/module_settings.dart';
+import 'package:rcj_scoreboard/services/ble_adapter_monitor.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -35,8 +36,12 @@ void main() {
 
   Future<void> pumpScreen(WidgetTester tester, Module module) async {
     await tester.pumpWidget(MaterialApp(
-      home: ChangeNotifierProvider<Module>.value(
-        value: module,
+      home: MultiProvider(
+        providers: [
+          ChangeNotifierProvider<Module>.value(value: module),
+          ChangeNotifierProvider<BleAdapterMonitor>(
+              create: (_) => BleAdapterMonitor(stream: const Stream.empty())),
+        ],
         child: const ModuleSettingsScreen(),
       ),
     ));
