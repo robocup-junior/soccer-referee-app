@@ -166,13 +166,18 @@ class ScoreboardMatchConfig {
             .where((m) => m.isNotEmpty)
             .toList();
 
-    final homeSide = json['home_side'] ??
-        (json['side_order'] is Map
-            ? json['side_order']['home']?.toString().toLowerCase()
-            : null);
+    // Each source is tri-state: an unrecognised value falls through to the
+    // next source instead of deciding the side.
+    bool? sideIsLeft(dynamic side) =>
+        switch (side) { 'left' => true, 'right' => false, _ => null };
+    final sideOrder = json['side_order'];
     final homeIsLeft = switch (json['home_is_left']) {
       bool b => b,
-      _ => switch (homeSide) { 'left' => true, 'right' => false, _ => true },
+      _ => sideIsLeft(json['home_side']) ??
+          (sideOrder is Map
+              ? sideIsLeft(sideOrder['home']?.toString().toLowerCase())
+              : null) ??
+          true,
     };
     final duration = (json['duration_seconds'] as num?)?.toInt() ?? 600;
 

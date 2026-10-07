@@ -170,7 +170,11 @@ class MatchStateStore {
   bool _pendingIsClear = false;
   MatchSnapshot? _pendingSnapshot;
   int _pendingGeneration = 0;
-  Future<void>? _drainFuture;
+  // An explicit flag, not `_drainFuture ??= _runDrain()`: a drain that
+  // finishes without awaiting would clear the slot before `??=` stores the
+  // finished future, latching every later save onto it.
+  bool _draining = false;
+  Future<void> _drainDone = Future.value();
 
   Future<void> save(MatchSnapshot snapshot) {
     _pendingIsClear = false;
@@ -192,9 +196,13 @@ class MatchStateStore {
     return _drain();
   }
 
-  Future<void> _drain() => _drainFuture ??= _runDrain();
+  Future<void> _drain() {
+    if (!_draining) _drainDone = _runDrain();
+    return _drainDone;
+  }
 
   Future<void> _runDrain() async {
+    _draining = true;
     try {
       while (_hasPending) {
         final isClear = _pendingIsClear;
@@ -212,7 +220,7 @@ class MatchStateStore {
         }
       }
     } finally {
-      _drainFuture = null;
+      _draining = false;
     }
   }
 

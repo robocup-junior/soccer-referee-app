@@ -70,30 +70,59 @@ Future<String?> showTextInputDialog(
   required String label,
   required String hint,
   String confirmText = 'Save',
-}) {
-  final controller = TextEditingController();
-  final navigator = Navigator.of(context);
-  return showDialog<String>(
-    context: context,
-    builder: (_) => AlertDialog(
+}) =>
+    showDialog<String>(
+      context: context,
+      builder: (_) => _TextInputDialog(
+          title: title, label: label, hint: hint, confirmText: confirmText),
+    );
+
+/// Owns its controller so it is disposed with the route, after the exit
+/// animation (disposing on pop would tear it out from under the TextField).
+class _TextInputDialog extends StatefulWidget {
+  const _TextInputDialog(
+      {required this.title,
+      required this.label,
+      required this.hint,
+      required this.confirmText});
+  final String title, label, hint, confirmText;
+
+  @override
+  State<_TextInputDialog> createState() => _TextInputDialogState();
+}
+
+class _TextInputDialogState extends State<_TextInputDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final navigator = Navigator.of(context);
+    return AlertDialog(
       backgroundColor: AppColors.sheet,
-      title: Text(title, style: _white),
+      title: Text(widget.title, style: _white),
       content: TextField(
-        controller: controller,
+        controller: _controller,
         autofocus: true,
         style: _white,
-        decoration: InputDecoration(labelText: label, hintText: hint),
+        decoration:
+            InputDecoration(labelText: widget.label, hintText: widget.hint),
         onSubmitted: navigator.pop,
       ),
       actions: [
         TextButton(
             onPressed: () => navigator.pop(null), child: const Text('Cancel')),
         TextButton(
-            onPressed: () => navigator.pop(controller.text),
-            child: Text(confirmText)),
+            onPressed: () => navigator.pop(_controller.text),
+            child: Text(widget.confirmText)),
       ],
-    ),
-  );
+    );
+  }
 }
 
 /// Dark modal bottom sheet used by the Home editors (team, clock).
