@@ -101,6 +101,11 @@ class _RecordingBleBridgeService extends BleBridgeService {
   final List<String> log;
   int connectCalls = 0;
   int disconnectAfterDrainCalls = 0;
+  bool throwOnDrain = false;
+
+  @override
+  void publishTopic(String topic, String value) =>
+      log.add('bridge:publish:$topic');
 
   @override
   Future<void> connect() async {
@@ -120,6 +125,7 @@ class _RecordingBleBridgeService extends BleBridgeService {
   }) async {
     disconnectAfterDrainCalls++;
     log.add('bridge:disconnectAfterDrain');
+    if (throwOnDrain) throw Exception('bridge teardown exploded');
     final gate = drainGate;
     if (gate != null) {
       await gate.future;
@@ -2561,6 +2567,44 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
       await tester.pump();
     }
+
+    testWidgets('a failing bridge teardown still disconnects MQTT',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      final mqtt = _RecordingMqttService(log);
+      final bridge = _RecordingBleBridgeService(log)..throwOnDrain = true;
+      bridge.connectionStateNotifier.value = BridgeConnectionState.connected;
+      game.mqttService = mqtt;
+      game.bleBridgeService = bridge;
+
+      game.endMatchEarly();
+      await pumpPastTransportTeardownDelay(tester);
+
+      expect(bridge.disconnectAfterDrainCalls, 1);
+      expect(mqtt.disconnectCalls, 1,
+          reason: 'a bridge failure must not leave the field MQTT claimed');
+      await tester.pump(const Duration(seconds: 2));
+      game.dispose();
+    });
+
+    testWidgets('the bridge gets both scores before both colours',
+        (tester) async {
+      final game = await loadScoreboardFixture(tester);
+      final log = <String>[];
+      game.bleBridgeService = _RecordingBleBridgeService(log);
+      await tester.pump(); // let the fake's preference load settle
+
+      game.toggleTeamOrder();
+
+      expect(log.where((e) => e.startsWith('bridge:publish:')).toList(), [
+        'bridge:publish:team1_score',
+        'bridge:publish:team2_score',
+        'bridge:publish:team1_color',
+        'bridge:publish:team2_color',
+      ]);
+      game.dispose();
+    });
 
     testWidgets(
         'tears down connected bridge and MQTT after the final full-time publish',
