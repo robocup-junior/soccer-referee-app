@@ -55,14 +55,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   MqttService mqttService = MqttService();
   BleBridgeService bleBridgeService = BleBridgeService();
   final BleAdapterMonitor bleAdapterMonitor = BleAdapterMonitor();
-  MatchDataService matchDataService = MatchDataService();
-  VibrationService vibrationService = VibrationService();
-  WakelockService wakelockService = WakelockService();
-  ScoreboardResultService scoreboardResultService = ScoreboardResultService();
+  final MatchDataService matchDataService = MatchDataService();
+  final VibrationService vibrationService = VibrationService();
+  final WakelockService wakelockService = WakelockService();
+  final ScoreboardResultService scoreboardResultService =
+      ScoreboardResultService();
   late final MatchPersistence persistence = MatchPersistence(_buildSnapshot);
   late final IosMacPairing iosPairing = IosMacPairing(
     moduleById: _moduleById,
-    canScanNow: () => !_isGameRunning && currentStage != MatchStage.fullTime,
+    canScanNow: () => !isGameRunning && currentStage != MatchStage.fullTime,
   );
   final ScoreboardBinding _sb = ScoreboardBinding();
   SharedPreferences? _prefs;
@@ -70,12 +71,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   // ---- match state ----
   List<Team> teams = [];
   MatchStage currentStage = MatchStage.firstHalf;
-  String timerButtonText = 'START';
   bool inGame = false;
   bool isTimeRunning = false;
-  bool _isGameRunning = false;
   int _remainingTime = 0;
-  int _numberOfPlaying = 0;
   Timer? _timer;
   // Wall-clock anchor for the background catch-up in didChangeAppLifecycleState.
   DateTime? _runClockStartedAt;
@@ -95,8 +93,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   bool _pendingSingleTapWrite = false;
 
   // ---- no-show penalty goals (#8) ----
-  bool _noShowActive = false;
   String? _noShowScoringTeamId;
+  bool get _noShowActive => _noShowScoringTeamId != null;
   int _lastNoShowGoalElapsed = 0;
 
   // ---- cold resume ----
@@ -158,9 +156,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   Future<void> _loadPrefs() async {
     final prefs = _prefs = await SharedPreferences.getInstance();
     persistence.attach(MatchStateStore(prefs));
-    _periodTime = prefs.getInt(_periodTimeKey) ?? _defaultPeriodTime;
-    _halfTimeDuration =
-        prefs.getInt(_halfTimeDurationKey) ?? _defaultHalfTimeDuration;
+    _loadTimingDefaults();
     _numberOfPlayers =
         (prefs.getInt(_numberOfPlayersKey) ?? _defaultPlayersPerTeam)
             .clamp(1, _maxPlayers);
@@ -193,6 +189,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (_pendingResume == null) _syncScoreboardModulePairing(force: true);
     _maybeRequestNotificationPermission();
     notifyListeners();
+  }
+
+  void _loadTimingDefaults() {
+    _periodTime = _prefs?.getInt(_periodTimeKey) ?? _defaultPeriodTime;
+    _halfTimeDuration =
+        _prefs?.getInt(_halfTimeDurationKey) ?? _defaultHalfTimeDuration;
   }
 
   void _maybeFireResumePrompt() {
@@ -236,10 +238,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   static MatchStage _stageFromName(String name) => MatchStage.values
       .firstWhere((s) => s.name == name, orElse: () => MatchStage.firstHalf);
 
-  int getScore(String team, {bool oppositeTeam = false}) => teams
-      .firstWhere((t) => oppositeTeam ? t.id != team : t.id == team,
-          orElse: () => throw Exception('Team not found'))
-      .score;
+  int getScore(String team, {bool oppositeTeam = false}) =>
+      teams.firstWhere((t) => (t.id == team) != oppositeTeam).score;
 
   // ---- match lifecycle ----
 
@@ -248,9 +248,6 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   void gameInit({bool resetModules = true}) {
     currentStage = MatchStage.firstHalf;
     _remainingTime = periodTime;
-    isTimeRunning = false;
-    _isGameRunning = false;
-    timerButtonText = 'START';
     inGame = false;
     iosPairing.resolver.reset();
     _sb.resetForNewMatch();
@@ -275,7 +272,6 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _timer?.cancel();
     inGame = true;
     if (_inPlayHalf) {
-      _isGameRunning = true;
       // Kickoff: no more iOS resolve scans for the rest of the match (a scan
       // competes with the radio used for START/STOP, invariant #1).
       if (useIosBleUuid) iosPairing.resolver.stopForMatch();
@@ -291,13 +287,16 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   void stopTimer() {
-    _isGameRunning = false;
+    _haltClock();
+    notifyListeners();
+    persistence.markDirtyAndFlush();
+  }
+
+  void _haltClock() {
     isTimeRunning = false;
     _timer?.cancel();
     _runClockStartedAt = null;
     _runClockStartRemainingTime = null;
-    notifyListeners();
-    persistence.markDirtyAndFlush();
   }
 
   void _tickTimer() {
@@ -312,21 +311,17 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
 
     if (_remainingTime <= 0) {
-      _isGameRunning = false;
-      isTimeRunning = false;
-      _timer?.cancel();
+      _haltClock();
       final robotsIdle = _noShowActive;
       switch (currentStage) {
         case MatchStage.firstHalf:
           currentStage = MatchStage.halfTime;
           _remainingTime = halfTimeDuration;
           startTimer();
-          timerButtonText = 'SKIP';
           if (!robotsIdle) {
             halfTimeAll();
             onRequestSwitchTeamOrderDialog?.call();
           }
-          persistence.markDirtyAndFlush();
         case MatchStage.halfTime:
           _startSecondHalf(robotsIdle: robotsIdle);
         case MatchStage.secondHalf:
@@ -353,7 +348,6 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _lastNoShowGoalElapsed = 0;
     // Modules parked in halfTime need the forced STOP dispatch.
     if (!robotsIdle) stopAll(true, force: true);
-    timerButtonText = 'START';
     persistence.markDirtyAndFlush();
   }
 
@@ -367,7 +361,6 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
       stopAll(true, force: forceStop);
       gameOverAll();
     }
-    timerButtonText = 'REPEAT';
     _enterFullTimeResultReview();
     // Stop the OS autoConnect from chasing modules powered down for good.
     disconnectInactiveModules();
@@ -423,21 +416,15 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     switch (currentStage) {
       case MatchStage.firstHalf:
       case MatchStage.secondHalf:
-        if (_isGameRunning) {
+        if (isGameRunning) {
           stopTimer();
-          timerButtonText = 'START';
           if (!_noShowActive) stopAll(false);
         } else {
-          timerButtonText = 'STOP';
           startTimer();
           if (!_noShowActive) playAll(clearPenalties: false);
         }
       case MatchStage.halfTime: // SKIP
-        _isGameRunning = false;
-        isTimeRunning = false;
-        _timer?.cancel();
-        _runClockStartedAt = null;
-        _runClockStartRemainingTime = null;
+        _haltClock();
         _startSecondHalf(robotsIdle: _noShowActive);
         _broadcastStageAndTime();
         notifyListeners();
@@ -471,14 +458,11 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (_noShowActive) return;
     if (currentStage == MatchStage.fullTime) {
       disconnectAll();
-    } else if (_numberOfPlaying > 0) {
+    } else if (isSomeonePlaying) {
       stopAll(true);
       persistence.markDirtyAndFlush();
     } else {
-      if (!_isGameRunning && _inPlayHalf) {
-        startTimer();
-        timerButtonText = 'STOP';
-      }
+      if (!isTimeRunning && _inPlayHalf) startTimer();
       // Penalty-aware, like the central START: never zero a live penalty.
       playAll(clearPenalties: false);
     }
@@ -500,35 +484,27 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   bool get noShowPenaltyGoalsActive => _noShowActive;
   String get noShowPenaltyScoringTeamName =>
       _teamById(_noShowScoringTeamId)?.name ?? '';
-  String get noShowPenaltyGoalIntervalLabel {
-    if (_noShowGoalInterval % 60 != 0) return '1 goal/$_noShowGoalInterval sec';
-    const minutes = _noShowGoalInterval ~/ 60;
-    return minutes == 1 ? '1 goal/min' : '1 goal/$minutes min';
-  }
+  String get noShowPenaltyGoalIntervalLabel =>
+      '1 goal/$_noShowGoalInterval sec';
 
   void startNoShowPenaltyGoals(Team scoringTeam) {
     gameInit(resetModules: false);
-    _noShowActive = true;
     _noShowScoringTeamId = scoringTeam.id;
-    _lastNoShowGoalElapsed = 0;
-    timerButtonText = 'STOP';
     startTimer();
   }
 
   void stopNoShowPenaltyGoals() {
     _resetNoShowPenaltyGoals();
-    timerButtonText = 'START';
     stopTimer();
   }
 
   void _resetNoShowPenaltyGoals() {
-    _noShowActive = false;
     _noShowScoringTeamId = null;
     _lastNoShowGoalElapsed = 0;
   }
 
   void _maybeAwardNoShowPenaltyGoal() {
-    if (!_noShowActive || !_isGameRunning || !_inPlayHalf) return;
+    if (!_noShowActive || !isGameRunning) return;
     final team = _teamById(_noShowScoringTeamId);
     if (team == null) return;
     final elapsed = periodTime - _remainingTime;
@@ -729,9 +705,9 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
   }
 
-  void changeNumberOfPlaying(int delta) {
-    _numberOfPlaying = (_numberOfPlaying + delta).clamp(0, numberOfPlayers * 2);
-    if (_numberOfPlaying < 2) notifyListeners();
+  /// Home only redraws on the none/some-playing edges.
+  void onPlayingChanged() {
+    if (modules.where((m) => m.isPlaying).length < 2) notifyListeners();
   }
 
   // ---- sinks: MQTT + BLE bridge, always published together ----
@@ -814,9 +790,16 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   int get remainingTime => _remainingTime;
-  bool get isSomeonePlaying => _numberOfPlaying > 0;
-  bool get isTimerRunning => isTimeRunning;
-  bool get isGameRunning => _isGameRunning;
+  bool get isSomeonePlaying => modules.any((m) => m.isPlaying);
+
+  /// The match clock is running in a half (not the break).
+  bool get isGameRunning => isTimeRunning && _inPlayHalf;
+
+  String get timerButtonText => switch (currentStage) {
+        MatchStage.halfTime => 'SKIP',
+        MatchStage.fullTime => 'REPEAT',
+        _ => isTimeRunning ? 'STOP' : 'START',
+      };
 
   /// No enabled module connected: a module double-tap records a penalty
   /// directly instead of "starting" a robot that does not exist (#22).

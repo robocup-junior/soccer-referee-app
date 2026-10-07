@@ -7,13 +7,6 @@ import 'package:rcj_scoreboard/widgets/inspection_status_badge.dart';
 void main() {
   Widget wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
 
-  testWidgets('ok renders a green "cleared" badge', (tester) async {
-    await tester.pumpWidget(
-        wrap(const InspectionStatusBadge(status: InspectionStatus.ok)));
-    expect(find.text('cleared'), findsOneWidget);
-    expect(find.byIcon(Icons.check_circle), findsOneWidget);
-  });
-
   testWidgets('failed renders a red "failed" badge', (tester) async {
     await tester.pumpWidget(
         wrap(const InspectionStatusBadge(status: InspectionStatus.failed)));

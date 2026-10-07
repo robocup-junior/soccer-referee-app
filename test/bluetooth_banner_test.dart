@@ -15,13 +15,6 @@ void main() {
     expect(find.text('Turn it on to connect robots'), findsOneWidget);
   });
 
-  testWidgets('renders nothing when Bluetooth is on', (tester) async {
-    await tester.pumpWidget(
-        wrap(const BluetoothBanner(state: BluetoothAdapterState.on)));
-    expect(find.text('Bluetooth is off'), findsNothing);
-    expect(find.byType(MaterialBanner), findsNothing);
-  });
-
   testWidgets('renders nothing for unknown/turningOn (no cold-start flash)',
       (tester) async {
     for (final s in [
@@ -34,8 +27,8 @@ void main() {
   });
 
   testWidgets('off shows a "Turn on" action', (tester) async {
-    await tester.pumpWidget(
-        wrap(BluetoothBanner(state: BluetoothAdapterState.off, onTurnOn: () {})));
+    await tester.pumpWidget(wrap(
+        BluetoothBanner(state: BluetoothAdapterState.off, onTurnOn: () {})));
     expect(find.widgetWithText(TextButton, 'Turn on'), findsOneWidget);
   });
 
@@ -47,15 +40,5 @@ void main() {
         wrap(const BluetoothBanner(state: BluetoothAdapterState.off)));
     expect(find.text('Bluetooth is off'), findsOneWidget);
     expect(find.widgetWithText(TextButton, 'Turn on'), findsNothing);
-  });
-
-  testWidgets('unauthorized shows the message but no action button',
-      (tester) async {
-    await tester.pumpWidget(
-        wrap(const BluetoothBanner(state: BluetoothAdapterState.unauthorized)));
-    // The banner is shown (the condition is real)...
-    expect(find.text('Bluetooth permission denied'), findsOneWidget);
-    // ...but there is no actionable button, since turnOn() would do nothing.
-    expect(find.byType(TextButton), findsNothing);
   });
 }

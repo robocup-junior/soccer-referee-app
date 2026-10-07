@@ -24,21 +24,13 @@ class HttpStatusException implements Exception {
 /// Classify a caught error by type into a short, fixed user-facing message.
 /// The raw error is for debugPrint only: it can be a verbose multi-line
 /// PlatformException that overflows a status label.
-ErrorInfo describeError(Object error) => switch (error) {
-      HttpStatusException(:final statusCode) => ErrorInfo(
-          'Server returned $statusCode',
-          hint: 'Check the match-data URL in settings'),
-      TimeoutException() => const ErrorInfo('Connection timed out',
-          hint: 'Move closer or check the device is powered'),
-      SocketException() => const ErrorInfo('Network error: unable to connect',
-          hint: 'Check the network / Wi-Fi connection'),
-      FormatException() => const ErrorInfo('Unexpected response format',
-          hint: 'Check the match-data URL in settings'),
-      FlutterBluePlusException() => const ErrorInfo(
-          'Bluetooth connection failed',
-          hint: 'Move closer, re-power the robot, or re-scan'),
-      _ => const ErrorInfo('Connection failed',
-          hint: 'Check the address and that the device is powered'),
+String describeError(Object error) => switch (error) {
+      HttpStatusException(:final statusCode) => 'Server returned $statusCode',
+      TimeoutException() => 'Connection timed out',
+      SocketException() => 'Network error: unable to connect',
+      FormatException() => 'Unexpected response format',
+      FlutterBluePlusException() => 'Bluetooth connection failed',
+      _ => 'Connection failed',
     };
 
 /// Adapter states in which robots cannot be connected.

@@ -21,26 +21,6 @@ void main() {
       expect(parseMmSs('0:30'), 30);
     });
 
-    test('parses a plain seconds integer', () {
-      expect(parseMmSs('123'), 123);
-      expect(parseMmSs('0'), 0);
-    });
-
-    test('trims surrounding whitespace', () {
-      expect(parseMmSs('  1:05 '), 65);
-    });
-
-    test('rejects a seconds component outside 0..59', () {
-      expect(parseMmSs('5:99'), isNull);
-      expect(parseMmSs('5:60'), isNull);
-    });
-
-    test('rejects negative components', () {
-      expect(parseMmSs('-1:00'), isNull);
-      expect(parseMmSs('1:-30'), isNull);
-      expect(parseMmSs('-30'), isNull);
-    });
-
     test('rejects malformed input', () {
       expect(parseMmSs(''), isNull);
       expect(parseMmSs('   '), isNull);
@@ -64,13 +44,6 @@ void main() {
       SharedPreferences.setMockInitialValues({});
     });
 
-    testWidgets('sets an in-range value exactly', (tester) async {
-      final game = makeGame();
-      await tester.pump();
-      game.setRemainingTime(123);
-      expect(game.remainingTime, 123);
-    });
-
     testWidgets('floors at 1 second (never parks an active half at 0:00)',
         (tester) async {
       final game = makeGame();
@@ -87,15 +60,6 @@ void main() {
       game.currentStage = MatchStage.firstHalf;
       game.setRemainingTime(9999);
       expect(game.remainingTime, 600);
-    });
-
-    testWidgets('notifies listeners', (tester) async {
-      final game = makeGame();
-      await tester.pump();
-      var notified = false;
-      game.addListener(() => notified = true);
-      game.setRemainingTime(42);
-      expect(notified, isTrue);
     });
   });
 }

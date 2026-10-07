@@ -10,7 +10,7 @@ import 'package:rcj_scoreboard/services/match_state_store.dart';
 ///  * [markDirtyAndFlush] schedules the snapshot build + write on a microtask,
 ///    for discrete events off the hot path (label edit, penalty, score).
 ///
-/// Persistence is a no-op until [attach] and while [suppressed] (bootstrap,
+/// Persistence is a no-op until [attach] and while suppressed (bootstrap,
 /// reset and the multi-step restore must not write partial snapshots).
 class MatchPersistence {
   MatchPersistence(this._buildSnapshot);
@@ -18,26 +18,26 @@ class MatchPersistence {
   final MatchSnapshot Function() _buildSnapshot;
   MatchStateStore? _store;
   bool _dirty = false;
-  bool suppressed = false;
+  bool _suppressed = false;
 
   void attach(MatchStateStore store) => _store = store;
 
   MatchSnapshot? load() => _store?.load();
 
   void markDirty() {
-    if (suppressed || _store == null) return;
+    if (_suppressed || _store == null) return;
     _dirty = true;
   }
 
   void markDirtyAndFlush() {
-    if (suppressed || _store == null) return;
+    if (_suppressed || _store == null) return;
     _dirty = true;
     scheduleMicrotask(flush);
   }
 
   /// Write the snapshot now if anything is dirty.
   void flush() {
-    if (suppressed || !_dirty) return;
+    if (_suppressed || !_dirty) return;
     final store = _store;
     if (store == null) return;
     _dirty = false;
@@ -45,15 +45,12 @@ class MatchPersistence {
   }
 
   /// Force a write of the current state (marks dirty first).
-  void flushNow() {
-    markDirty();
-    flush();
-  }
+  void flushNow() => unawaited(flushNowAndWait());
 
   /// Force a write and wait for it to land; for paths whose correctness
   /// depends on durability (never on the robot hot path).
   Future<void> flushNowAndWait() async {
-    if (suppressed) return;
+    if (_suppressed) return;
     final store = _store;
     if (store == null) return;
     _dirty = false;
@@ -61,10 +58,7 @@ class MatchPersistence {
   }
 
   /// Tombstone the snapshot (match over / discarded / replaced).
-  void clear() {
-    _dirty = false;
-    unawaited(_store?.clear());
-  }
+  void clear() => unawaited(clearAndWait());
 
   Future<void> clearAndWait() async {
     _dirty = false;
@@ -73,11 +67,11 @@ class MatchPersistence {
 
   /// Run [body] with persistence suppressed, then re-enable it.
   void suppress(void Function() body) {
-    suppressed = true;
+    _suppressed = true;
     try {
       body();
     } finally {
-      suppressed = false;
+      _suppressed = false;
     }
   }
 }

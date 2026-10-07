@@ -159,8 +159,7 @@ class _ScoreboardResultReviewScreenState
                       // always single-tap.
                       child: CriticalButton(
                         singleTap: true,
-                        onAction:
-                            _submitting ? () {} : () => unawaited(_submit()),
+                        onAction: () => unawaited(_submit()),
                         style: ElevatedButton.styleFrom(
                           backgroundColor: AppColors.green,
                           foregroundColor: Colors.white,

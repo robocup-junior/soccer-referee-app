@@ -83,7 +83,7 @@ class MatchDataService {
           match == null ? 'Match not found' : 'Match ID $_matchId loaded';
       return match;
     } catch (e) {
-      stateNotifier.value = describeError(e).message;
+      stateNotifier.value = describeError(e);
       debugPrint('Error loading matches: $e');
       return null;
     }

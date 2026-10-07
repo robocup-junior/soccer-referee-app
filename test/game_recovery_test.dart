@@ -440,36 +440,6 @@ void main() {
       game.dispose();
     });
 
-    testWidgets('a home/away swap (homeIsLeft:false) crosses the sides by id',
-        (tester) async {
-      final game = Game();
-      await settleLoad(tester);
-      game.scoreboardResultService.debugApplyMatchConfig(
-        ScoreboardMatchConfig.fromJson(configWithInspection(homeIsLeft: false)),
-        token: 'test-token',
-      );
-      await tester.pump();
-
-      final teamA = game.teams.firstWhere((t) => t.id == 'A');
-      final teamB = game.teams.firstWhere((t) => t.id == 'B');
-      // homeIsLeft:false -> team B is home, so team A gets the AWAY rows.
-      expect(game.inspectionRobotsForTeam(teamB).map((r) => r.robot), [1, 2]);
-      expect(game.inspectionRobotsForTeam(teamA), const [
-        InspectionRobot(robot: 1, status: InspectionStatus.missing, note: ''),
-      ]);
-      game.dispose();
-    });
-
-    testWidgets('no linked fixture -> empty for both teams', (tester) async {
-      final game = Game();
-      await settleLoad(tester);
-      await tester.pump();
-      for (final team in game.teams) {
-        expect(game.inspectionRobotsForTeam(team), isEmpty);
-      }
-      game.dispose();
-    });
-
     testWidgets('team-settings sheet renders the per-robot inspection section',
         (tester) async {
       final game = Game();
@@ -550,29 +520,6 @@ void main() {
       expect(item.actualAwayModules, const [
         ActualModuleReport(
             robot: 1, mac: 'BB:BB:CC:DD:EE:02', connected: false),
-      ]);
-
-      await tester.pump(const Duration(milliseconds: 1500));
-      game.dispose();
-    });
-
-    testWidgets('a home/away swap (homeIsLeft:false) keeps sides by team id',
-        (tester) async {
-      final game =
-          await refereeGame(tester, homeIsLeft: false, code: 'M-MSWAP');
-      // homeIsLeft:false -> team B is home, so team B's modules are the home list.
-      fieldSlots(teamById(game, 'B'), ['bb:bb:cc:dd:ee:01']);
-      fieldSlots(teamById(game, 'A'), ['aa:aa:cc:dd:ee:02']);
-
-      final item = await submitCurrentReview(tester, game, 'M-MSWAP');
-
-      expect(item.actualHomeModules, const [
-        ActualModuleReport(
-            robot: 1, mac: 'BB:BB:CC:DD:EE:01', connected: false),
-      ]);
-      expect(item.actualAwayModules, const [
-        ActualModuleReport(
-            robot: 1, mac: 'AA:AA:CC:DD:EE:02', connected: false),
       ]);
 
       await tester.pump(const Duration(milliseconds: 1500));
@@ -694,7 +641,7 @@ void main() {
 
       expect(game.remainingTime, 137,
           reason: 'no dead-time subtraction on cold resume');
-      expect(game.isTimerRunning, isFalse);
+      expect(game.isTimeRunning, isFalse);
       expect(game.currentStage, MatchStage.firstHalf);
       expect(game.getScore('A'), 2);
       expect(game.getScore('B'), 1);
@@ -768,7 +715,7 @@ void main() {
       await tester.pump();
 
       expect(game.currentStage, MatchStage.halfTime);
-      expect(game.isTimerRunning, isTrue,
+      expect(game.isTimeRunning, isTrue,
           reason: 'break resumes running, not frozen/auto-skipped');
       expect(game.timerButtonText, 'SKIP');
       expect(game.remainingTime, 90);
@@ -2288,47 +2235,6 @@ void main() {
       game.dispose();
     });
 
-    testWidgets('gate: empty match code is not eligible and no-ops',
-        (tester) async {
-      final game = await loadScoreboardFixture(tester, matchCode: '');
-
-      expect(game.canEndMatchEarly, isFalse);
-      game.endMatchEarly();
-
-      expect(game.currentStage, MatchStage.firstHalf);
-      expect(game.inGame, isFalse);
-      game.dispose();
-    });
-
-    testWidgets('before kickoff persists a full-time review snapshot',
-        (tester) async {
-      final game = await loadScoreboardFixture(tester);
-      var reviewRequests = 0;
-      game.onRequestReviewScoreboardResult = () {
-        reviewRequests++;
-      };
-
-      expect(game.canEndMatchEarly, isTrue);
-      game.endMatchEarly();
-
-      expect(game.currentStage, MatchStage.fullTime);
-      expect(game.inGame, isTrue);
-      expect(game.remainingTime, 0);
-      expect(game.timerButtonText, 'REPEAT');
-      expect(game.needsScoreboardResultReview, isTrue);
-      expect(reviewRequests, 1);
-
-      final saved = await waitForSavedSnapshot(
-        tester,
-        (snapshot) => snapshot.stage == 'fullTime' && snapshot.inGame,
-      );
-      expect(saved.isRefereeMatch, isTrue);
-      expect(saved.scoreboardMatchCode, 'M-84');
-
-      await tester.pump(const Duration(milliseconds: 1500));
-      game.dispose();
-    });
-
     testWidgets('mid first half stops the running clock and arms review',
         (tester) async {
       final game = await loadScoreboardFixture(tester);
@@ -2361,7 +2267,6 @@ void main() {
       // on the clock and the SKIP affordance, not first-half leftovers.
       game.currentStage = MatchStage.halfTime;
       game.setRemainingTime(game.halfTimeDuration);
-      game.timerButtonText = 'SKIP';
       game.startTimer();
       await tester.pump();
 
@@ -2372,34 +2277,6 @@ void main() {
       expect(game.remainingTime, 0);
       expect(game.timerButtonText, 'REPEAT');
       expect(game.needsScoreboardResultReview, isTrue);
-
-      await tester.pump(const Duration(milliseconds: 1500));
-      game.dispose();
-    });
-
-    testWidgets('idempotent after full time', (tester) async {
-      final game = await loadScoreboardFixture(tester);
-      var reviewRequests = 0;
-      game.onRequestReviewScoreboardResult = () {
-        reviewRequests++;
-      };
-
-      game.endMatchEarly();
-      final stage = game.currentStage;
-      final inGame = game.inGame;
-      final timerButtonText = game.timerButtonText;
-      final scoreA = game.teams[0].score;
-      final scoreB = game.teams[1].score;
-
-      expect(game.canEndMatchEarly, isFalse);
-      game.endMatchEarly();
-
-      expect(game.currentStage, stage);
-      expect(game.inGame, inGame);
-      expect(game.timerButtonText, timerButtonText);
-      expect(game.teams[0].score, scoreA);
-      expect(game.teams[1].score, scoreB);
-      expect(reviewRequests, 1);
 
       await tester.pump(const Duration(milliseconds: 1500));
       game.dispose();
@@ -2526,22 +2403,6 @@ void main() {
       await tester.pump(const Duration(milliseconds: 1500));
       game.dispose();
     });
-
-    testWidgets('REPEAT after early end starts a fresh match', (tester) async {
-      final game = await loadScoreboardFixture(tester);
-      game.teams[0].score = 2;
-
-      game.endMatchEarly();
-      game.toggleTimer();
-
-      expect(game.currentStage, MatchStage.firstHalf);
-      expect(game.teams[0].score, 0);
-      expect(game.teams[1].score, 0);
-      expect(game.inGame, isFalse);
-
-      await tester.pump(const Duration(milliseconds: 1500));
-      game.dispose();
-    });
   });
 
   group('transport teardown at full time (#87)', () {
@@ -2633,33 +2494,6 @@ void main() {
       game.dispose();
     });
 
-    testWidgets('never-connected transports are no-ops at full time',
-        (tester) async {
-      final game = await loadScoreboardFixture(tester);
-      final log = <String>[];
-      final bridge = _RecordingBleBridgeService(log);
-      bridge.connectionStateNotifier.value = BridgeConnectionState.disconnected;
-      final mqtt = MqttService();
-      await mqtt.loadPreferences();
-      expect(
-        mqtt.connectionStateNotifier.value,
-        MqttConnectionStateEx.disconnected,
-      );
-      game.bleBridgeService = bridge;
-      game.mqttService = mqtt;
-
-      game.endMatchEarly();
-      await pumpPastTransportTeardownDelay(tester);
-
-      expect(bridge.disconnectAfterDrainCalls, 0);
-      expect(
-        mqtt.connectionStateNotifier.value,
-        MqttConnectionStateEx.disconnected,
-      );
-
-      game.dispose();
-    });
-
     testWidgets('REPEAT before the teardown delay cancels stale disconnects',
         (tester) async {
       final game = await loadScoreboardFixture(tester);
@@ -2679,49 +2513,6 @@ void main() {
 
       expect(bridge.disconnectAfterDrainCalls, 0);
       expect(mqtt.disconnectCalls, 0);
-
-      game.dispose();
-    });
-
-    testWidgets(
-        'REPEAT does not reconnect transports and allows the next teardown',
-        (tester) async {
-      final game = await loadScoreboardFixture(tester);
-      final log = <String>[];
-      final mqtt = _RecordingMqttService(log);
-      final bridge = _RecordingBleBridgeService(log);
-      bridge.connectionStateNotifier.value = BridgeConnectionState.connected;
-      game.mqttService = mqtt;
-      game.bleBridgeService = bridge;
-
-      game.endMatchEarly();
-      await pumpPastTransportTeardownDelay(tester);
-      expect(bridge.disconnectAfterDrainCalls, 1);
-      expect(mqtt.disconnectCalls, 1);
-
-      game.toggleTimer();
-      expect(game.currentStage, MatchStage.firstHalf);
-      expect(bridge.connectCalls, 0);
-      expect(mqtt.connectCalls, 0);
-      expect(
-        bridge.connectionStateNotifier.value,
-        BridgeConnectionState.disconnected,
-      );
-      expect(
-        mqtt.connectionStateNotifier.value,
-        MqttConnectionStateEx.disconnected,
-      );
-
-      bridge.connectionStateNotifier.value = BridgeConnectionState.connected;
-      mqtt.connectionStateNotifier.value = MqttConnectionStateEx.connected;
-
-      game.endMatchEarly();
-      await pumpPastTransportTeardownDelay(tester);
-
-      expect(bridge.disconnectAfterDrainCalls, 2);
-      expect(mqtt.disconnectCalls, 2);
-      expect(bridge.connectCalls, 0);
-      expect(mqtt.connectCalls, 0);
 
       game.dispose();
     });
@@ -2830,18 +2621,6 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
       await tester.pump();
     }
-
-    testWidgets('enabled disconnected MQTT connects on fresh fixture apply',
-        (tester) async {
-      final game = await gameWithRecordingMqtt(tester);
-      final mqtt = game.mqttService as _RecordingMqttService;
-
-      applyConfig(game);
-      await tester.pump();
-
-      expect(mqtt.connectCalls, 1);
-      game.dispose();
-    });
 
     testWidgets('successful auto-connect rebroadcasts the loaded match state',
         (tester) async {

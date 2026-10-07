@@ -80,14 +80,9 @@ extension GameResume on Game {
 
       _remainingTime = snapshot.remainingTime;
       if (stage == MatchStage.halfTime) {
-        timerButtonText = 'SKIP';
         startTimer();
       } else {
-        isTimeRunning = false;
-        _isGameRunning = false;
-        _runClockStartedAt = null;
-        _runClockStartRemainingTime = null;
-        timerButtonText = 'START';
+        _haltClock();
       }
       broadcastFullState();
     });
@@ -146,10 +141,8 @@ extension GameResume on Game {
     persistence.suppress(() {
       currentStage = MatchStage.fullTime;
       inGame = true;
-      timerButtonText = snapshot.timerButtonText;
       _remainingTime = snapshot.remainingTime;
-      isTimeRunning = false;
-      _isGameRunning = false;
+      _haltClock();
       _restoreTeamOrderAndInfo(snapshot.teams);
       // Snapshot mapping: the fallback while the fixture config is not loaded.
       _sb.bindResumed(

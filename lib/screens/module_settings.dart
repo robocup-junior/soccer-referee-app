@@ -30,7 +30,6 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
   final _addressFormatters = buildModuleAddressFormatters();
   final List<BluetoothDevice> _devices = [];
   int? _selectedIndex;
-  bool _seeded = false;
   bool _scanning = false;
   StreamSubscription<List<ScanResult>>? _scanSub;
   // The last QR resolve's (UUID, MAC): the MAC is committed to the module only
@@ -40,6 +39,17 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
 
   static const _white = TextStyle(color: Colors.white);
   static const _grey = TextStyle(color: Colors.grey);
+
+  @override
+  void initState() {
+    super.initState();
+    final module = context.read<Module>();
+    // Fall back to the hardware MAC for an iOS slot whose UUID was never
+    // resolved, so Connect can resolve + connect it in one tap.
+    _addressController.text =
+        module.macAddress.isNotEmpty ? module.macAddress : module.hardwareMac;
+    _labelController.text = module.hasCustomLabel ? module.name : '';
+  }
 
   @override
   void dispose() {
@@ -90,13 +100,11 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
     if (mac == null || !mounted) return;
     final address = await resolveScannedAddress(context, mac);
     if (address == null || !mounted) return;
-    setState(() {
-      _addressController.text = address;
-      if (useIosBleUuid) {
-        _qrResolvedUuid = address;
-        _qrScannedMac = mac;
-      }
-    });
+    _addressController.text = address;
+    if (useIosBleUuid) {
+      _qrResolvedUuid = address;
+      _qrScannedMac = mac;
+    }
   }
 
   Future<void> _toggleScan() async {
@@ -160,10 +168,8 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
         context: context,
         builder: (_) => _SavedDevicesDialog(devices: devices));
     if (selected == null || !mounted) return;
-    setState(() {
-      _addressController.text = selected.macAddress;
-      _labelController.text = selected.label;
-    });
+    _addressController.text = selected.macAddress;
+    _labelController.text = selected.label;
     module.applyPresetConfig(selected.macAddress, selected.label,
         hardwareMac: selected.hardwareMac);
     FlutterBluePlus.stopScan();
@@ -173,14 +179,6 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
   Widget build(BuildContext context) {
     final module = context.watch<Module>();
     final adapter = context.watch<BleAdapterMonitor>().state;
-    if (!_seeded) {
-      _seeded = true;
-      // Fall back to the hardware MAC for an iOS slot whose UUID was never
-      // resolved, so Connect can resolve + connect it in one tap.
-      _addressController.text =
-          module.macAddress.isNotEmpty ? module.macAddress : module.hardwareMac;
-      _labelController.text = module.hasCustomLabel ? module.name : '';
-    }
     final status = isAdapterProblem(adapter)
         ? describeAdapterState(adapter).message
         : module.bleStatus;

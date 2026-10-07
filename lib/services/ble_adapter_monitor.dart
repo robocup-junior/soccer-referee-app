@@ -25,7 +25,6 @@ class BleAdapterMonitor extends ChangeNotifier {
   }
 
   BluetoothAdapterState get state => _state;
-  bool get isOn => _state == BluetoothAdapterState.on;
 
   @override
   void dispose() {

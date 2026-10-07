@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
 import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/models/team.dart';
 import 'package:rcj_scoreboard/utils/colors.dart';
@@ -15,36 +14,34 @@ class TeamPanel extends StatelessWidget {
   final Game game;
 
   @override
-  Widget build(BuildContext context) => ChangeNotifierProvider.value(
-        value: team,
-        child: Consumer<Team>(
-          builder: (context, team, _) => CriticalGestureDetector(
-            singleTap: game.singleTapEnabled,
-            onAction: () {
-              if (game.noShowPenaltyGoalsActive) return;
-              team.addScore(1);
-              game.stopAll(true);
-              game.notifyModulesScore();
-            },
-            onLongPress: () => showDarkSheet(context,
-                heightFactor: 0.85,
-                child: TeamSettingsWidget(team: team, game: game)),
-            child: Container(
-              decoration: BoxDecoration(
-                border: Border(
-                    top: BorderSide(color: AppColors.team(team.id), width: 5)),
-              ),
-              margin: const EdgeInsets.fromLTRB(8, 0, 8, 6),
-              child: Column(
-                children: [
-                  Text(team.name,
-                      textAlign: TextAlign.center,
-                      overflow: TextOverflow.ellipsis,
-                      maxLines: 3),
-                  const Spacer(),
-                  Text('${team.score}', style: const TextStyle(fontSize: 40)),
-                ],
-              ),
+  Widget build(BuildContext context) => ListenableBuilder(
+        listenable: team,
+        builder: (context, _) => CriticalGestureDetector(
+          singleTap: game.singleTapEnabled,
+          onAction: () {
+            if (game.noShowPenaltyGoalsActive) return;
+            team.addScore(1);
+            game.stopAll(true);
+            game.notifyModulesScore();
+          },
+          onLongPress: () => showDarkSheet(context,
+              heightFactor: 0.85,
+              child: TeamSettingsWidget(team: team, game: game)),
+          child: Container(
+            decoration: BoxDecoration(
+              border: Border(
+                  top: BorderSide(color: AppColors.team(team.id), width: 5)),
+            ),
+            margin: const EdgeInsets.fromLTRB(8, 0, 8, 6),
+            child: Column(
+              children: [
+                Text(team.name,
+                    textAlign: TextAlign.center,
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 3),
+                const Spacer(),
+                Text('${team.score}', style: const TextStyle(fontSize: 40)),
+              ],
             ),
           ),
         ),

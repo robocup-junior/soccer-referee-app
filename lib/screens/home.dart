@@ -56,7 +56,7 @@ class _HomeState extends State<Home> {
 
   /// Long-press on the clock (#21): editable only while stopped inside a half.
   void _editRemainingTime(Game game) {
-    if (game.isTimerRunning) {
+    if (game.isTimeRunning) {
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Stop the clock to edit the time.')));
       return;
@@ -193,9 +193,7 @@ class _HomeState extends State<Home> {
                   singleTap: game.singleTapEnabled,
                   onAction: game.toggleTimer,
                   style: _timerButtonStyle(
-                      game.isGameRunning && game.isTimerRunning
-                          ? AppColors.red
-                          : AppColors.green),
+                      game.isGameRunning ? AppColors.red : AppColors.green),
                   child: Text(game.timerButtonText,
                       style: const TextStyle(color: Colors.white)),
                 ),

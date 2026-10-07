@@ -11,15 +11,15 @@ int _robotNumber(Map<String, dynamic> json) =>
 
 /// Parse a list of rows, dropping non-maps and rows with an invalid robot
 /// number, so one bad row never breaks the whole payload.
-List<T> _rows<T>(dynamic value, T Function(Map<String, dynamic>) parse,
-    int Function(T) robotOf) {
-  if (value is! List) return const [];
-  return value
-      .whereType<Map>()
-      .map((m) => parse(Map<String, dynamic>.from(m)))
-      .where((r) => robotOf(r) > 0)
-      .toList(growable: false);
-}
+List<T> _rows<T>(dynamic value, T Function(Map<String, dynamic>) parse) =>
+    value is! List
+        ? const []
+        : value
+            .whereType<Map>()
+            .map((m) => Map<String, dynamic>.from(m))
+            .where((m) => _robotNumber(m) > 0)
+            .map(parse)
+            .toList(growable: false);
 
 class InspectionRobot {
   const InspectionRobot(
@@ -195,10 +195,10 @@ class ScoreboardMatchConfig {
       status: (json['status']?.toString() ?? '').toUpperCase(),
       homeModuleMacs: macs(json['home_module_macs']),
       awayModuleMacs: macs(json['away_module_macs']),
-      homeInspectionRobots: _rows(json['home_inspection_robots'],
-          InspectionRobot.fromJson, (r) => r.robot),
-      awayInspectionRobots: _rows(json['away_inspection_robots'],
-          InspectionRobot.fromJson, (r) => r.robot),
+      homeInspectionRobots:
+          _rows(json['home_inspection_robots'], InspectionRobot.fromJson),
+      awayInspectionRobots:
+          _rows(json['away_inspection_robots'], InspectionRobot.fromJson),
     );
   }
 
@@ -293,8 +293,6 @@ class ResultOutboxItem {
     Map<String, dynamic>? responseBody,
     String? errorMessage,
     int? retryCount,
-    bool? homeConfirmed,
-    bool? awayConfirmed,
     bool clearResponse = false,
     bool clearError = false,
   }) =>
@@ -305,8 +303,8 @@ class ResultOutboxItem {
         matchCode: matchCode,
         homeGoals: homeGoals,
         awayGoals: awayGoals,
-        homeConfirmed: homeConfirmed ?? this.homeConfirmed,
-        awayConfirmed: awayConfirmed ?? this.awayConfirmed,
+        homeConfirmed: homeConfirmed,
+        awayConfirmed: awayConfirmed,
         version: version,
         idempotencyKey: idempotencyKey,
         comment: comment,
@@ -324,17 +322,6 @@ class ResultOutboxItem {
       );
 
   factory ResultOutboxItem.fromJson(Map<String, dynamic> json) {
-    Map<String, dynamic>? body(dynamic value) {
-      if (value is Map<String, dynamic>) return value;
-      if (value is! String || value.isEmpty) return null;
-      try {
-        final decoded = jsonDecode(value);
-        return decoded is Map<String, dynamic> ? decoded : null;
-      } catch (_) {
-        return null;
-      }
-    }
-
     DateTime time(dynamic value) =>
         DateTime.tryParse(value as String? ?? '') ?? DateTime.now().toUtc();
 
@@ -350,16 +337,19 @@ class ResultOutboxItem {
       version: (json['version'] as num?)?.toInt() ?? 0,
       idempotencyKey: json['idempotency_key'] as String,
       comment: json['comment'] as String?,
-      actualHomeModules: _rows(json['actual_home_modules'],
-          ActualModuleReport.fromJson, (r) => r.robot),
-      actualAwayModules: _rows(json['actual_away_modules'],
-          ActualModuleReport.fromJson, (r) => r.robot),
+      actualHomeModules:
+          _rows(json['actual_home_modules'], ActualModuleReport.fromJson),
+      actualAwayModules:
+          _rows(json['actual_away_modules'], ActualModuleReport.fromJson),
       retryCount: (json['retry_count'] as num?)?.toInt() ?? 0,
       state: ResultSubmissionState.values.firstWhere(
           (s) => s.name == json['state'],
           orElse: () => ResultSubmissionState.pending),
       responseStatus: (json['response_status'] as num?)?.toInt(),
-      responseBody: body(json['response_body']),
+      responseBody: switch (json['response_body']) {
+        final Map<String, dynamic> m => m,
+        _ => null,
+      },
       errorMessage: json['error_message'] as String?,
       createdAt: time(json['created_at']),
       updatedAt: time(json['updated_at']),

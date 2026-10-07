@@ -126,7 +126,7 @@ class Module with ChangeNotifier {
   void _setPlaying(bool playing) {
     if (playing == _isPlaying) return;
     _isPlaying = playing;
-    _game.changeNumberOfPlaying(playing ? 1 : -1);
+    _game.onPlayingChanged();
   }
 
   /// Move to [next], push it to the robot and persist. [flush] schedules a
@@ -358,7 +358,7 @@ class Module with ChangeNotifier {
       await bleDevice?.connect(autoConnect: true, mtu: null);
     } catch (e) {
       _connectIntent = false;
-      bleStatus = describeError(e).message;
+      bleStatus = describeError(e);
       debugPrint('BLE connect error: $e');
       _connSub?.cancel();
       // iOS: the id itself is unconnectable (stale cached UUID or a MAC fed to
@@ -398,9 +398,7 @@ class Module with ChangeNotifier {
       // The advertised name is authoritative for the hardware MAC of THIS link.
       final parsed = _macFromDevice(device);
       if (parsed != null) hardwareMac = parsed;
-      if (hardwareMac.isNotEmpty) {
-        _game.iosPairing.record(hardwareMac, macAddress);
-      }
+      _game.iosPairing.record(hardwareMac, macAddress);
       notifyListeners();
       _initLink();
     }
@@ -453,15 +451,10 @@ class Module with ChangeNotifier {
     _connectIntent = false;
     _isConnected = false;
     final status = reason ?? 'Disconnected';
-    if (bleDevice == null) {
-      if (bleStatus != status) {
-        bleStatus = status;
-        notifyListeners();
-      }
-      return;
-    }
+    if (bleDevice == null && bleStatus == status) return;
     bleStatus = status;
     notifyListeners();
+    if (bleDevice == null) return;
     _cancelLinkListeners();
     try {
       await bleDevice?.disconnect();

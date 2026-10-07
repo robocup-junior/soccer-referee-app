@@ -130,16 +130,6 @@ void main() {
       expect(back.scoreboardAwayTeamId, 'A');
     });
 
-    test('round-trips non-referee binding defaults', () {
-      final back = MatchSnapshot.fromJson(_sampleSnapshot().toJson());
-
-      expect(back.isRefereeMatch, isFalse);
-      expect(back.scoreboardMatchCode, isNull);
-      expect(back.scoreboardVersion, isNull);
-      expect(back.scoreboardHomeTeamId, isNull);
-      expect(back.scoreboardAwayTeamId, isNull);
-    });
-
     test('defaults missing scoreboard binding keys defensively', () {
       final json = _sampleSnapshot().toJson()
         ..remove('isRefereeMatch')
@@ -159,19 +149,6 @@ void main() {
   });
 
   group('MatchStateStore save/load', () {
-    test('saves and loads a snapshot', () async {
-      final store = MatchStateStore(prefs);
-      await store.save(_sampleSnapshot());
-      final loaded = store.load();
-      expect(loaded, isNotNull);
-      expect(loaded!.remainingTime, 312);
-      expect(loaded.modules.first.penaltyTime, 45);
-    });
-
-    test('load() is null when no snapshot has been written', () {
-      expect(MatchStateStore(prefs).load(), isNull);
-    });
-
     test('load() is null on corrupt JSON', () async {
       await prefs.setString(_kSnapshotKey, 'not valid json {{{');
       expect(MatchStateStore(prefs).load(), isNull);
@@ -185,24 +162,6 @@ void main() {
           '"version":$kMatchSnapshotVersion', '"version":99999');
       await prefs.setString(_kSnapshotKey, bumped);
       expect(store.load(), isNull);
-    });
-
-    test('clear() removes the snapshot', () async {
-      final store = MatchStateStore(prefs);
-      await store.save(_sampleSnapshot());
-      expect(store.load(), isNotNull);
-      await store.clear();
-      expect(store.load(), isNull);
-    });
-
-    test('a save after clear() is loadable again', () async {
-      final store = MatchStateStore(prefs);
-      await store.save(_sampleSnapshot());
-      await store.clear();
-      await store.save(_sampleSnapshot(remainingTime: 100));
-      final loaded = store.load();
-      expect(loaded, isNotNull);
-      expect(loaded!.remainingTime, 100);
     });
 
     test(

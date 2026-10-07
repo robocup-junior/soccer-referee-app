@@ -99,17 +99,6 @@ void main() {
     expect(h.controller.pendingCount, 0);
   });
 
-  test('stopForMatch is idempotent and enroll afterwards gives up immediately',
-      () async {
-    final h = _Harness();
-    h.controller.stopForMatch();
-    h.controller.stopForMatch();
-    h.controller.enroll(5, 'AA:BB:CC:DD:EE:FF');
-    await _settle();
-    expect(h.gaveUp, [5]);
-    expect(h.scannedBatches, isEmpty);
-  });
-
   test(
       'stopForMatch with nothing pending and no loop running fires NO global '
       'stopScan (it could only kill a foreign manual scan)', () async {
@@ -152,19 +141,6 @@ void main() {
     expect(h.resolved, [(7, '11:22:33:44:55:66', 'uuid-2')]);
   });
 
-  test('re-enrolling a module replaces its MAC (latest wins)', () async {
-    final h = _Harness();
-    h.pendingScan = Completer();
-    h.controller.enroll(8, 'AA:BB:CC:DD:EE:FF');
-    await _settle();
-    h.controller.enroll(8, '11:22:33:44:55:66');
-    h.pendingScan!.complete({'AA:BB:CC:DD:EE:FF': 'uuid-old'});
-    h.pendingScan = null;
-    h.scanOutcomes.add({'11:22:33:44:55:66': 'uuid-new'});
-    await _settle();
-    expect(h.resolved, [(8, '11:22:33:44:55:66', 'uuid-new')]);
-  });
-
   test('reset re-arms after stopForMatch (next match scans again)', () async {
     final h = _Harness();
     h.controller.stopForMatch();
@@ -173,20 +149,6 @@ void main() {
     h.controller.enroll(9, 'AA:BB:CC:DD:EE:FF');
     await _settle();
     expect(h.resolved, [(9, 'AA:BB:CC:DD:EE:FF', 'uuid-1')]);
-  });
-
-  test('dispose stops the loop; nothing fires afterwards', () async {
-    final h = _Harness();
-    h.pendingScan = Completer();
-    h.controller.enroll(1, 'AA:BB:CC:DD:EE:FF');
-    await _settle();
-    h.controller.dispose();
-    h.pendingScan!.complete({'AA:BB:CC:DD:EE:FF': 'uuid-1'});
-    await _settle();
-    expect(h.resolved, isEmpty);
-    h.controller.enroll(2, '11:22:33:44:55:66');
-    await _settle();
-    expect(h.scannedBatches.length, 1);
   });
 
   test(

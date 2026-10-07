@@ -53,7 +53,6 @@ extension GameScoreboard on Game {
       await scoreboardResultService.confirmPendingMatch(
           expectedSignature: expectedSignature);
       final clear = _sb.confirmedLoadClear;
-      _sb.confirmedLoadClear = null;
       if (clear != null) await clear;
     } finally {
       _sb.confirmedLoadSignature = null;
@@ -151,7 +150,7 @@ extension GameScoreboard on Game {
     // Home/away -> team id computed locally from homeIsLeft so pairing never
     // depends on an apply having run first. Only slots the server names are
     // touched. A same-identity re-pair preserves a referee-set label.
-    final homeId = config.homeIsLeft ? 'A' : 'B';
+    final (homeId, _) = ScoreboardBinding.sidesFor(config.homeIsLeft);
     for (final team in teams) {
       final macs =
           team.id == homeId ? config.homeModuleMacs : config.awayModuleMacs;
@@ -175,16 +174,16 @@ extension GameScoreboard on Game {
 
   /// "End match now" (#84) applies to a submittable fixture that has not
   /// reached full time and has no result of this run still in flight.
-  bool get canEndMatchEarly {
-    if (currentStage == MatchStage.fullTime) return false;
-    final config = scoreboardResultService.matchConfig;
-    if (config == null || config.matchCode.isEmpty) return false;
-    if (!scoreboardResultService.hasToken) return false;
-    if (scoreboardResultService.hasUnresolvedResultFor(config.matchCode)) {
-      return false;
-    }
-    return _sb.canSubmit(config);
-  }
+  bool get canEndMatchEarly =>
+      currentStage != MatchStage.fullTime &&
+      scoreboardResultService.hasToken &&
+      _resultOpen(scoreboardResultService.matchConfig);
+
+  /// A submittable fixture with no result of this run still in flight (a
+  /// terminal 401/422 rejection is correctable, so it stays open).
+  bool _resultOpen(ScoreboardMatchConfig? config) =>
+      _sb.canSubmit(config) &&
+      !scoreboardResultService.hasUnresolvedResultFor(config!.matchCode);
 
   /// End the match NOW (forfeit) through the shared full-time transition.
   void endMatchEarly() {
@@ -209,9 +208,7 @@ extension GameScoreboard on Game {
     if (config == null || config.signature != _sb.fullTimeSignature) {
       return false;
     }
-    if (!_sb.canSubmit(config)) return false;
-    // A terminal 401/422 rejection is correctable, so it keeps the review open.
-    return !scoreboardResultService.hasUnresolvedResultFor(config.matchCode);
+    return _resultOpen(config);
   }
 
   /// Inspection rows for [team]'s side of the linked fixture.
@@ -228,11 +225,7 @@ extension GameScoreboard on Game {
   /// (REPEAT): its late 200 must not reset the second run (RAVF001).
   void _enterFullTimeResultReview() {
     final config = scoreboardResultService.matchConfig;
-    if (config != null &&
-        _sb.canSubmit(config) &&
-        !scoreboardResultService.hasUnresolvedResultFor(config.matchCode)) {
-      _sb.fullTimeSignature = config.signature;
-    }
+    if (_resultOpen(config)) _sb.fullTimeSignature = config!.signature;
     _requestScoreboardResultReview();
   }
 
@@ -260,11 +253,8 @@ extension GameScoreboard on Game {
 
   /// Home/away team ids, falling back to the config's side when unbound.
   (String home, String away) _sideTeamIds(ScoreboardMatchConfig? config) {
-    final homeIsLeft = config?.homeIsLeft ?? true;
-    return (
-      _sb.homeTeamId ?? (homeIsLeft ? 'A' : 'B'),
-      _sb.awayTeamId ?? (homeIsLeft ? 'B' : 'A'),
-    );
+    final (home, away) = ScoreboardBinding.sidesFor(config?.homeIsLeft ?? true);
+    return (_sb.homeTeamId ?? home, _sb.awayTeamId ?? away);
   }
 
   ({
@@ -361,10 +351,7 @@ extension GameScoreboard on Game {
       team.name = '';
     }
     _sb.unbind();
-    _periodTime =
-        _prefs?.getInt(Game._periodTimeKey) ?? Game._defaultPeriodTime;
-    _halfTimeDuration = _prefs?.getInt(Game._halfTimeDurationKey) ??
-        Game._defaultHalfTimeDuration;
+    _loadTimingDefaults();
     setTeamToDefaultOrder();
     gameInit();
     unawaited(scoreboardResultService.resetLinkedMatchAfterSubmission());

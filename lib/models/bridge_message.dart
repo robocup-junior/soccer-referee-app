@@ -7,11 +7,6 @@ import 'dart:convert';
 const int kBridgeFieldSeparator = 0x00;
 
 class BridgeTopics {
-  static const String team1Score = 'team1_score';
-  static const String team2Score = 'team2_score';
-  static const String team1Color = 'team1_color';
-  static const String team2Color = 'team2_color';
-
   /// Topic for the team at display position [index] (0 = left).
   static String score(int index) => 'team${index + 1}_score';
   static String color(int index) => 'team${index + 1}_color';
@@ -25,14 +20,4 @@ class BridgeMessage {
 
   List<int> toBytes() =>
       [...utf8.encode(topic), kBridgeFieldSeparator, ...utf8.encode(value)];
-
-  @override
-  bool operator ==(Object other) =>
-      other is BridgeMessage && other.topic == topic && other.value == value;
-
-  @override
-  int get hashCode => Object.hash(topic, value);
-
-  @override
-  String toString() => 'BridgeMessage($topic=$value)';
 }

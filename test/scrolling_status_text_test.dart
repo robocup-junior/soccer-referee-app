@@ -19,7 +19,8 @@ Widget _host({required double width, required String text}) {
 }
 
 void main() {
-  testWidgets('renders a single static copy when the text fits', (tester) async {
+  testWidgets('renders a single static copy when the text fits',
+      (tester) async {
     await tester.pumpWidget(_host(width: 400, text: 'Awaiting link'));
     await tester.pump();
 
@@ -48,7 +49,8 @@ void main() {
 
   testWidgets('switching from long to short text stops the animation',
       (tester) async {
-    await tester.pumpWidget(_host(width: 40, text: 'A very long status message'));
+    await tester
+        .pumpWidget(_host(width: 40, text: 'A very long status message'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 16));
     expect(tester.hasRunningAnimations, isTrue);

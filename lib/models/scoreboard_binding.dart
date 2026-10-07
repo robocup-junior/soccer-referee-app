@@ -3,7 +3,7 @@ import 'package:rcj_scoreboard/models/scoreboard_result.dart';
 /// The link between the live referee match and a scoreboard fixture.
 ///
 /// Team 'A' is always the left side and 'B' the right; `homeIsLeft` decides
-/// which physical team is "home" ([deriveSides] is the single source of that
+/// which physical team is "home" ([sidesFor] is the single source of that
 /// rule). The signatures dedupe applies/prompts/pairings; the resumed-fixture
 /// fields let a cold-resumed match stay bound to the fixture it was playing
 /// even when its config surfaces late or a different link is opened.
@@ -37,9 +37,13 @@ class ScoreboardBinding {
 
   bool get isBoundToResumed => resumedMatchCode?.isNotEmpty ?? false;
 
+  static (String home, String away) sidesFor(bool homeIsLeft) =>
+      homeIsLeft ? ('A', 'B') : ('B', 'A');
+
   void deriveSides(ScoreboardMatchConfig config) {
-    homeTeamId = config.homeIsLeft ? 'A' : 'B';
-    awayTeamId = config.homeIsLeft ? 'B' : 'A';
+    final (home, away) = sidesFor(config.homeIsLeft);
+    homeTeamId = home;
+    awayTeamId = away;
   }
 
   /// Between-matches reset (gameInit). Keeps the side mapping and the applied

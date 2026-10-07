@@ -8,13 +8,7 @@ import 'package:rcj_scoreboard/services/error_messages.dart';
 import 'package:rcj_scoreboard/utils/ble_address.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum BridgeConnectionState {
-  disabled,
-  disconnected,
-  connecting,
-  connected,
-  error
-}
+enum BridgeConnectionState { disconnected, connecting, connected, error }
 
 /// MQTT-over-BLE scoreboard bridge: a per-topic dedup queue drained with
 /// write-with-response (the ACK). Fully separate from robot control and never
@@ -31,7 +25,6 @@ class BleBridgeService extends ChangeNotifier {
 
   final ValueNotifier<BridgeConnectionState> connectionStateNotifier =
       ValueNotifier(BridgeConnectionState.disconnected);
-  final ValueNotifier<int> queueDepthNotifier = ValueNotifier(0);
 
   SharedPreferences? _prefs;
   bool _isEnabled = false;
@@ -46,6 +39,8 @@ class BleBridgeService extends ChangeNotifier {
 
   String? get lastErrorMessage => _lastErrorMessage;
   bool get isEnabled => _isEnabled;
+  @visibleForTesting
+  int get queueDepth => _queue.length;
   String get bridgeMacAddress => _bridgeMacAddress;
   bool get isConnected =>
       connectionStateNotifier.value == BridgeConnectionState.connected &&
@@ -55,7 +50,6 @@ class BleBridgeService extends ChangeNotifier {
     final prefs = _prefs = await SharedPreferences.getInstance();
     _isEnabled = prefs.getBool('bridge_enabled') ?? false;
     _bridgeMacAddress = prefs.getString('bridge_mac_address') ?? '';
-    connectionStateNotifier.notifyListeners();
     notifyListeners();
   }
 
@@ -103,7 +97,7 @@ class BleBridgeService extends ChangeNotifier {
     } catch (e) {
       debugPrint('BleBridge: connect error: $e');
       if (_connectIntent) {
-        await _setErrorAndDisconnect(describeError(e).message);
+        await _setErrorAndDisconnect(describeError(e));
       }
     }
   }
@@ -146,7 +140,6 @@ class BleBridgeService extends ChangeNotifier {
     if (!isEnabled) return;
     _queue.removeWhere((m) => m.topic == topic);
     _queue.add(BridgeMessage(topic, value));
-    queueDepthNotifier.value = _queue.length;
     _processQueue();
   }
 
@@ -156,25 +149,24 @@ class BleBridgeService extends ChangeNotifier {
     while (_queue.isNotEmpty && isConnected) {
       // Pop before awaiting so a concurrent publishTopic can't drop a message.
       final msg = _queue.removeFirst();
-      queueDepthNotifier.value = _queue.length;
       await _sendWithRetry(msg);
     }
     _sendInProgress = false;
   }
 
-  Future<bool> _sendWithRetry(BridgeMessage msg, {int maxRetries = 3}) async {
+  Future<void> _sendWithRetry(BridgeMessage msg) async {
+    const maxRetries = 3;
     final bytes = msg.toBytes();
     for (var attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         await _txChar!.write(bytes, withoutResponse: false, timeout: 5);
-        return true;
+        return;
       } catch (e) {
         if (attempt == maxRetries) {
           debugPrint('BleBridge: send "${msg.topic}" failed: $e');
         }
       }
     }
-    return false;
   }
 
   Future<void> _onConnected() async {
@@ -202,7 +194,7 @@ class BleBridgeService extends ChangeNotifier {
     } catch (e) {
       debugPrint('BleBridge: initialization error: $e');
       if (_connectIntent) {
-        await _setErrorAndDisconnect(describeError(e).message);
+        await _setErrorAndDisconnect(describeError(e));
       }
     }
   }
@@ -250,7 +242,6 @@ class BleBridgeService extends ChangeNotifier {
     _connSub?.cancel();
     _device?.disconnect();
     connectionStateNotifier.dispose();
-    queueDepthNotifier.dispose();
     super.dispose();
   }
 }
