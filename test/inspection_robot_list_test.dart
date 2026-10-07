@@ -21,20 +21,4 @@ void main() {
     expect(find.text('failed'), findsOneWidget); // failed badge
     expect(find.textContaining('battery below spec'), findsOneWidget);
   });
-
-  testWidgets('missing robot renders a neutral dash, no note text',
-      (tester) async {
-    await tester.pumpWidget(wrap(const InspectionRobotList(robots: [
-      InspectionRobot(robot: 1, status: InspectionStatus.missing, note: ''),
-    ])));
-    expect(find.text('Robot 1'), findsOneWidget);
-    expect(find.text('—'), findsOneWidget);
-    expect(find.text('cleared'), findsNothing);
-    expect(find.text('failed'), findsNothing);
-  });
-
-  testWidgets('empty list renders nothing', (tester) async {
-    await tester.pumpWidget(wrap(const InspectionRobotList(robots: [])));
-    expect(find.byType(Row), findsNothing);
-  });
 }

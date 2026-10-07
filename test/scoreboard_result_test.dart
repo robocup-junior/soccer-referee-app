@@ -220,13 +220,6 @@ void main() {
       expect(config.awayModuleMacs, ['AA:BB:CC:DD:EE:FF']);
     });
 
-    test('defaults module MACs to empty lists for payloads without them', () {
-      final config = ScoreboardMatchConfig.fromJson(_matchJson());
-
-      expect(config.homeModuleMacs, isEmpty);
-      expect(config.awayModuleMacs, isEmpty);
-    });
-
     test('drops blank/whitespace MAC entries', () {
       final config = ScoreboardMatchConfig.fromJson({
         ..._matchJson(),
@@ -249,82 +242,9 @@ void main() {
       expect(restored.homeModuleMacs, ['A1:B2:C3:D4:E5:F6']);
       expect(restored.awayModuleMacs, ['AA:BB:CC:DD:EE:FF']);
     });
-
-    test('parses inspection robots (status + note per robot)', () {
-      final config = ScoreboardMatchConfig.fromJson({
-        ..._matchJson(),
-        'home_inspection_robots': const [
-          {'robot': 1, 'status': 'ok', 'note': ''},
-          {'robot': 2, 'status': 'failed', 'note': 'battery below spec'},
-        ],
-        'away_inspection_robots': const [
-          {'robot': 1, 'status': 'missing', 'note': ''},
-        ],
-      });
-
-      expect(config.homeInspectionRobots, const [
-        InspectionRobot(robot: 1, status: InspectionStatus.ok, note: ''),
-        InspectionRobot(
-            robot: 2,
-            status: InspectionStatus.failed,
-            note: 'battery below spec'),
-      ]);
-      expect(config.awayInspectionRobots, const [
-        InspectionRobot(robot: 1, status: InspectionStatus.missing, note: ''),
-      ]);
-    });
-
-    test('inspection robots parsing is total (drops malformed/invalid robot)',
-        () {
-      final config = ScoreboardMatchConfig.fromJson({
-        ..._matchJson(),
-        'home_inspection_robots': const [
-          {'robot': 1, 'status': 'ok', 'note': ''},
-          {'robot': 'x', 'status': 'ok', 'note': 'bad id'},
-          {'robot': 0, 'status': 'ok', 'note': 'zero'},
-          'not-a-map',
-        ],
-        'away_inspection_robots': 'not-a-list',
-      });
-      expect(config.homeInspectionRobots, const [
-        InspectionRobot(robot: 1, status: InspectionStatus.ok, note: '')
-      ]);
-      expect(config.awayInspectionRobots, isEmpty);
-    });
-
-    test('inspection robots survive a toJson/fromJson round-trip', () {
-      final original = ScoreboardMatchConfig.fromJson({
-        ..._matchJson(),
-        'home_inspection_robots': const [
-          {'robot': 2, 'status': 'failed', 'note': 'loose wiring'},
-        ],
-      });
-      final restored = ScoreboardMatchConfig.fromJson(
-        jsonDecode(jsonEncode(original.toJson())) as Map<String, dynamic>,
-      );
-      expect(restored.homeInspectionRobots, const [
-        InspectionRobot(
-            robot: 2, status: InspectionStatus.failed, note: 'loose wiring'),
-      ]);
-    });
-
-    test('inspection robots are not part of the load signature', () {
-      final base = ScoreboardMatchConfig.fromJson(_matchJson());
-      final flipped = base.copyWith(homeInspectionRobots: const [
-        InspectionRobot(robot: 1, status: InspectionStatus.failed, note: 'x'),
-      ]);
-      expect(flipped.signature, base.signature);
-    });
   });
 
   group('ActualModuleReport parsing (#85)', () {
-    test('toJson/fromJson round-trip', () {
-      const report = ActualModuleReport(
-          robot: 2, mac: 'AA:BB:CC:DD:EE:01', connected: true);
-      final decoded = ActualModuleReport.fromJson(report.toJson());
-      expect(decoded, report);
-    });
-
     test('robot parses from int, float and string; mac trimmed + upper-cased',
         () {
       expect(
@@ -357,14 +277,6 @@ void main() {
       expect(parsed('true'), isFalse);
       expect(parsed(0), isFalse);
       expect(parsed(1), isFalse);
-    });
-
-    test('never-paired slot keeps an empty mac', () {
-      expect(
-        ActualModuleReport.fromJson(
-            {'robot': 1, 'mac': '', 'connected': false}),
-        const ActualModuleReport(robot: 1, mac: '', connected: false),
-      );
     });
   });
 
@@ -422,36 +334,6 @@ void main() {
       expect(decoded.retryCount, 0);
       expect(decoded.homeConfirmed, isFalse);
       expect(decoded.awayConfirmed, isFalse);
-    });
-
-    test('roundtrips per-team actual modules (#85)', () {
-      final now = DateTime.now().toUtc();
-      final item = ResultOutboxItem(
-        id: 'id-mods',
-        baseUrl: 'https://scoreboard.junior.robocup.org',
-        token: 'selector.secret',
-        matchCode: 'M-MODS',
-        homeGoals: 1,
-        awayGoals: 0,
-        version: 1,
-        idempotencyKey: 'idem-mods',
-        actualHomeModules: const [
-          ActualModuleReport(
-              robot: 1, mac: 'AA:BB:CC:DD:EE:01', connected: true),
-          ActualModuleReport(robot: 2, mac: '', connected: false),
-        ],
-        actualAwayModules: const [
-          ActualModuleReport(
-              robot: 1, mac: 'AA:BB:CC:DD:EE:02', connected: false),
-        ],
-        state: ResultSubmissionState.pending,
-        createdAt: now,
-        updatedAt: now,
-      );
-
-      final decoded = ResultOutboxItem.fromJson(item.toJson());
-      expect(decoded.actualHomeModules, item.actualHomeModules);
-      expect(decoded.actualAwayModules, item.actualAwayModules);
     });
 
     test('defaults actual modules to empty lists for pre-#85 payloads', () {

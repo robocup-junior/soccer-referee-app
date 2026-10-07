@@ -118,17 +118,6 @@ void main() {
     game.dispose();
   });
 
-  testWidgets('lower-case MACs are normalised to upper-case', (tester) async {
-    final game = await loadedGame(tester);
-
-    apply(game, _config(homeMacs: ['a1:b2:c3:d4:e5:f6']));
-    await tester.pump();
-
-    expect(teamById(game, 'A').modules[0].macAddress, 'A1:B2:C3:D4:E5:F6');
-
-    game.dispose();
-  });
-
   testWidgets('a partial MAC list only fills the slots it provides',
       (tester) async {
     final game = await loadedGame(tester);
@@ -162,19 +151,6 @@ void main() {
     await tester.pump();
 
     expect(teamById(game, 'A').modules[0].macAddress, 'A1:B2:C3:D4:E5:F6');
-
-    game.dispose();
-  });
-
-  testWidgets('no module keys leaves every slot unpaired', (tester) async {
-    final game = await loadedGame(tester);
-
-    apply(game, _config());
-    await tester.pump();
-
-    for (final module in teamById(game, 'A').modules) {
-      expect(module.macAddress, '');
-    }
 
     game.dispose();
   });

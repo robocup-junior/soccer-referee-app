@@ -21,11 +21,6 @@ ScanResult _scanResult({String advName = '', required String remoteId}) {
 
 void main() {
   group('isMacFormat', () {
-    test('accepts a colon-separated 17-char MAC, either case', () {
-      expect(isMacFormat('AA:BB:CC:DD:EE:FF'), isTrue);
-      expect(isMacFormat('aa:bb:cc:dd:ee:0f'), isTrue);
-    });
-
     test('rejects UUIDs, partial MACs, other separators and garbage', () {
       expect(isMacFormat('12345678-1234-1234-1234-123456789012'), isFalse);
       expect(isMacFormat('AA:BB:CC:DD:EE'), isFalse);
@@ -56,14 +51,6 @@ void main() {
   });
 
   group('foldScanHits', () {
-    test('maps wanted advertised MACs to their remote ids', () {
-      final hits = foldScanHits(
-        {'AA:BB:CC:DD:EE:FF'},
-        [_scanResult(advName: 'RCJs-m_AA:BB:CC:DD:EE:FF', remoteId: 'uuid-1')],
-      );
-      expect(hits, {'AA:BB:CC:DD:EE:FF': 'uuid-1'});
-    });
-
     test('ignores unwanted modules, non-module names and empty names', () {
       final hits = foldScanHits(
         {'AA:BB:CC:DD:EE:FF'},

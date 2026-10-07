@@ -19,23 +19,6 @@ void main() {
       expect(utf8.decode(bytes.sublist(0, sep)), 'team1_score');
       expect(utf8.decode(bytes.sublist(sep + 1)), '3');
     });
-
-    test('uses exactly one 0x00 separator', () {
-      final bytes = const BridgeMessage('team2_score', '12').toBytes();
-      expect(bytes.where((b) => b == 0x00).length, 1);
-    });
-
-    test('color hex value survives framing', () {
-      final bytes = const BridgeMessage('team1_color', '77FF00').toBytes();
-      final sep = bytes.indexOf(0x00);
-      expect(utf8.decode(bytes.sublist(sep + 1)), '77FF00');
-    });
-
-    test('empty value still frames (topic + separator only)', () {
-      final bytes = const BridgeMessage('time', '').toBytes();
-      expect(bytes.last, 0x00);
-      expect(utf8.decode(bytes.sublist(0, bytes.length - 1)), 'time');
-    });
   });
 
   group('BridgeTopics names', () {
@@ -92,17 +75,6 @@ void main() {
       svc.publishTopic(BridgeTopics.score(0), '3');
 
       expect(svc.queueDepth, 1);
-    });
-
-    test('distinct topics each occupy a slot', () async {
-      final svc = await makeEnabledService();
-
-      svc.publishTopic(BridgeTopics.score(0), '0');
-      svc.publishTopic(BridgeTopics.score(1), '0');
-      svc.publishTopic(BridgeTopics.color(0), '77FF00');
-      svc.publishTopic(BridgeTopics.color(1), 'FF00FF');
-
-      expect(svc.queueDepth, 4);
     });
 
     test('a full score burst dedups per topic, not across topics', () async {

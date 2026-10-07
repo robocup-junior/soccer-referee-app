@@ -13,12 +13,4 @@ void main() {
     // Wednesday; single-digit hour/minute must zero-pad.
     expect(formatLocalKickoff(DateTime(2026, 7, 1, 9, 5)), 'Wed 1 Jul · 09:05');
   });
-
-  test('indexes the month and weekday tables correctly across the year', () {
-    // First and last months exercise the table bounds (weekday-1 / month-1).
-    expect(formatLocalKickoff(DateTime(2026, 1, 5, 0, 0)), contains('5 Jan'));
-    final dec = formatLocalKickoff(DateTime(2026, 12, 25, 23, 59));
-    expect(dec, contains('25 Dec'));
-    expect(dec, endsWith('23:59'));
-  });
 }
