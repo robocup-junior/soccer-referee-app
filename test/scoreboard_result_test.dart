@@ -584,15 +584,6 @@ void main() {
       expect(updated.responseStatus, 500);
       expect(updated.responseBody, isNotNull);
     });
-
-    test('copyWith can update confirmations', () {
-      final updated = failedItem().copyWith(
-        homeConfirmed: true,
-        awayConfirmed: true,
-      );
-      expect(updated.homeConfirmed, isTrue);
-      expect(updated.awayConfirmed, isTrue);
-    });
   });
 
   group('ScoreboardResultService staging', () {
@@ -749,8 +740,8 @@ void main() {
         token: 'token-old',
         baseUri: Uri.parse('http://127.0.0.1:8080'),
       );
-      expect(await service.enqueueFinalResult(homeGoals: 0, awayGoals: 0),
-          isTrue);
+      expect(
+          await service.enqueueFinalResult(homeGoals: 0, awayGoals: 0), isTrue);
       await _waitFor(
         () => service.outbox.single.state == ResultSubmissionState.submitted,
         reason: 'first run submission did not finish',
@@ -773,12 +764,12 @@ void main() {
         baseUri: Uri.parse('http://127.0.0.1:8080'),
       );
       expect(service.hasUnresolvedResultFor('SV3-03'), isFalse);
-      expect(await service.enqueueFinalResult(homeGoals: 2, awayGoals: 1),
-          isTrue);
+      expect(
+          await service.enqueueFinalResult(homeGoals: 2, awayGoals: 1), isTrue);
       expect(service.outbox.length, 2);
       await _waitFor(
-        () => service.outbox.every(
-            (item) => item.state == ResultSubmissionState.submitted),
+        () => service.outbox
+            .every((item) => item.state == ResultSubmissionState.submitted),
         reason: 'second run submission did not finish',
       );
     });

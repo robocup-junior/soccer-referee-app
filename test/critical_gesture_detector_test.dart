@@ -56,7 +56,8 @@ void main() {
       );
     }
 
-    GestureDetector findGd(WidgetTester tester) => tester.widget<GestureDetector>(
+    GestureDetector findGd(WidgetTester tester) =>
+        tester.widget<GestureDetector>(
           find.descendant(
             of: find.byType(CriticalGestureDetector),
             matching: find.byType(GestureDetector),
@@ -105,8 +106,8 @@ void main() {
     testWidgets('onLongPress fires in both modes', (tester) async {
       for (final single in [true, false]) {
         var longPressed = 0;
-        await tester.pumpWidget(
-            host(single, () {}, onLongPress: () => longPressed++));
+        await tester
+            .pumpWidget(host(single, () {}, onLongPress: () => longPressed++));
         await tester.longPress(find.text('x'));
         await tester.pump();
         expect(longPressed, 1, reason: 'singleTap=$single');
@@ -156,7 +157,8 @@ void main() {
       final btn = tester.widget<ElevatedButton>(find.byType(ElevatedButton));
       expect(btn.onPressed, isNotNull);
       btn.onPressed!();
-      expect(fired, 0, reason: 'a single button press must not fire the action');
+      expect(fired, 0,
+          reason: 'a single button press must not fire the action');
 
       // The action is bound to the parent GestureDetector's double tap.
       final gd = tester.widget<GestureDetector>(

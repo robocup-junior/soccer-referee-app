@@ -83,10 +83,7 @@ extension GameResume on Game {
         timerButtonText = 'SKIP';
         startTimer();
       } else {
-        isTimeRunning = false;
-        _isGameRunning = false;
-        _runClockStartedAt = null;
-        _runClockStartRemainingTime = null;
+        _haltClock();
         timerButtonText = 'START';
       }
       broadcastFullState();

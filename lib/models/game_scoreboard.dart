@@ -53,7 +53,6 @@ extension GameScoreboard on Game {
       await scoreboardResultService.confirmPendingMatch(
           expectedSignature: expectedSignature);
       final clear = _sb.confirmedLoadClear;
-      _sb.confirmedLoadClear = null;
       if (clear != null) await clear;
     } finally {
       _sb.confirmedLoadSignature = null;
@@ -361,10 +360,7 @@ extension GameScoreboard on Game {
       team.name = '';
     }
     _sb.unbind();
-    _periodTime =
-        _prefs?.getInt(Game._periodTimeKey) ?? Game._defaultPeriodTime;
-    _halfTimeDuration = _prefs?.getInt(Game._halfTimeDurationKey) ??
-        Game._defaultHalfTimeDuration;
+    _loadTimingDefaults();
     setTeamToDefaultOrder();
     gameInit();
     unawaited(scoreboardResultService.resetLinkedMatchAfterSubmission());

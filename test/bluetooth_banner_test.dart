@@ -34,8 +34,8 @@ void main() {
   });
 
   testWidgets('off shows a "Turn on" action', (tester) async {
-    await tester.pumpWidget(
-        wrap(BluetoothBanner(state: BluetoothAdapterState.off, onTurnOn: () {})));
+    await tester.pumpWidget(wrap(
+        BluetoothBanner(state: BluetoothAdapterState.off, onTurnOn: () {})));
     expect(find.widgetWithText(TextButton, 'Turn on'), findsOneWidget);
   });
 

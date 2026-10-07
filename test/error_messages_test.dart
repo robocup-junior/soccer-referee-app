@@ -29,51 +29,48 @@ void main() {
 
   group('describeError', () {
     test('HttpStatusException includes the status code', () {
-      final info = describeError(const HttpStatusException(404, url: 'http://x'));
-      expect(info.message, 'Server returned 404');
-      expect(info.hint, 'Check the match-data URL in settings');
+      final info =
+          describeError(const HttpStatusException(404, url: 'http://x'));
+      expect(info, 'Server returned 404');
     });
 
     test('SocketException is a network error', () {
       final info = describeError(const SocketException('boom'));
-      expect(info.message, 'Network error: unable to connect');
-      expect(info.hint, 'Check the network / Wi-Fi connection');
+      expect(info, 'Network error: unable to connect');
     });
 
     test('TimeoutException is a timeout', () {
       final info = describeError(TimeoutException('slow'));
-      expect(info.message, 'Connection timed out');
-      expect(info.hint, 'Move closer or check the device is powered');
+      expect(info, 'Connection timed out');
     });
 
     test('FormatException is a bad response format', () {
       final info = describeError(const FormatException('bad json'));
-      expect(info.message, 'Unexpected response format');
-      expect(info.hint, 'Check the match-data URL in settings');
+      expect(info, 'Unexpected response format');
     });
 
     test('FlutterBluePlusException is a BLE failure', () {
       final info = describeError(
         FlutterBluePlusException(ErrorPlatform.android, 'connect', 133, 'gatt'),
       );
-      expect(info.message, 'Bluetooth connection failed');
-      expect(info.hint, 'Move closer, re-power the robot, or re-scan');
+      expect(info, 'Bluetooth connection failed');
     });
 
-    test('unknown error falls back to a short, fixed message (no raw dump)', () {
+    test('unknown error falls back to a short, fixed message (no raw dump)',
+        () {
       // The raw error must NOT leak into the user-facing string — a verbose
       // PlatformException there overflows the status row and borks the screen.
       final info = describeError(
           'PlatformException(some, very long, ${'x' * 500}, detail)');
-      expect(info.message, 'Connection failed');
-      expect(info.message.contains('x' * 50), isFalse);
-      expect(info.hint, 'Check the address and that the device is powered');
+      expect(info, 'Connection failed');
+      expect(info.contains('x' * 50), isFalse);
     });
   });
 
   group('describeMqttReturnCode', () {
     test('bad credentials map to the existing string', () {
-      expect(describeMqttReturnCode(MqttConnectReturnCode.badUsernameOrPassword),
+      expect(
+          describeMqttReturnCode(MqttConnectReturnCode.badUsernameOrPassword),
           'Auth failed: Bad username/password');
     });
 

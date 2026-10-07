@@ -154,12 +154,7 @@ class _ScrollingStatusTextState extends State<ScrollingStatusText>
                       children: [
                         line,
                         SizedBox(width: widget.gap),
-                        Text(
-                          widget.text,
-                          style: widget.style,
-                          maxLines: 1,
-                          softWrap: false,
-                        ),
+                        line,
                       ],
                     ),
                   ),

@@ -66,9 +66,11 @@ void main() {
       // flush the user's choice rather than let the stored default clobber it.
       SharedPreferences.setMockInitialValues({_key: false});
       final game = Game();
-      game.singleTapEnabled = true; // synchronous, before any pump => prefs null
+      game.singleTapEnabled =
+          true; // synchronous, before any pump => prefs null
       await tester.pump(); // _loadPrefs resolves here
-      expect(game.singleTapEnabled, isTrue, reason: 'pre-load toggle preserved');
+      expect(game.singleTapEnabled, isTrue,
+          reason: 'pre-load toggle preserved');
       final prefs = await SharedPreferences.getInstance();
       expect(prefs.getBool(_key), isTrue, reason: 'pending write flushed');
     });

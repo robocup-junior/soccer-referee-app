@@ -5,17 +5,15 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 class WakelockService with ChangeNotifier {
   bool _enabled = false;
 
-  late SharedPreferences _prefs;
-  bool _prefsLoaded = false;
+  SharedPreferences? _prefs;
 
   WakelockService() {
     _loadPreferences();
   }
 
   Future<void> _loadPreferences() async {
-    _prefs = await SharedPreferences.getInstance();
-    _enabled = _prefs.getBool('wakelock_enabled') ?? false;
-    _prefsLoaded = true;
+    final prefs = _prefs = await SharedPreferences.getInstance();
+    _enabled = prefs.getBool('wakelock_enabled') ?? false;
     _applyWakelock();
     notifyListeners();
   }
@@ -23,9 +21,7 @@ class WakelockService with ChangeNotifier {
   bool get enabled => _enabled;
   set enabled(bool value) {
     _enabled = value;
-    if (_prefsLoaded) {
-      _prefs.setBool('wakelock_enabled', value);
-    }
+    _prefs?.setBool('wakelock_enabled', value);
     _applyWakelock();
     notifyListeners();
   }

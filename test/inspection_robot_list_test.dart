@@ -11,7 +11,9 @@ void main() {
     await tester.pumpWidget(wrap(const InspectionRobotList(robots: [
       InspectionRobot(robot: 1, status: InspectionStatus.ok, note: ''),
       InspectionRobot(
-          robot: 2, status: InspectionStatus.failed, note: 'battery below spec'),
+          robot: 2,
+          status: InspectionStatus.failed,
+          note: 'battery below spec'),
     ])));
     expect(find.text('Robot 1'), findsOneWidget);
     expect(find.text('Robot 2'), findsOneWidget);
@@ -20,7 +22,8 @@ void main() {
     expect(find.textContaining('battery below spec'), findsOneWidget);
   });
 
-  testWidgets('missing robot renders a neutral dash, no note text', (tester) async {
+  testWidgets('missing robot renders a neutral dash, no note text',
+      (tester) async {
     await tester.pumpWidget(wrap(const InspectionRobotList(robots: [
       InspectionRobot(robot: 1, status: InspectionStatus.missing, note: ''),
     ])));

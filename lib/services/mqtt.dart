@@ -177,7 +177,7 @@ class MqttService {
     } on Exception catch (e) {
       // e.g. a HandshakeException escaping mqtt_client's socket onError path.
       if (!identical(_client, client)) return false;
-      _fail(describeError(e).message);
+      _fail(describeError(e));
     }
     if (!identical(_client, client)) return false;
     if (client.connectionStatus?.state == MqttConnectionState.connected) {
@@ -264,7 +264,6 @@ class MqttService {
   }
 
   void publishTeam(List<Team> teams) {
-    if (teams.length < 2) return;
     publishCMMessage(teams[0].id, topic: 'team1_id');
     publishCMMessage(teams[1].id, topic: 'team2_id');
   }

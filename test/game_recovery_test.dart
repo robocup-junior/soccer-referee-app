@@ -688,7 +688,7 @@ void main() {
 
       expect(game.remainingTime, 137,
           reason: 'no dead-time subtraction on cold resume');
-      expect(game.isTimerRunning, isFalse);
+      expect(game.isTimeRunning, isFalse);
       expect(game.currentStage, MatchStage.firstHalf);
       expect(game.getScore('A'), 2);
       expect(game.getScore('B'), 1);
@@ -762,7 +762,7 @@ void main() {
       await tester.pump();
 
       expect(game.currentStage, MatchStage.halfTime);
-      expect(game.isTimerRunning, isTrue,
+      expect(game.isTimeRunning, isTrue,
           reason: 'break resumes running, not frozen/auto-skipped');
       expect(game.timerButtonText, 'SKIP');
       expect(game.remainingTime, 90);

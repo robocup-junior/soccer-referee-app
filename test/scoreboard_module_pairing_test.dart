@@ -204,8 +204,8 @@ void main() {
       debugUseIosBleUuidOverride = true;
       SharedPreferences.setMockInitialValues({
         'mqtt_enabled': false,
-        'ios_mac_uuid_cache':
-            jsonEncode({'A1:B2:C3:D4:E5:F6': '12345678-1234-1234-1234-1234567890AB'}),
+        'ios_mac_uuid_cache': jsonEncode(
+            {'A1:B2:C3:D4:E5:F6': '12345678-1234-1234-1234-1234567890AB'}),
       });
       final game = await loadedGame(tester);
 
@@ -244,8 +244,7 @@ void main() {
       game.dispose();
     });
 
-    testWidgets(
-        'iOS pairing with no cache enrolls the module as Searching...',
+    testWidgets('iOS pairing with no cache enrolls the module as Searching...',
         (tester) async {
       debugUseIosBleUuidOverride = true;
       final game = await loadedGame(tester);
@@ -435,8 +434,7 @@ void main() {
 
       // A new fixture naming a DIFFERENT MAC on the slot deliberately reverts
       // the label to the default.
-      apply(game,
-          _config(matchCode: 'M-2', homeMacs: ['11:22:33:44:55:66']));
+      apply(game, _config(matchCode: 'M-2', homeMacs: ['11:22:33:44:55:66']));
       await tester.pump();
       expect(module.hasCustomLabel, isFalse);
 

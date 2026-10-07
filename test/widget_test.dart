@@ -12,7 +12,8 @@ import 'package:rcj_scoreboard/models/game.dart';
 import 'package:rcj_scoreboard/screens/home.dart';
 
 void main() {
-  testWidgets('App builds and shows the Home screen', (WidgetTester tester) async {
+  testWidgets('App builds and shows the Home screen',
+      (WidgetTester tester) async {
     SharedPreferences.setMockInitialValues({});
 
     // The app is portrait-only; use a phone-shaped surface so the Home layout

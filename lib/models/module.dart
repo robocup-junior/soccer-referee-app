@@ -358,7 +358,7 @@ class Module with ChangeNotifier {
       await bleDevice?.connect(autoConnect: true, mtu: null);
     } catch (e) {
       _connectIntent = false;
-      bleStatus = describeError(e).message;
+      bleStatus = describeError(e);
       debugPrint('BLE connect error: $e');
       _connSub?.cancel();
       // iOS: the id itself is unconnectable (stale cached UUID or a MAC fed to

@@ -14,11 +14,10 @@ void main() {
     controller.add(BluetoothAdapterState.off);
     await Future.delayed(Duration.zero);
     expect(monitor.state, BluetoothAdapterState.off);
-    expect(monitor.isOn, isFalse);
 
     controller.add(BluetoothAdapterState.on);
     await Future.delayed(Duration.zero);
-    expect(monitor.isOn, isTrue);
+    expect(monitor.state, BluetoothAdapterState.on);
     expect(notifications, 2);
 
     await controller.close();

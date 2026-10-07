@@ -29,47 +29,45 @@ class ModuleButton extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) => ChangeNotifierProvider.value(
-        value: module,
-        child: Consumer<Module>(
-          builder: (context, module, _) => Expanded(
-            child: CriticalGestureDetector(
-              singleTap: game.singleTapEnabled,
-              onAction: _onAction,
-              onLongPress: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => ChangeNotifierProvider.value(
-                      value: module, child: const ModuleSettingsScreen()),
+  Widget build(BuildContext context) => Expanded(
+        child: ListenableBuilder(
+          listenable: module,
+          builder: (context, _) => CriticalGestureDetector(
+            singleTap: game.singleTapEnabled,
+            onAction: _onAction,
+            onLongPress: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => ChangeNotifierProvider.value(
+                    value: module, child: const ModuleSettingsScreen()),
+              ),
+            ),
+            child: Container(
+              margin: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: module.isConnected
+                    ? (module.isPlaying ? AppColors.green : AppColors.red)
+                    : AppColors.blue,
+                borderRadius: BorderRadius.circular(10),
+                border: Border(
+                  bottom: BorderSide(
+                      width: 5,
+                      color:
+                          module.isPlaying ? AppColors.green : AppColors.red),
                 ),
               ),
-              child: Container(
-                margin: const EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                  color: module.isConnected
-                      ? (module.isPlaying ? AppColors.green : AppColors.red)
-                      : AppColors.blue,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border(
-                    bottom: BorderSide(
-                        width: 5,
-                        color:
-                            module.isPlaying ? AppColors.green : AppColors.red),
-                  ),
-                ),
-                child: Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Text(module.name,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                              fontSize: 30, color: Colors.white)),
-                      Text(module.currentPenalty,
-                          style: const TextStyle(
-                              fontSize: 18, color: Colors.white)),
-                    ],
-                  ),
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(module.name,
+                        textAlign: TextAlign.center,
+                        style:
+                            const TextStyle(fontSize: 30, color: Colors.white)),
+                    Text(module.currentPenalty,
+                        style:
+                            const TextStyle(fontSize: 18, color: Colors.white)),
+                  ],
                 ),
               ),
             ),

@@ -67,7 +67,7 @@ void main() {
 
       game.stopNoShowPenaltyGoals();
       expect(game.noShowPenaltyGoalsActive, isFalse);
-      expect(game.isTimerRunning, isFalse);
+      expect(game.isTimeRunning, isFalse);
 
       await tester.pump(const Duration(seconds: 120));
       expect(scoreFor(game, 'A'), 1);

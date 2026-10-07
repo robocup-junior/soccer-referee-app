@@ -71,6 +71,7 @@ class SettingsScreen extends StatelessWidget {
                 game.vibrationService,
                 game.wakelockService,
                 game.matchDataService.stateNotifier,
+                game.bleBridgeService,
                 game.bleBridgeService.connectionStateNotifier,
                 game.mqttService.connectionStateNotifier,
               ]),

@@ -158,9 +158,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   Future<void> _loadPrefs() async {
     final prefs = _prefs = await SharedPreferences.getInstance();
     persistence.attach(MatchStateStore(prefs));
-    _periodTime = prefs.getInt(_periodTimeKey) ?? _defaultPeriodTime;
-    _halfTimeDuration =
-        prefs.getInt(_halfTimeDurationKey) ?? _defaultHalfTimeDuration;
+    _loadTimingDefaults();
     _numberOfPlayers =
         (prefs.getInt(_numberOfPlayersKey) ?? _defaultPlayersPerTeam)
             .clamp(1, _maxPlayers);
@@ -193,6 +191,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     if (_pendingResume == null) _syncScoreboardModulePairing(force: true);
     _maybeRequestNotificationPermission();
     notifyListeners();
+  }
+
+  void _loadTimingDefaults() {
+    _periodTime = _prefs?.getInt(_periodTimeKey) ?? _defaultPeriodTime;
+    _halfTimeDuration =
+        _prefs?.getInt(_halfTimeDurationKey) ?? _defaultHalfTimeDuration;
   }
 
   void _maybeFireResumePrompt() {
@@ -236,10 +240,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   static MatchStage _stageFromName(String name) => MatchStage.values
       .firstWhere((s) => s.name == name, orElse: () => MatchStage.firstHalf);
 
-  int getScore(String team, {bool oppositeTeam = false}) => teams
-      .firstWhere((t) => oppositeTeam ? t.id != team : t.id == team,
-          orElse: () => throw Exception('Team not found'))
-      .score;
+  int getScore(String team, {bool oppositeTeam = false}) =>
+      teams.firstWhere((t) => (t.id == team) != oppositeTeam).score;
 
   // ---- match lifecycle ----
 
@@ -291,13 +293,17 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   }
 
   void stopTimer() {
+    _haltClock();
+    notifyListeners();
+    persistence.markDirtyAndFlush();
+  }
+
+  void _haltClock() {
     _isGameRunning = false;
     isTimeRunning = false;
     _timer?.cancel();
     _runClockStartedAt = null;
     _runClockStartRemainingTime = null;
-    notifyListeners();
-    persistence.markDirtyAndFlush();
   }
 
   void _tickTimer() {
@@ -312,9 +318,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     }
 
     if (_remainingTime <= 0) {
-      _isGameRunning = false;
-      isTimeRunning = false;
-      _timer?.cancel();
+      _haltClock();
       final robotsIdle = _noShowActive;
       switch (currentStage) {
         case MatchStage.firstHalf:
@@ -427,11 +431,7 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
           if (!_noShowActive) playAll(clearPenalties: false);
         }
       case MatchStage.halfTime: // SKIP
-        _isGameRunning = false;
-        isTimeRunning = false;
-        _timer?.cancel();
-        _runClockStartedAt = null;
-        _runClockStartRemainingTime = null;
+        _haltClock();
         _startSecondHalf(robotsIdle: _noShowActive);
         _broadcastStageAndTime();
         notifyListeners();
@@ -494,17 +494,13 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   bool get noShowPenaltyGoalsActive => _noShowActive;
   String get noShowPenaltyScoringTeamName =>
       _teamById(_noShowScoringTeamId)?.name ?? '';
-  String get noShowPenaltyGoalIntervalLabel {
-    if (_noShowGoalInterval % 60 != 0) return '1 goal/$_noShowGoalInterval sec';
-    const minutes = _noShowGoalInterval ~/ 60;
-    return minutes == 1 ? '1 goal/min' : '1 goal/$minutes min';
-  }
+  String get noShowPenaltyGoalIntervalLabel =>
+      '1 goal/$_noShowGoalInterval sec';
 
   void startNoShowPenaltyGoals(Team scoringTeam) {
     gameInit(resetModules: false);
     _noShowActive = true;
     _noShowScoringTeamId = scoringTeam.id;
-    _lastNoShowGoalElapsed = 0;
     timerButtonText = 'STOP';
     startTimer();
   }
@@ -802,7 +798,6 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   int get remainingTime => _remainingTime;
   bool get isSomeonePlaying => _numberOfPlaying > 0;
-  bool get isTimerRunning => isTimeRunning;
   bool get isGameRunning => _isGameRunning;
 
   /// No enabled module connected: a module double-tap records a penalty

@@ -7,13 +7,6 @@ class SetItem {
   const SetItem(this.name, this.values);
   final String name;
   final int values;
-
-  @override
-  bool operator ==(Object other) =>
-      other is SetItem && other.values == values && other.name == name;
-
-  @override
-  int get hashCode => Object.hash(name, values);
 }
 
 /// A card grouping settings rows. [locked] greys the card out (settings that

@@ -42,8 +42,7 @@ class ScoreboardResultService with ChangeNotifier {
   String? _token;
   Uri _baseUri = _defaultBaseUri;
   ScoreboardMatchConfig? _matchConfig;
-  String? _pendingToken;
-  Uri? _pendingBaseUri;
+  RefereeLink? _pendingLink;
   ScoreboardMatchConfig? _pendingMatchConfig;
   List<ResultOutboxItem> _outbox = [];
   bool _isSubmitting = false;
@@ -102,8 +101,7 @@ class ScoreboardResultService with ChangeNotifier {
   @visibleForTesting
   void debugApplyPendingMatchConfig(ScoreboardMatchConfig config,
       {required String token, required Uri baseUri}) {
-    _pendingToken = token;
-    _pendingBaseUri = baseUri;
+    _pendingLink = (token: token, baseUri: baseUri);
     _pendingMatchConfig = config;
     _statusMessage = 'Confirm to load match';
     notifyListeners();
@@ -228,15 +226,14 @@ class ScoreboardResultService with ChangeNotifier {
   Future<void> handleDeepLink(Uri uri) async {
     final link = parseRefereeLink(uri, defaultBase: _defaultBaseUri);
     if (link == null) return;
-    _pendingToken = link.token;
-    _pendingBaseUri = link.baseUri;
+    _pendingLink = link;
     _pendingMatchConfig = null;
     _statusMessage = 'Confirm to load match';
     notifyListeners();
 
     final outcome = await _requestMatchConfig(link.token, link.baseUri);
     // A newer link or a confirm/cancel may have replaced the pending target.
-    if (_pendingToken != link.token || _pendingBaseUri != link.baseUri) return;
+    if (_pendingLink != link) return;
     _pendingMatchConfig = outcome.config;
     _statusMessage =
         outcome.config != null ? 'Confirm to load match' : outcome.status;
@@ -306,18 +303,16 @@ class ScoreboardResultService with ChangeNotifier {
       (_matchConfig == null ? 'Awaiting link' : 'Match loaded');
 
   void _clearPending() {
-    _pendingToken = null;
-    _pendingBaseUri = null;
+    _pendingLink = null;
     _pendingMatchConfig = null;
   }
 
   /// Promote the pending fixture to committed. [expectedSignature] guards a
   /// stale dialog: nothing happens if the pending fixture changed.
   Future<void> confirmPendingMatch({String? expectedSignature}) async {
-    final token = _pendingToken;
-    final base = _pendingBaseUri;
+    final link = _pendingLink;
     final config = _pendingMatchConfig;
-    if (token == null || token.isEmpty || base == null || config == null) {
+    if (link == null || config == null) {
       _statusMessage = _committedMatchStatus();
       notifyListeners();
       return;
@@ -328,6 +323,7 @@ class ScoreboardResultService with ChangeNotifier {
     }
     // Swap in memory SYNCHRONOUSLY: a link arriving during the awaits below
     // re-stages a new pending fixture that must not be wiped.
+    final (:token, baseUri: base) = link;
     _token = token;
     _baseUri = base;
     _matchConfig = config;
@@ -523,31 +519,28 @@ class ScoreboardResultService with ChangeNotifier {
       if (index == -1) return; // cleared while in flight
       final current = _isCurrentFixture(item);
       final code = response.statusCode;
-      switch (code) {
-        case 200:
-          _outbox[index] = item.copyWith(
-              state: ResultSubmissionState.submitted,
+      ResultOutboxItem settle(ResultSubmissionState state, [String? error]) =>
+          item.copyWith(
+              state: state,
               responseStatus: code,
               responseBody: body,
-              clearError: true);
+              errorMessage: error,
+              clearError: error == null);
+      switch (code) {
+        case 200:
+          _outbox[index] = settle(ResultSubmissionState.submitted);
           if (current) {
             _statusMessage = '✓ Submitted ${item.matchCode}';
             _updateMatchVersionFromResponse(body);
             onCurrentResultDelivered?.call();
           }
         case 409:
-          _outbox[index] = item.copyWith(
-              state: ResultSubmissionState.conflict,
-              responseStatus: code,
-              responseBody: body,
-              errorMessage: body?['reason']?.toString() ?? 'conflict');
+          _outbox[index] = settle(ResultSubmissionState.conflict,
+              body?['reason']?.toString() ?? 'conflict');
           if (current) _statusMessage = 'Conflict — review';
         case 401 || 422:
-          _outbox[index] = item.copyWith(
-              state: ResultSubmissionState.failed,
-              responseStatus: code,
-              responseBody: body,
-              errorMessage: body?['reason']?.toString() ?? 'request rejected');
+          _outbox[index] = settle(ResultSubmissionState.failed,
+              body?['reason']?.toString() ?? 'request rejected');
           if (current) _statusMessage = 'Rejected ($code)';
         default:
           _markRetriableFailure(index, item, 'temporary_error_$code',

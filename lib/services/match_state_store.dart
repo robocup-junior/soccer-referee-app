@@ -165,18 +165,13 @@ class MatchStateStore {
 
   final SharedPreferences _prefs;
   int _generation;
-  // At most one write in flight; the latest requested state waits in the slot.
-  bool _hasPending = false;
-  bool _pendingIsClear = false;
-  MatchSnapshot? _pendingSnapshot;
-  int _pendingGeneration = 0;
+  // At most one write in flight; the latest requested state waits in the slot
+  // (a null snapshot is a clear).
+  ({MatchSnapshot? snapshot, int generation})? _pending;
   Future<void>? _drainFuture;
 
   Future<void> save(MatchSnapshot snapshot) {
-    _pendingIsClear = false;
-    _pendingSnapshot = snapshot;
-    _pendingGeneration = _generation;
-    _hasPending = true;
+    _pending = (snapshot: snapshot, generation: _generation);
     return _drain();
   }
 
@@ -184,10 +179,7 @@ class MatchStateStore {
   /// racing in meanwhile is the genuinely-last caller, then drain.
   Future<void> clear() async {
     _generation++;
-    _pendingIsClear = true;
-    _pendingSnapshot = null;
-    _pendingGeneration = _generation;
-    _hasPending = true;
+    _pending = (snapshot: null, generation: _generation);
     await _write('tombstone', () => _prefs.setInt(_tombstoneKey, _generation));
     return _drain();
   }
@@ -196,16 +188,12 @@ class MatchStateStore {
 
   Future<void> _runDrain() async {
     try {
-      while (_hasPending) {
-        final isClear = _pendingIsClear;
-        final snapshot = _pendingSnapshot;
-        final generation = _pendingGeneration;
-        _hasPending = false;
-        _pendingIsClear = false;
-        _pendingSnapshot = null;
-        if (isClear) {
+      while (_pending != null) {
+        final (:snapshot, :generation) = _pending!;
+        _pending = null;
+        if (snapshot == null) {
           await _write('snapshot remove', () => _prefs.remove(_snapshotKey));
-        } else if (snapshot != null) {
+        } else {
           final map = snapshot.toJson()..['generation'] = generation;
           await _write('snapshot save',
               () => _prefs.setString(_snapshotKey, jsonEncode(map)));
