@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-import 'package:rcj_scoreboard/models/module.dart';
+import 'package:rcj_scoreboard/utils/ble_address.dart';
 
 /// Bridge protocol ("MQTT-over-BLE"): each message is a (topic, value) pair
 /// framed as UTF-8 bytes `<topic> 0x00 <value>`, written to the Nordic UART

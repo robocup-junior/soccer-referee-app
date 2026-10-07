@@ -75,7 +75,7 @@ BLE connection lifecycle per module:
 Reconnection is delegated entirely to the OS. `bleConnect()` calls
 `bleDevice.connect(autoConnect: true, mtu: null)` **once**; the platform then
 keeps retrying on the **same GATT client**, unbounded, until `disconnect()` is
-called. The `disconnected`-event handler in `_registerBleSubscriber` therefore
+called. The `disconnected`-event handler in `Module._onConnectionState` therefore
 only reflects status — it shows `"Connecting..."` while `_connectIntent` is true
 (the user did not disconnect) and `"Disconnected"` otherwise. **It does not
 schedule any reconnect.**
@@ -107,7 +107,7 @@ schedule any reconnect.**
 > a per-attempt cap.** The robot-stop safety guarantee does **not** depend on any
 > of this; it lives in the module firmware's BLE supervision timeout (link-layer).
 
-Implementation: `Module._registerBleSubscriber` and `Module.bleConnect` in
+Implementation: `Module._onConnectionState` and `Module.bleConnect` in
 `lib/models/module.dart`; post-match teardown in `Game.disconnectInactiveModules`
 (`lib/models/game.dart`). The sibling `BleBridgeService` uses the same
 autoConnect-only model.
@@ -118,9 +118,9 @@ autoConnect-only model.
 ```
 User double-taps "START ALL ROBOTS" or timer START button
   → game.toggleAllModules() or game.toggleTimer()
-  → game.playAll(removeDamage)
+  → game.playAll(clearPenalties: …)
   → for each enabled module (NOT awaited):
-      module.playAll() [async, NOT awaited]
+      module.playAll(clearPenalty: …) [async, NOT awaited]
         → state = play
         → for i in 0..2: bleSendPlayAll() + 100ms delay [NOT awaited]
         → bleSendPlay() [confirmed, NOT awaited]
@@ -143,7 +143,7 @@ User double-taps "STOP ALL ROBOTS" or timer STOP button
 
 ### Incoming BLE data
 Only one incoming message is handled:
-- `bleMsgAskForPenalty` (ID=10) → `_askForPenalty()` → `penalty(game.penaltyTime)` if game is running and module is playing
+- `BleMsgId.askForPenalty` (ID=10) → `_askForPenalty()` → `penalty(game.penaltyTime)` if game is running and module is playing
 
 ### BLE scan
 `FlutterBluePlus.startScan(withKeywords: ['RCJ', 'soccer', 'module'], timeout: 3s)`

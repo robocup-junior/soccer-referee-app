@@ -5,7 +5,9 @@
 //   flutter test integration_test/app_smoke_test.dart -d <device-id>
 //
 // These cover what desk widget tests can't fully exercise: the real gesture
-// arena on a real surface, and the Settings → toggle → Home wiring end to end.
+// arena on a real surface, and the single-tap preference → Home wiring (the
+// preference is set on Game directly, as the Settings toggle does; the
+// Settings screen itself is not driven here).
 // (BLE/MQTT hardware paths are intentionally NOT asserted here — those still
 // need a real device + module/broker.)
 
