@@ -379,13 +379,19 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     bool stale() =>
         !_fullTimeTeardownDone || currentStage != MatchStage.fullTime;
     if (stale()) return;
-    switch (bleBridgeService.connectionStateNotifier.value) {
-      case BridgeConnectionState.connected:
-        await bleBridgeService.disconnectAfterDrain(shouldAbort: stale);
-      case BridgeConnectionState.connecting:
-        await bleBridgeService.disconnect();
-      default:
-        break;
+    // A bridge failure must not skip the MQTT teardown: a field session left
+    // claimed would collide with the next phone (#87).
+    try {
+      switch (bleBridgeService.connectionStateNotifier.value) {
+        case BridgeConnectionState.connected:
+          await bleBridgeService.disconnectAfterDrain(shouldAbort: stale);
+        case BridgeConnectionState.connecting:
+          await bleBridgeService.disconnect();
+        default:
+          break;
+      }
+    } catch (e) {
+      debugPrint('Full-time bridge teardown failed: $e');
     }
     if (stale()) return;
     mqttService.disconnect();
@@ -713,8 +719,12 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
 
   void _broadcastScore() {
     mqttService.publishScore(teams);
+    // Both scores before both colours: a partial drain (link drop, the
+    // full-time budget) must not strand team 2's score behind team 1's colour.
     for (final (i, team) in teams.indexed) {
       bleBridgeService.publishTopic(BridgeTopics.score(i), '${team.score}');
+    }
+    for (final (i, team) in teams.indexed) {
       bleBridgeService.publishTopic(
           BridgeTopics.color(i), AppColors.teamHex(team.id));
     }
@@ -739,27 +749,30 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
     _prefs?.setInt(_periodTimeKey, value);
     if (currentStage == MatchStage.fullTime) {
       _remainingTime = value;
-      notifyListeners();
       _broadcastStageAndTime();
     }
+    notifyListeners();
   }
 
   int get halfTimeDuration => _halfTimeDuration;
   set halfTimeDuration(int value) {
     _halfTimeDuration = value;
     _prefs?.setInt(_halfTimeDurationKey, value);
+    notifyListeners();
   }
 
   int get numberOfPlayers => _numberOfPlayers;
   set numberOfPlayers(int value) {
     _numberOfPlayers = value;
     _prefs?.setInt(_numberOfPlayersKey, value);
+    notifyListeners();
   }
 
   int get penaltyTime => _penaltyTime;
   set penaltyTime(int value) {
     _penaltyTime = value;
     _prefs?.setInt(_penaltyTimeKey, value);
+    notifyListeners();
   }
 
   /// Single-tap mode (#12). Default false = double-tap everywhere. Notifies so

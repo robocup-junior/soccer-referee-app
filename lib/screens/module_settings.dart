@@ -25,6 +25,9 @@ class ModuleSettingsScreen extends StatefulWidget {
 class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
   final _addressController = TextEditingController();
   final _labelController = TextEditingController();
+  // Pinned for the screen's lifetime: a mask formatter rebuilt per build()
+  // loses its accumulated text and collapses the field to one keystroke.
+  final _addressFormatters = buildModuleAddressFormatters();
   final List<BluetoothDevice> _devices = [];
   int? _selectedIndex;
   bool _scanning = false;
@@ -243,7 +246,7 @@ class _ModuleSettingsScreenState extends State<ModuleSettingsScreen> {
               const Divider(height: 30),
               TextField(
                 controller: _addressController,
-                inputFormatters: buildModuleAddressFormatters(),
+                inputFormatters: _addressFormatters,
                 decoration: InputDecoration(
                   labelText: moduleAddressLabel,
                   labelStyle: _grey,

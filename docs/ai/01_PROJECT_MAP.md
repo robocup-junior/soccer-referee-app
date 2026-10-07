@@ -138,7 +138,7 @@ rcj_scoreboard/
   loop. **Phone-side launch auto-connect was intentionally removed** (referees swap
   phones between games) — only GATT-level `autoConnect:true` remains.
 - `Game` fans out to both transports via helpers: `_broadcastScore()` /
-  `_broadcastTeamInfo()` / `_broadcastStageAndTime()` / `_broadcastFullState()`. MQTT
+  `_broadcastTeamInfo()` / `_broadcastStageAndTime()` / `broadcastFullState()`. MQTT
   behavior is byte-for-byte unchanged; the bridge is purely additive.
 - **Fully separate from the robot START/STOP path** — never awaited on that path.
 
@@ -152,8 +152,8 @@ rcj_scoreboard/
 - `BleAdapterMonitor` (ChangeNotifier, provided app-wide) drives the Home banner and the module screen's status line; `services/ble.dart` (`BLEServices`) was removed.
 
 ### UI Screens
-- `Home` (`lib/screens/home.dart:13`) — `StatelessWidget`, reads `Game` via `Provider.of`
-- `SettingsScreen` (`lib/screens/settings.dart:6`) — `StatefulWidget`, receives `Game` as param
+- `Home` (`lib/screens/home.dart`) — `StatefulWidget`, reads `Game` via `Provider.of`; installs `GamePrompts` in `didChangeDependencies`
+- `SettingsScreen` (`lib/screens/settings.dart`) — `StatelessWidget`, receives `Game` as param; rebuilt by a merged `ListenableBuilder`
 - `ModuleSettingsScreen` (`lib/screens/module_settings.dart:12`) — `StatefulWidget`, reads `Module` via `Provider.of`
 - `BarcodeScannerSimple` (`lib/screens/mac_qr_scanner.dart:4`) — returns MAC string via `Navigator.pop`
 

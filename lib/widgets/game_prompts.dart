@@ -28,17 +28,19 @@ class GamePrompts {
     game.onRequestReviewScoreboardResult = _review;
   }
 
+  // `==`, not identical(): each evaluation of a method tear-off is a new
+  // object, but tear-offs of the same method on the same receiver are equal.
   void uninstall() {
-    if (identical(game.onRequestSwitchTeamOrderDialog, _switchOrder)) {
+    if (game.onRequestSwitchTeamOrderDialog == _switchOrder) {
       game.onRequestSwitchTeamOrderDialog = null;
     }
-    if (identical(game.onRequestResumeMatch, _resume)) {
+    if (game.onRequestResumeMatch == _resume) {
       game.onRequestResumeMatch = null;
     }
-    if (identical(game.onRequestConfirmScoreboardMatch, _confirmLoad)) {
+    if (game.onRequestConfirmScoreboardMatch == _confirmLoad) {
       game.onRequestConfirmScoreboardMatch = null;
     }
-    if (identical(game.onRequestReviewScoreboardResult, _review)) {
+    if (game.onRequestReviewScoreboardResult == _review) {
       game.onRequestReviewScoreboardResult = null;
     }
   }

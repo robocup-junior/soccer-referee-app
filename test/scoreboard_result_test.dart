@@ -57,6 +57,24 @@ Future<void> _waitFor(
 
 void main() {
   group('ScoreboardMatchConfig parsing', () {
+    test('an unrecognised home_side falls through to side_order', () {
+      ScoreboardMatchConfig parse(Map<String, dynamic> sides) =>
+          ScoreboardMatchConfig.fromJson({'match_code': 'M-1', ...sides});
+      expect(
+          parse({
+            'home_side': 'centre',
+            'side_order': {'home': 'RIGHT'},
+          }).homeIsLeft,
+          isFalse);
+      expect(parse({'home_side': 'centre'}).homeIsLeft, isTrue);
+      expect(
+          parse({
+            'home_is_left': false,
+            'home_side': 'left',
+          }).homeIsLeft,
+          isFalse);
+    });
+
     test('parses full payload with home_side', () {
       final config = ScoreboardMatchConfig.fromJson({
         'match_code': 'M-12',

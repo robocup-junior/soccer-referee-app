@@ -253,6 +253,9 @@ class SettingInputField extends StatefulWidget {
 class _SettingInputFieldState extends State<SettingInputField> {
   late final TextEditingController _controller =
       TextEditingController(text: widget.initialValue);
+  // Pinned: a mask formatter keeps its unmasked text across calls, so a fresh
+  // instance per rebuild would collapse the field to the newest keystroke.
+  late final List<TextInputFormatter>? _formatters = widget.inputFormatters;
   final FocusNode _focusNode = FocusNode();
 
   @override
@@ -264,7 +267,10 @@ class _SettingInputFieldState extends State<SettingInputField> {
   @override
   void didUpdateWidget(covariant SettingInputField old) {
     super.didUpdateWidget(old);
-    if (widget.initialValue != old.initialValue) {
+    // Compare with the field's own text so a rebuild while typing (the value
+    // was just written back by onChanged) never resets the cursor.
+    if (widget.initialValue != old.initialValue &&
+        widget.initialValue != _controller.text) {
       _controller.text = widget.initialValue;
     }
   }
@@ -285,7 +291,7 @@ class _SettingInputFieldState extends State<SettingInputField> {
           focusNode: _focusNode,
           onChanged: widget.onChanged,
           obscureText: widget.isPassword && !_focusNode.hasFocus,
-          inputFormatters: widget.inputFormatters,
+          inputFormatters: _formatters,
           maxLength: widget.maxLength,
           buildCounter: (_,
                   {required currentLength, required isFocused, maxLength}) =>

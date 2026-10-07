@@ -45,7 +45,10 @@ class VibrationService with ChangeNotifier {
     for (final pref in [_game, _damage]) {
       pref.enabled = prefs.getBool(pref.enabledKey) ?? true;
       final stored = prefs.getStringList(pref.alertsKey);
-      if (stored != null) pref.alerts = stored.map(int.parse).toSet();
+      // A corrupt entry is skipped rather than failing the whole load.
+      if (stored != null) {
+        pref.alerts = stored.map(int.tryParse).whereType<int>().toSet();
+      }
     }
     notifyListeners();
   }

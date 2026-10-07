@@ -168,7 +168,11 @@ class MatchStateStore {
   // At most one write in flight; the latest requested state waits in the slot
   // (a null snapshot is a clear).
   ({MatchSnapshot? snapshot, int generation})? _pending;
-  Future<void>? _drainFuture;
+  // An explicit flag, not `_drainFuture ??= _runDrain()`: a drain that
+  // finishes without awaiting would clear the slot before `??=` stores the
+  // finished future, latching every later save onto it.
+  bool _draining = false;
+  Future<void> _drainDone = Future.value();
 
   Future<void> save(MatchSnapshot snapshot) {
     _pending = (snapshot: snapshot, generation: _generation);
@@ -184,9 +188,13 @@ class MatchStateStore {
     return _drain();
   }
 
-  Future<void> _drain() => _drainFuture ??= _runDrain();
+  Future<void> _drain() {
+    if (!_draining) _drainDone = _runDrain();
+    return _drainDone;
+  }
 
   Future<void> _runDrain() async {
+    _draining = true;
     try {
       while (_pending != null) {
         final (:snapshot, :generation) = _pending!;
@@ -200,7 +208,7 @@ class MatchStateStore {
         }
       }
     } finally {
-      _drainFuture = null;
+      _draining = false;
     }
   }
 

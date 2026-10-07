@@ -73,6 +73,7 @@ class SettingsScreen extends StatelessWidget {
                 game.matchDataService.stateNotifier,
                 game.bleBridgeService,
                 game.bleBridgeService.connectionStateNotifier,
+                game.mqttService.switchesChanged,
                 game.mqttService.connectionStateNotifier,
               ]),
               builder: (context, _) => ListView(
@@ -218,14 +219,15 @@ class SettingsScreen extends StatelessWidget {
       service.clearLinkedMatchData();
       return;
     }
-    final (results, have, them) =
-        n == 1 ? ('result', 'has', 'it') : ('results', 'have', 'they');
+    final (results, have, them, they) = n == 1
+        ? ('result', 'has', 'it', 'it')
+        : ('results', 'have', 'them', 'they');
     final confirmed = await showChoiceDialog(
       context,
       title: 'Clear linked match?',
       body:
           '$n $results $have not been confirmed sent to the scoreboard yet. Clearing the '
-          'linked match permanently discards $them — $them will not be sent.',
+          'linked match permanently discards $them — $they will not be sent.',
       confirmText: 'Clear anyway',
       confirmColor: Colors.red[600],
       dismissible: true,

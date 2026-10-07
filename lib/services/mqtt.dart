@@ -68,6 +68,11 @@ class MqttService {
   String get password => _password;
   String get topic => _topic;
   String get fieldNumber => _topic.replaceFirst('field_', '');
+
+  /// Bumped by the two switch setters so Settings redraws them. MqttService
+  /// is deliberately not a ChangeNotifier (its dispose() only disconnects).
+  final ValueNotifier<int> switchesChanged = ValueNotifier(0);
+
   bool get isEnabled => _isEnabled;
   bool get secureConnection => _secureConnection;
   String get lastErrorMessage => _lastErrorMessage;
@@ -107,11 +112,13 @@ class MqttService {
   set isEnabled(bool value) {
     _isEnabled = value;
     _prefs?.setBool('mqtt_enabled', value);
+    switchesChanged.value++;
   }
 
   set secureConnection(bool value) {
     _secureConnection = value;
     _prefs?.setBool('mqtt_secure_connection', value);
+    switchesChanged.value++;
   }
 
   // ---- connection ----
@@ -228,7 +235,10 @@ class MqttService {
     }
   }
 
-  void dispose() => disconnect();
+  void dispose() {
+    disconnect();
+    switchesChanged.dispose();
+  }
 
   // ---- publishing ----
 

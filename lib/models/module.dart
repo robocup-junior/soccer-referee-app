@@ -66,6 +66,8 @@ class Module with ChangeNotifier {
   bool _isSearching = false;
   BluetoothDevice? bleDevice;
   StreamSubscription<BluetoothConnectionState>? _connSub;
+  // Cancelling only drops the Dart listener (so reconnects don't stack
+  // duplicates); it never turns the characteristic notification off.
   StreamSubscription<List<int>>? _rxSub;
   BluetoothCharacteristic? _tx;
   BluetoothCharacteristic? _rx;
@@ -337,6 +339,9 @@ class Module with ChangeNotifier {
 
   void bleConnect() async {
     if (bleDevice == null || bleDevice!.isConnected) return;
+    // Intent BEFORE the delay: a bleDisconnect() (Cancel / disconnectAll)
+    // during it must be seen by the re-check below, or this in-flight connect
+    // would revive autoConnect after the user asked to stop.
     _connectIntent = true;
     bleStatus = 'Connecting...';
     notifyListeners();
@@ -379,7 +384,11 @@ class Module with ChangeNotifier {
     debugPrint('BLE $name: $state');
     if (state == BluetoothConnectionState.disconnected) {
       _isConnected = false;
-      // Status only: the OS autoConnect keeps retrying on the same GATT client.
+      // Status only: the OS autoConnect keeps retrying on the same GATT client
+      // (invariant #5). Teardown of modules powered down for good is a one-shot
+      // at full time (Game.disconnectInactiveModules), never per-disconnect:
+      // here it would also kill a fresh post-match connect on its initial
+      // disconnected event.
       bleStatus = _connectIntent ? 'Connecting...' : 'Disconnected';
       notifyListeners();
     } else if (state == BluetoothConnectionState.connected) {
