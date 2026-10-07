@@ -142,7 +142,7 @@ extension GameResume on Game {
       currentStage = MatchStage.fullTime;
       inGame = true;
       _remainingTime = snapshot.remainingTime;
-      isTimeRunning = false;
+      _haltClock();
       _restoreTeamOrderAndInfo(snapshot.teams);
       // Snapshot mapping: the fallback while the fixture config is not loaded.
       _sb.bindResumed(

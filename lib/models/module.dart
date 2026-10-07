@@ -24,11 +24,6 @@ enum BleMsgId {
   askForPenalty,
 }
 
-/// Nordic UART Service, shared by robot modules and the scoreboard bridge.
-const String kNusServiceUuid = '6E400001-B5A3-F393-E0A9-E50E24DCCA9E';
-const String kNusTxCharUuid = '6E400002-B5A3-F393-E0A9-E50E24DCCA9E';
-const String kNusRxCharUuid = '6E400003-B5A3-F393-E0A9-E50E24DCCA9E';
-
 /// One robot slot: its match state (play / stop / damage ...) and its BLE link.
 ///
 /// Reconnection is owned by the OS: `connect(autoConnect: true)` is called once

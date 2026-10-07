@@ -58,7 +58,8 @@ class Game with ChangeNotifier, WidgetsBindingObserver {
   final MatchDataService matchDataService = MatchDataService();
   final VibrationService vibrationService = VibrationService();
   final WakelockService wakelockService = WakelockService();
-  final ScoreboardResultService scoreboardResultService = ScoreboardResultService();
+  final ScoreboardResultService scoreboardResultService =
+      ScoreboardResultService();
   late final MatchPersistence persistence = MatchPersistence(_buildSnapshot);
   late final IosMacPairing iosPairing = IosMacPairing(
     moduleById: _moduleById,

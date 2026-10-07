@@ -4,8 +4,8 @@ import 'dart:collection';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:rcj_scoreboard/models/bridge_message.dart';
-import 'package:rcj_scoreboard/models/module.dart';
 import 'package:rcj_scoreboard/services/error_messages.dart';
+import 'package:rcj_scoreboard/utils/ble_address.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 enum BridgeConnectionState { disconnected, connecting, connected, error }

@@ -62,7 +62,7 @@ rcj_scoreboard/
 │   ├── settings.gradle         # AGP plugin 8.3.2, Kotlin 1.7.10 ← mismatch
 │   └── gradle/wrapper/gradle-wrapper.properties  # Gradle 8.7
 ├── test/
-│   ├── bridge_message_test.dart # BLE bridge: framing, BridgeTopics, queue dedup (10 tests)
+│   ├── bridge_message_test.dart # BLE bridge: framing, BridgeTopics, queue dedup (16 tests)
 │   └── widget_test.dart        # Broken smoke test (calls MyApp() without required game param)
 ├── pubspec.yaml                # Dependencies
 ├── pubspec.lock                # Locked versions (snapshot from 2025-07-17)
@@ -132,7 +132,7 @@ rcj_scoreboard/
 - Per-topic **dedup queue** (`Queue<BridgeMessage>` + `_sendInProgress`): a newer value
   for a topic replaces the queued older one; `_processQueue` pops-before-await so a
   publish landing mid-send can't drop an unsent message.
-- `connectionStateNotifier` (`BridgeConnectionState`), `queueDepthNotifier`.
+- `connectionStateNotifier` (`BridgeConnectionState`), `@visibleForTesting queueDepth`.
   `_connectIntent` mirrors the module pattern so a device-level disconnect reads
   "Connecting…" while autoConnect retries; `bleDisconnect()` clears it to break a stuck
   loop. **Phone-side launch auto-connect was intentionally removed** (referees swap
