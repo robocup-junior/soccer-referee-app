@@ -1,13 +1,9 @@
 import 'dart:convert';
 
-import 'package:rcj_scoreboard/utils/ble_address.dart';
-
 /// Bridge protocol ("MQTT-over-BLE"): each message is a (topic, value) pair
 /// framed as UTF-8 bytes `<topic> 0x00 <value>`, written to the Nordic UART
 /// TX characteristic. The bridge shares the robot modules' service UUIDs and is
 /// told apart only by its address.
-const String kBridgeServiceUUID = kNusServiceUuid;
-const String kBridgeTxCharUUID = kNusTxCharUuid;
 const int kBridgeFieldSeparator = 0x00;
 
 class BridgeTopics {
