@@ -2355,7 +2355,6 @@ void main() {
       // on the clock and the SKIP affordance, not first-half leftovers.
       game.currentStage = MatchStage.halfTime;
       game.setRemainingTime(game.halfTimeDuration);
-      game.timerButtonText = 'SKIP';
       game.startTimer();
       await tester.pump();
 

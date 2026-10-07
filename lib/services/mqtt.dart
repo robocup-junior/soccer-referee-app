@@ -167,17 +167,10 @@ class MqttService {
     try {
       debugPrint('MQTT: connecting to $_server:$_port');
       await client.connect(_username, _password);
-    } on NoConnectionException catch (e) {
-      if (!identical(_client, client)) return false;
-      debugPrint('MQTT: $e');
-      _fail('Network error: Unable to connect');
-    } on SocketException catch (e) {
-      if (!identical(_client, client)) return false;
-      _fail('Connection failed: ${e.message}');
     } on Exception catch (e) {
-      // e.g. a HandshakeException escaping mqtt_client's socket onError path.
-      if (!identical(_client, client)) return false;
-      _fail(describeError(e));
+      // The connection is not up after any exception (mqtt_client marks it
+      // faulted), so the return-code message below is what the user sees.
+      debugPrint('MQTT: $e');
     }
     if (!identical(_client, client)) return false;
     if (client.connectionStatus?.state == MqttConnectionState.connected) {

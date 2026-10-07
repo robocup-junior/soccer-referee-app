@@ -78,10 +78,12 @@ class ScoreboardResultService with ChangeNotifier {
   /// True if THIS run (same token, #68) has an item for [matchCode] that blocks
   /// re-opening the result review. A terminal 401/422 rejection does not
   /// block: it is correctable and re-submittable (RAVF002).
-  bool hasUnresolvedResultFor(String matchCode) => _outbox.any((i) =>
-      i.matchCode == matchCode &&
-      i.token == _token &&
-      !_isTerminalRejection(i));
+  bool hasUnresolvedResultFor(String matchCode) =>
+      _runItems(matchCode, _token).any((i) => !_isTerminalRejection(i));
+
+  /// Outbox items of one run: the same fixture under the same link token.
+  Iterable<ResultOutboxItem> _runItems(String matchCode, String? token) =>
+      _outbox.where((i) => i.matchCode == matchCode && i.token == token);
 
   static bool _isTerminalRejection(ResultOutboxItem i) =>
       i.state == ResultSubmissionState.failed &&
@@ -291,10 +293,8 @@ class ScoreboardResultService with ChangeNotifier {
   String? _submittedStatusForCommittedMatch() {
     final config = _matchConfig;
     if (config == null) return null;
-    final delivered = _outbox.any((i) =>
-        i.matchCode == config.matchCode &&
-        i.token == _token &&
-        i.state == ResultSubmissionState.submitted);
+    final delivered = _runItems(config.matchCode, _token)
+        .any((i) => i.state == ResultSubmissionState.submitted);
     return delivered ? '✓ Submitted ${config.matchCode}' : null;
   }
 
@@ -393,9 +393,7 @@ class ScoreboardResultService with ChangeNotifier {
 
     // One submission per run: a retry-exhausted failure is still tracked
     // (revivable via retryPendingNow); a 401/422 rejection is replaceable.
-    final tracked = _outbox.any((i) =>
-        i.matchCode == config.matchCode &&
-        i.token == token &&
+    final tracked = _runItems(config.matchCode, token).any((i) =>
         (i.state != ResultSubmissionState.failed ||
             i.retryCount >= _maxSubmissionRetries));
     if (tracked) {

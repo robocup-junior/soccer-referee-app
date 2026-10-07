@@ -193,9 +193,7 @@ class _HomeState extends State<Home> {
                   singleTap: game.singleTapEnabled,
                   onAction: game.toggleTimer,
                   style: _timerButtonStyle(
-                      game.isGameRunning && game.isTimeRunning
-                          ? AppColors.red
-                          : AppColors.green),
+                      game.isGameRunning ? AppColors.red : AppColors.green),
                   child: Text(game.timerButtonText,
                       style: const TextStyle(color: Colors.white)),
                 ),

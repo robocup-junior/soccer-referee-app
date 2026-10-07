@@ -394,9 +394,7 @@ class Module with ChangeNotifier {
       // The advertised name is authoritative for the hardware MAC of THIS link.
       final parsed = _macFromDevice(device);
       if (parsed != null) hardwareMac = parsed;
-      if (hardwareMac.isNotEmpty) {
-        _game.iosPairing.record(hardwareMac, macAddress);
-      }
+      _game.iosPairing.record(hardwareMac, macAddress);
       notifyListeners();
       _initLink();
     }
@@ -449,15 +447,10 @@ class Module with ChangeNotifier {
     _connectIntent = false;
     _isConnected = false;
     final status = reason ?? 'Disconnected';
-    if (bleDevice == null) {
-      if (bleStatus != status) {
-        bleStatus = status;
-        notifyListeners();
-      }
-      return;
-    }
+    if (bleDevice == null && bleStatus == status) return;
     bleStatus = status;
     notifyListeners();
+    if (bleDevice == null) return;
     _cancelLinkListeners();
     try {
       await bleDevice?.disconnect();

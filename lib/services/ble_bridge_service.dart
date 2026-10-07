@@ -154,19 +154,19 @@ class BleBridgeService extends ChangeNotifier {
     _sendInProgress = false;
   }
 
-  Future<bool> _sendWithRetry(BridgeMessage msg, {int maxRetries = 3}) async {
+  Future<void> _sendWithRetry(BridgeMessage msg) async {
+    const maxRetries = 3;
     final bytes = msg.toBytes();
     for (var attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         await _txChar!.write(bytes, withoutResponse: false, timeout: 5);
-        return true;
+        return;
       } catch (e) {
         if (attempt == maxRetries) {
           debugPrint('BleBridge: send "${msg.topic}" failed: $e');
         }
       }
     }
-    return false;
   }
 
   Future<void> _onConnected() async {
